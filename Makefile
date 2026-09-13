@@ -179,6 +179,24 @@ kernel/net_socket.o: kernel/net_socket.c
 compile_commands:
 	python -m compiledb -n make clean all
 
+# --- Host-side unit test (roadmap §11): virtqueue multi-chain ---
+# Dikompilasi dengan compiler host (bukan freestanding) — mock MMIO berupa
+# struct biasa di memori. TIDAK ikut build kernel (terkecualikan dari
+# C_SOURCES, jalankan eksplisit: make test-virtqueue).
+HOSTCC = clang
+.PHONY: test-virtqueue
+test-virtqueue: test/virtqueue_test
+	./test/virtqueue_test
+
+test/virtqueue_test: test/virtqueue_test.c \
+                     drivers/graphics/hw/virtqueue.c \
+                     drivers/graphics/hw/virtqueue.h \
+                     drivers/graphics/hw/virtio_gpu_regs.h \
+                     graphics/memory/gpu_alloc.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/virtqueue_test.c \
+	    drivers/graphics/hw/virtqueue.c \
+	    -Idrivers/graphics/hw -Igraphics/memory
+
 # --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
 # Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer
 .PHONY: apps

@@ -50,6 +50,32 @@ static void label_cpu(ui_widget_t* lbl) {
     b[k] = '\0';
     ui_label_set_text(lbl, b);
 }
+// Phase 2C §9.6 — statistik GPU (syscall 65). Backend software: tampil "-".
+static void label_gpu(ui_widget_t* lbl) {
+    gpu_stats_t st;
+    if (sys_gpu_stats(&st) != 0) {
+        ui_label_set_text(lbl, "GPU  : -");
+        return;
+    }
+    char b[88]; int k = 0;
+    const char* p = "GPU  : ";
+    while (p[k]) { b[k] = p[k]; k++; }
+    char n[16];
+    itoa((uint32_t)st.present_count, n);
+    for (int i = 0; n[i] && k < 78; i++) b[k++] = n[i];
+    p = " present / ";
+    for (int i = 0; p[i] && k < 78; i++) b[k++] = p[i];
+    itoa((uint32_t)st.cmd_count, n);
+    for (int i = 0; n[i] && k < 78; i++) b[k++] = n[i];
+    p = " cmd / ";
+    for (int i = 0; p[i] && k < 78; i++) b[k++] = p[i];
+    itoa((uint32_t)st.notify_count, n);
+    for (int i = 0; n[i] && k < 78; i++) b[k++] = n[i];
+    p = " notify";
+    for (int i = 0; p[i] && k < 82; i++) b[k++] = p[i];
+    b[k] = '\0';
+    ui_label_set_text(lbl, b);
+}
 static void label_screen(ui_widget_t* lbl, uint32_t w, uint32_t h) {
     char b[32]; int k = 0;
     const char* p = "Layar: ";
@@ -97,6 +123,8 @@ void main(void) {
     ui_layout_add(box, cpu);
     ui_widget_t* scr = ui_label_create(g_win, "Layar: -");
     ui_layout_add(box, scr);
+    ui_widget_t* gpu = ui_label_create(g_win, "GPU  : -");
+    ui_layout_add(box, gpu);
 
     ui_scrollview_set_child(sv, box);
     ui_window_add(g_win, sv);
@@ -106,6 +134,7 @@ void main(void) {
     label_ram(ram, sys_used_ram() / 1024 / 1024, sys_total_ram() / 1024 / 1024);
     label_cpu(cpu);
     label_screen(scr, sw, sh);
+    label_gpu(gpu);
 
     ui_window_run(g_win);   // blocking; keluar via X titlebar / ESC
     ui_window_destroy(g_win);

@@ -5,6 +5,9 @@
 #include "task.h"
 
 #include <stddef.h>
+
+// Phase 2C §9.6 — statistik GPU (graphics/ghal.c)
+extern void ghal_stats_dump(void);
 #include <stdint.h>
 
 // sys_ping: weak fallback definition di sini agar link selalu berhasil.
@@ -172,7 +175,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- sched  : Tampilkan status scheduler/CPU\n- start  : Jalankan app konkuren (start clock)\n- refresh : Atur refresh rate (refresh 60 / 100 / 144)\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n- ping   : Ping host (ping google.com / ping 8.8.8.8)\n- nettest : Tes TCP socket (nettest 10.0.2.2 7777)\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- sched  : Tampilkan status scheduler/CPU\n- start  : Jalankan app konkuren (start clock)\n- refresh : Atur refresh rate (refresh 60 / 100 / 144)\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n- ping   : Ping host (ping google.com / ping 8.8.8.8)\n- nettest : Tes TCP socket (nettest 10.0.2.2 7777)\n- gpu    : Statistik GPU (present/cmd/notify)\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "adduser") == 0) {
@@ -277,6 +280,10 @@ void user_shell() {
                     }
                     else if (strcmp(command, "sched") == 0) {
                         scheduler_dump();
+                    }
+                    // Phase 2C §9.6/§9.8 — statistik GPU lewat HAL dump.
+                    else if (strcmp(command, "gpu") == 0) {
+                        ghal_stats_dump();
                     }
                     // Perintah START — Phase 5A: jalankan app sebagai task ring-3
                     // BARU yang konkuren (shell tetap jalan). Beda dengan exec

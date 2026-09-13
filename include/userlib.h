@@ -93,6 +93,20 @@ static inline void build_app_path(char* out, int out_cap, const char* elf_name) 
 int sys_get_file_list(char* path, file_info_t* buffer, int max_entries);
 int sys_mkdir(char* path);
 
+// Phase 2C §9.6 — statistik GPU (mirror ghal_gpu_stats_t, ABI syscall 65).
+// Counter kumulatif sejak boot; hitung delta dua sampel untuk per-frame.
+// Layout HARUS sama dengan ghal_gpu_stats_t di graphics/ghal.h.
+typedef struct {
+    uint64_t present_count;
+    uint64_t cmd_count;
+    uint64_t cmd_bytes;
+    uint64_t notify_count;
+    uint64_t wait_calls;
+    uint64_t wait_ticks;
+    uint64_t err_count;
+} gpu_stats_t;
+int sys_gpu_stats(gpu_stats_t* out);   // -> 0 sukses, -1 backend tanpa stats
+
 uint64_t sys_load_elf(char* filename);
 
 // sys_exec: Load app baru, replace current app, TIDAK PERNAH kembali ke caller.

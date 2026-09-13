@@ -79,3 +79,23 @@ void virtio_gpu_cmd_transfer_to_host(virtio_gpu_transfer_to_host_2d_t* c,
     c->resource_id = resource_id;
     c->padding = 0;
 }
+
+void virtio_gpu_cmd_update_cursor(virtio_gpu_update_cursor_t* c,
+                                  uint32_t scanout_id, uint32_t resource_id,
+                                  uint32_t x, uint32_t y) {
+    virtio_gpu_cmd_hdr(&c->hdr, VIRTIO_GPU_CMD_UPDATE_CURSOR);
+    c->scanout_id = scanout_id;
+    c->resource_id = resource_id;
+    c->x = x;
+    c->y = y;
+}
+
+void virtio_gpu_cmd_move_cursor(virtio_gpu_update_cursor_t* c,
+                                uint32_t scanout_id, uint32_t resource_id,
+                                uint32_t x, uint32_t y) {
+    virtio_gpu_cmd_hdr(&c->hdr, VIRTIO_GPU_CMD_MOVE_CURSOR);
+    c->scanout_id = scanout_id;
+    c->resource_id = resource_id;
+    c->x = x;
+    c->y = y;
+}

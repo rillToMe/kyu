@@ -76,9 +76,15 @@ static ghal_surface_t* virtio_surface_create(uint32_t w, uint32_t h, ghal_format
 
     gpu_page_t* pages = (gpu_page_t*)kmalloc(sizeof(gpu_page_t) * num_pages);
     if (!pages) { extern void serial_print(const char* s); serial_print("[vgpu] surface: kmalloc pages failed\n"); return NULL; }
-    uint32_t n = gpu_alloc_pages(num_pages, pages);
-    if (n == 0) { extern void serial_print(const char* s); serial_print("[vgpu] surface: alloc pages 0\n"); kfree(pages); return NULL; }
-    if (n < num_pages) { extern void serial_print(const char* s); serial_print("[vgpu] surface: partial pages\n"); gpu_free_pages(pages, n); kfree(pages); return NULL; }
+    // Backing HARUS contiguous: backing_virt dipakai sebagai satu buffer linear
+    // (`backing_virt + y*width`), jadi halaman non-contiguous akan menulis ke
+    // memori acak. gpu_alloc_pages() tidak menjamin ini.
+    if (gpu_alloc_pages_contiguous(num_pages, pages) != 0) {
+        extern void serial_print(const char* s);
+        serial_print("[vgpu] surface: contiguous backing alloc failed\n");
+        kfree(pages);
+        return NULL;
+    }
 
     struct ghal_surface* s = (struct ghal_surface*)kmalloc(sizeof(*s));
     if (!s) { gpu_free_pages(pages, num_pages); kfree(pages); return NULL; }
@@ -95,9 +101,13 @@ static ghal_surface_t* virtio_surface_create(uint32_t w, uint32_t h, ghal_format
     // Memakai X8R8G8B8 (urutan X,R,G,B) membuat device membaca byte0 sebagai X
     // dan byte3 sebagai B → channel biru hilang (terbukti: gray 30,30,30
     // tampil 30,30,0).
+    // ARGB8888 (kursor): byte B,G,R,A → B8G8R8A8_UNORM (alpha di-respect
+    // device untuk plane kursor).
+    uint32_t vfmt = (fmt == GHAL_FMT_ARGB8888)
+                        ? VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM
+                        : VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
     virtio_gpu_resource_create_2d_t c;
-    virtio_gpu_cmd_resource_create_2d(&c, s->resource_id,
-                                      VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, w, h);
+    virtio_gpu_cmd_resource_create_2d(&c, s->resource_id, vfmt, w, h);
     if (vgpu_send_ok(&c, sizeof(c)) != 0) {
         gpu_free_pages(pages, num_pages); kfree(pages); kfree(s);
         return NULL;
@@ -198,14 +208,18 @@ static void virtio_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
     }
 }
 
+// Fence_id present terakhir yang berhasil dikirim (Phase 2C §9.2).
+static uint64_t g_last_present_fence = 0;
+
+extern void serial_print(const char* s);
+
 static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
     if (!s) return;
     ghal_rect_t r;
     if (rect) r = *rect;
     else { r.x = 0; r.y = 0; r.w = s->width; r.h = s->height; }
 
-    // SET_SCANOUT sekali per resource (idempotent di device, tapi kita
-    // lakukan sekali saja): pastikan resource ini yang jadi output aktif.
+    // SET_SCANOUT sekali per resource: pastikan resource ini output aktif.
     if (!s->scanout_set && s->width == g_vgpu.scanout_width &&
         s->height == g_vgpu.scanout_height) {
         virtio_gpu_set_scanout_t so;
@@ -213,28 +227,103 @@ static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
         if (vgpu_send_ok(&so, sizeof(so)) == 0) s->scanout_set = 1;
     }
 
-    // TRANSFER_TO_HOST_2D
+    // Phase 2C §9.1+§9.2: TRANSFER + FLUSH dikirim sebagai DUA chain
+    // terpisah (spec: satu command per chain — dua ctrl_hdr dalam satu
+    // buffer membuat device memproses yang pertama dan membuang sisanya),
+    // SATU notify, TANPA wait. Fence dari frame sebelumnya diverifikasi
+    // compositor sebelum upload berikutnya (backpressure §9.2), jadi steady
+    // state tidak ada busy-poll sama sekali per frame.
     virtio_gpu_transfer_to_host_2d_t t;
-    virtio_gpu_cmd_transfer_to_host(&t, s->resource_id, r.x, r.y, r.w, r.h);
-    vgpu_send_ok(&t, sizeof(t));
-
-    // RESOURCE_FLUSH
     virtio_gpu_resource_flush_t f;
+    virtio_gpu_cmd_transfer_to_host(&t, s->resource_id, r.x, r.y, r.w, r.h);
     virtio_gpu_cmd_resource_flush(&f, s->resource_id, r.x, r.y, r.w, r.h);
-    vgpu_send_ok(&f, sizeof(f));
+    uint64_t fence = virtio_gpu_dev_submit2(&t, sizeof(t), &f, sizeof(f));
+    if (fence != 0) {
+        g_last_present_fence = fence;
+        g_vgpu.stats.present_count++;
+    }
+    else serial_print("[vgpu] present: submit batch failed\n");
+}
+
+// --- Fence ops (Phase 2C §9.2) ---
+static uint64_t virtio_present_fence(void) {
+    return g_last_present_fence;
+}
+
+static int virtio_fence_pending(uint64_t fence) {
+    return virtio_gpu_dev_fence_done(fence) == 0;   // 0 = belum selesai
+}
+
+static void virtio_fence_wait(uint64_t fence) {
+    (void)virtio_gpu_dev_fence_wait(fence);
+}
+
+// --- Hardware cursor (Phase 2C §9.4) ---
+// Image kursor = surface 64x64 ARGB8888 milik compositor (owner §6.2);
+// backend hanya menyimpan referensi + mengirim command.
+static ghal_surface_t* g_cursor_img;   // referensi surface kursor aktif
+static uint32_t g_cursor_x, g_cursor_y;
+
+static int virtio_cursor_update(ghal_surface_t* img, int hot_x, int hot_y) {
+    (void)hot_x; (void)hot_y;   // semua bentuk kita hot spot (0,0)
+    if (!img || img->width != 64 || img->height != 64 ||
+        img->format != GHAL_FMT_ARGB8888) return -1;
+
+    // TRANSFER seluruh image backing → resource (sync, controlq).
+    virtio_gpu_transfer_to_host_2d_t t;
+    virtio_gpu_cmd_transfer_to_host(&t, img->resource_id, 0, 0, 64, 64);
+    if (vgpu_send_ok(&t, sizeof(t)) != 0) return -1;
+
+    // UPDATE_CURSOR di cursorq: definisikan plane pada posisi tersimpan.
+    virtio_gpu_update_cursor_t c;
+    virtio_gpu_cmd_update_cursor(&c, 0, img->resource_id, g_cursor_x, g_cursor_y);
+    if (virtio_gpu_dev_cursor_command(&c, sizeof(c)) != 0) return -1;
+    g_cursor_img = img;
+    return 0;
+}
+
+static void virtio_cursor_move(int x, int y) {
+    if (!g_cursor_img) return;   // belum ada image — tidak ada yang digerakkan
+    // Clamp defensif: koordinat negatif dibungkus uint32 di command → reject
+    // device. Mouse driver clamp ke layar, tapi jangan berasumsi.
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    g_cursor_x = (uint32_t)x; g_cursor_y = (uint32_t)y;
+    virtio_gpu_update_cursor_t c;
+    virtio_gpu_cmd_move_cursor(&c, 0, g_cursor_img->resource_id, g_cursor_x, g_cursor_y);
+    (void)virtio_gpu_dev_cursor_command(&c, sizeof(c));
+}
+
+// --- Statistik (Phase 2C §9.6) ---
+static int virtio_gpu_stats(ghal_gpu_stats_t* out) {
+    const virtio_gpu_stats_t* s = virtio_gpu_dev_stats();
+    out->present_count = s->present_count;
+    out->cmd_count     = s->cmd_count;
+    out->cmd_bytes     = s->cmd_bytes;
+    out->notify_count  = s->notify_count;
+    out->wait_calls    = s->wait_calls;
+    out->wait_ticks    = s->wait_ticks;
+    out->err_count     = s->err_count;
+    return 0;
 }
 
 const ghal_backend_ops_t virtio_gpu_backend_ops = {
     .name           = "virtio-gpu",
-    .capabilities   = GHAL_CAP_PARTIAL_FLUSH,
+    .capabilities   = GHAL_CAP_PARTIAL_FLUSH | GHAL_CAP_ASYNC_PRESENT |
+                      GHAL_CAP_HW_CURSOR,
     .init           = virtio_init,
     .shutdown       = virtio_shutdown,
     .surface_create = virtio_surface_create,
     .surface_destroy= virtio_surface_destroy,
+    .surface_create_scanout = NULL,   // virtio: resource biasa jadi scanout
     .surface_upload = virtio_surface_upload,
     .fill_rect      = virtio_fill_rect,
     .blit           = virtio_blit,
     .present        = virtio_present,
-    .cursor_update  = NULL,   // Phase 2C
-    .cursor_move    = NULL,
+    .present_fence  = virtio_present_fence,
+    .fence_pending  = virtio_fence_pending,
+    .fence_wait     = virtio_fence_wait,
+    .cursor_update  = virtio_cursor_update,
+    .cursor_move    = virtio_cursor_move,
+    .gpu_stats      = virtio_gpu_stats,
 };

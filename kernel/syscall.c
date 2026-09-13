@@ -10,6 +10,7 @@
 #include "usercopy.h"
 #include "uheap.h"
 #include "smap.h"
+#include "ghal.h"   // Phase 2C §9.6: sys_gpu_stats — lewat kontrak HAL, bukan driver core (rule §5.5)
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -840,6 +841,12 @@ void syscall_handler(registers_t *r) {
         if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) {
             ret_val = (uint64_t)kfs_create_folder(kf);
         }
+    }
+    else if (syscall_num == 65) { // sys_gpu_stats(buf) — Phase 2C §9.6
+        // buf = ghal_gpu_stats_t (7 x uint64), mirror gpu_stats_t di userlib.h.
+        ghal_gpu_stats_t st;
+        if (ghal_gpu_stats(&st) != 0) ret_val = (uint64_t)-1;
+        else ret_val = (copy_to_user(&uc, r->rbx, &st, sizeof(st)) == 0) ? 0 : (uint64_t)-1;
     }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)

@@ -34,6 +34,9 @@
 #define VIRTQ_DESC_F_NEXT   1
 #define VIRTQ_DESC_F_WRITE  2
 
+// --- ctrl_hdr.flags (VirtIO-GPU spec: request fence pada response) ---
+#define VIRTIO_GPU_FLAG_FENCE  (1u << 0)
+
 // --- Feature bits (virtio-gpu) ---
 #define VIRTIO_GPU_F_VIRGL          (1u << 0)
 #define VIRTIO_GPU_F_EDID           (1u << 1)
@@ -194,6 +197,17 @@ typedef struct {
     uint32_t resource_id;
     uint32_t padding;
 } __attribute__((packed)) virtio_gpu_resource_flush_t;
+
+// --- UPDATE_CURSOR / MOVE_CURSOR (spec: virtio_gpu_update_cursor) ---
+// resource 64x64 (format dengan alpha). x,y = posisi kiri-atas plane
+// kursor di scanout. resource_id=0 pada MOVE_CURSOR = sembunyikan.
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t scanout_id;
+    uint32_t resource_id;
+    uint32_t x;
+    uint32_t y;
+} __attribute__((packed)) virtio_gpu_update_cursor_t;
 
 // --- TRANSFER_TO_HOST_2D ---
 typedef struct {

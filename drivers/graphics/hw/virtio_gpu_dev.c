@@ -11,6 +11,7 @@
 #include "io.h"
 #include "gpu_alloc.h"
 #include "spinlock.h"
+#include "timer.h"        // timer_get_ticks — stat wait_ticks §9.6
 #include <string.h>
 
 extern uint64_t hhdm_offset;
@@ -177,14 +178,31 @@ static int negotiate_features(void) {
     return 0;
 }
 
+static void serial_log_hex32(uint32_t v);   // fwd (definisi di bawah)
+
 // --- Setup kedua virtqueue ---
+// queue_size 32: present async butuh sampai 8 chain (4 rect x transfer+flush)
+// = 16 descriptor, plus headroom command sinkron (SET_SCANOUT). QEMU menawarkan
+// 64 untuk controlq — 32 memberi margin tanpa memboroskan ring.
 static int setup_queues(void) {
-    int r = virtq_init(&g_vgpu.controlq, 0, 16, g_vgpu.common, g_vgpu.notify_base,
+    int r = virtq_init(&g_vgpu.controlq, 0, 32, g_vgpu.common, g_vgpu.notify_base,
                        g_vgpu.notify_off_multiplier);
     if (r != 0) return -1;
     r = virtq_init(&g_vgpu.cursorq, 1, 16, g_vgpu.common, g_vgpu.notify_base,
                    g_vgpu.notify_off_multiplier);
     if (r != 0) return -1;
+    // DEBUG notify routing (hapus setelah diagnosis)
+    serial_log("[vgpu] q0 notify_off=");
+    serial_log_hex32((uint32_t)((uint8_t*)g_vgpu.controlq.notify_addr - (uint8_t*)g_vgpu.notify_base));
+    serial_log(" q1 notify_off=");
+    serial_log_hex32((uint32_t)((uint8_t*)g_vgpu.cursorq.notify_addr - (uint8_t*)g_vgpu.notify_base));
+    serial_log(" mult=");
+    serial_log_hex32(g_vgpu.notify_off_multiplier);
+    serial_log("\n");
+    if (g_vgpu.controlq.queue_size > VGPU_FENCE_MAX_HEADS) {
+        serial_log("[vgpu] queue_size melebihi tabel fence\n");
+        return -1;
+    }
     return 0;
 }
 
@@ -199,6 +217,8 @@ static int finalize_driver_ok(void) {
     if (st & VIRTIO_STATUS_DEVICE_NEEDS_RESET) return -1;
     return 0;
 }
+
+static void serial_log_hex32(uint32_t v);
 
 int virtio_gpu_dev_probe(void) {
     if (g_vgpu.initialized) return 0;
@@ -252,11 +272,26 @@ int virtio_gpu_dev_probe(void) {
         return -1;
     }
 
+    // Phase 2C §9.4 — halaman cursorq. Gagal = non-fatal: cursor_command
+    // return -1 dan compositor fallback ke software cursor.
+    g_vgpu.cursor_lock.locked = 0;
+    if (gpu_alloc_page(&g_vgpu.cursor_page) != 0) {
+        serial_log("[vgpu] cursor buffer alloc failed (hw cursor off)\n");
+    }
+
     g_vgpu.num_scanouts = g_vgpu.device_cfg ? g_vgpu.device_cfg->num_scanouts : 1;
     g_vgpu.initialized = 1;
     g_vgpu.negotiation_done = 1;
     serial_log("[vgpu] device ready\n");
     return 0;
+}
+
+// --- Phase 2C §9.6 — stat wait (timer ticks, kualitatif) ---
+static void stats_wait_begin(uint64_t* t0) { *t0 = timer_get_ticks(); }
+static void stats_wait_end(uint64_t t0) {
+    g_vgpu.stats.wait_calls++;
+    uint64_t now = timer_get_ticks();
+    if (now >= t0) g_vgpu.stats.wait_ticks += (now - t0);
 }
 
 static uint32_t g_resource_counter = 1;   // 0 reserved
@@ -265,9 +300,94 @@ uint32_t virtio_gpu_next_resource_id(void) {
     return g_resource_counter++;
 }
 
+// ------------------------------------------------------------
+// Phase 2C — bookkeeping reap (dipakai jalur sinkron & jalur fence)
+// ------------------------------------------------------------
+
+// Log angka hex 8-digit (post-mortem: response code device di serial).
+static void serial_log_hex32(uint32_t v) {
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[11];
+    buf[0] = '0'; buf[1] = 'x';
+    for (int i = 0; i < 8; i++)
+        buf[2 + i] = hex[(v >> (28 - 4 * i)) & 0xF];
+    buf[10] = 0;
+    serial_log(buf);
+}
+
+// Setiap chain yang selesai dari used ring: update last_fence_done dari
+// tabel fence, baca response slot async untuk error log, bersihkan state.
+static void dev_on_reap(uint32_t head) {
+    if (head >= VGPU_FENCE_MAX_HEADS) return;
+    uint64_t f = g_vgpu.fence_of_head[head];
+    if (f == 0) return;
+    if (f > g_vgpu.last_fence_done) g_vgpu.last_fence_done = f;
+    g_vgpu.fence_of_head[head] = 0;
+
+    uint8_t slot = g_vgpu.slot_of_head[head];
+    g_vgpu.slot_of_head[head] = 0;
+    if (slot != 0 && g_vgpu.resp_page.virt != NULL) {
+        uint32_t type = 0;
+        memcpy(&type,
+               (uint8_t*)g_vgpu.resp_page.virt + VGPU_RESP_SYNC_MAX + (uint32_t)slot * VGPU_RESP_SLOT,
+               sizeof(type));
+        if (type != VIRTIO_GPU_RESP_OK_NODATA) {
+            g_vgpu.stats.err_count++;
+            serial_log("[vgpu] async cmd error resp type=");
+            serial_log_hex32(type);
+            serial_log("\n");
+        }
+    }
+}
+
+// Blocking sampai chain `head` muncul di used ring (timeout §6.9).
+// Chain lain yang selesai di tengah jalan ikut di-reap + tercatat —
+// device memproses controlq in-order, jadi fence bisa selesai di tengah
+// wait command sinkron dan tabel fence tidak boleh melewatkannya.
+static int dev_wait_head(uint32_t head, uint32_t* out_len) {
+    uint64_t t0;
+    stats_wait_begin(&t0);
+    uint32_t iter = 0;
+    int r = -1;
+    for (;;) {
+        uint32_t h = 0, l = 0;
+        if (virtq_poll(&g_vgpu.controlq, &h, &l) == 0) {
+            dev_on_reap(h);
+            if (h == head) {
+                if (out_len) *out_len = l;
+                r = 0;
+                break;
+            }
+            continue;
+        }
+        if (++iter > VIRTQ_POLL_MAX_ITER) break;
+        __asm__ volatile("pause");
+    }
+    stats_wait_end(t0);
+    return r;
+}
+
+// Slot response async round-robin (1..VGPU_RESP_N_ASYNC-1; 0 = "tanpa slot").
+// Reuse hanya setelah 55 submit async — dengan backpressure fence (≤ ~10
+// chain in-flight) collision tak mungkin; worst case salah slot hanya
+// merusak error-log, bukan data present.
+static uint8_t vgpu_next_slot(void) {
+    uint32_t s = g_vgpu.async_slot_seq % (VGPU_RESP_N_ASYNC - 1);
+    g_vgpu.async_slot_seq++;
+    return (uint8_t)(s + 1);
+}
+
 // --- Kirim command: bangun descriptor chain (cmd buffer, resp buffer),
 // submit, notify, wait. Command & response live di halaman physical agar
 // device (DMA) bisa akses. ---
+//
+// Response sinkron menempati offset 0 resp_page (region VGPU_RESP_SYNC_MAX,
+// cukup untuk GET_DISPLAY_INFO 408 B) — TIDAK mem-nolkan seluruh halaman,
+// karena slot async di atasnya bisa sedang dipakai chain in-flight.
+//
+// Wait memakai reap-loop virtq_poll (bukan virtq_wait) supaya chain async
+// yang selesai lebih dulu ikut tercatat di tabel fence — chain FIFO device
+// berarti completion fence bisa terjadi di tengah wait command sinkron.
 int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
                            void* out, uint32_t out_len) {
     if (!g_vgpu.initialized) return -1;
@@ -278,6 +398,8 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
 
     // IRQ-safe: buffer pre-alokasi dipakai ulang, dilindungi lock.
     uint64_t lock_flags = spinlock_lock_irqsave(&g_vgpu.cmd_lock);
+    g_vgpu.stats.cmd_count++;
+    g_vgpu.stats.cmd_bytes += cmd_len;
 
     // Halaman command TIDAK contiguous — copy per halaman, jangan sekali memcpy
     // (memcpy cmd_len ke cmd_pages[0] akan meluber ke memori lain).
@@ -291,7 +413,10 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
             left -= chunk;
         }
     }
-    if (out && out_len) memset(g_vgpu.resp_page.virt, 0, 4096);
+    if (out && out_len) {
+        uint32_t clear = out_len > VGPU_RESP_SYNC_MAX ? VGPU_RESP_SYNC_MAX : out_len;
+        memset(g_vgpu.resp_page.virt, 0, clear);
+    }
 
     uint64_t addrs[VGPU_CMD_MAX_PAGES + 1];
     uint32_t lens[VGPU_CMD_MAX_PAGES + 1];
@@ -305,7 +430,7 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
     }
     if (out && out_len) {
         addrs[nb] = g_vgpu.resp_page.phys;
-        lens[nb]  = out_len > 4096 ? 4096 : out_len;
+        lens[nb]  = out_len > VGPU_RESP_SYNC_MAX ? VGPU_RESP_SYNC_MAX : out_len;
         flags[nb] = VIRTQ_DESC_F_WRITE;
         nb++;
     }
@@ -315,20 +440,234 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
         spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
         return -1;
     }
-    virtq_notify(&g_vgpu.controlq);
-    uint32_t written = 0;
-    int r = virtq_wait(&g_vgpu.controlq, head, &written);
-    if (r != 0) {
-        spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
-        return -1;
+    if ((uint32_t)head < VGPU_FENCE_MAX_HEADS) {
+        g_vgpu.fence_of_head[head] = 0;   // command sinkron — tanpa fence
+        g_vgpu.slot_of_head[head] = 0;
     }
+    g_vgpu.stats.notify_count++;
+    virtq_notify(&g_vgpu.controlq);
 
-    if (out && out_len) {
+    uint32_t written = 0;
+    int done = dev_wait_head((uint32_t)head, &written);
+
+    if (out && out_len && done == 0) {
         uint32_t copy = out_len;
+        if (copy > VGPU_RESP_SYNC_MAX) copy = VGPU_RESP_SYNC_MAX;
         if (copy > 4096) copy = 4096;
         memcpy(out, g_vgpu.resp_page.virt, copy);
     }
 
     spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
+    return done;
+}
+
+// ------------------------------------------------------------
+// Phase 2C §9.1/§9.2 — batch submit + fence async present
+// ------------------------------------------------------------
+
+// Kirim DUA command sebagai DUA chain terpisah (spec virtio-gpu: SATU
+// command per chain — menggabungkan dua ctrl_hdr dalam satu buffer membuat
+// QEMU memproses command pertama dan MEMBUANG sisanya), SATU notify, TANPA
+// menunggu completion. Completion diverifikasi lewat fence di titik
+// backpressure (compositor: ghal_fence_wait sebelum upload frame berikutnya).
+uint64_t virtio_gpu_dev_submit2(const void* cmd1, uint32_t cmd1_len,
+                                const void* cmd2, uint32_t cmd2_len) {
+    if (!g_vgpu.initialized) return 0;
+    if (cmd1_len == 0 || cmd2_len == 0) return 0;
+    if (cmd1_len > 4096 || cmd2_len > 4096) return 0;
+    if (g_vgpu.cmd_pages_n < 2) return 0;
+
+    // Dua chain x 2 descriptor. Bila freelist mepet, coba reap dulu —
+    // completion frame sebelumnya mungkin belum pernah di-poll.
+    if (g_vgpu.controlq.num_free < 8) virtio_gpu_dev_poll_fences();
+    if (g_vgpu.controlq.num_free < 4) {
+        serial_log("[vgpu] submit2: descriptor habis, num_free=");
+        serial_log_hex32(g_vgpu.controlq.num_free);
+        serial_log(" last_used=");
+        serial_log_hex32(g_vgpu.controlq.last_used_idx);
+        serial_log(" used_idx=");
+        serial_log_hex32(g_vgpu.controlq.used->idx);
+        serial_log(" fence_done=");
+        serial_log_hex32((uint32_t)g_vgpu.last_fence_done);
+        serial_log(" fence_ctr=");
+        serial_log_hex32((uint32_t)g_vgpu.fence_counter);
+        serial_log("\n");
+        return 0;
+    }
+
+    uint64_t lock_flags = spinlock_lock_irqsave(&g_vgpu.cmd_lock);
+    g_vgpu.stats.cmd_count += 2;
+    g_vgpu.stats.cmd_bytes += (uint64_t)cmd1_len + cmd2_len;
+
+    memcpy(g_vgpu.cmd_pages[0].virt, cmd1, cmd1_len);
+    memcpy(g_vgpu.cmd_pages[1].virt, cmd2, cmd2_len);
+
+    uint64_t fence = ++g_vgpu.fence_counter;
+    virtio_gpu_ctrl_hdr_t* ch1 = (virtio_gpu_ctrl_hdr_t*)g_vgpu.cmd_pages[0].virt;
+    virtio_gpu_ctrl_hdr_t* ch2 = (virtio_gpu_ctrl_hdr_t*)g_vgpu.cmd_pages[1].virt;
+    ch1->flags |= VIRTIO_GPU_FLAG_FENCE;
+    ch1->fence_id = fence;
+    ch2->flags |= VIRTIO_GPU_FLAG_FENCE;
+    ch2->fence_id = fence;
+
+    uint8_t s1 = vgpu_next_slot();
+    uint8_t s2 = vgpu_next_slot();
+    uint64_t resp1 = g_vgpu.resp_page.phys + VGPU_RESP_SYNC_MAX + (uint32_t)s1 * VGPU_RESP_SLOT;
+    uint64_t resp2 = g_vgpu.resp_page.phys + VGPU_RESP_SYNC_MAX + (uint32_t)s2 * VGPU_RESP_SLOT;
+
+    uint64_t addrs[2];
+    uint32_t lens[2];
+    uint16_t flags[2];
+
+    addrs[0] = g_vgpu.cmd_pages[0].phys; lens[0] = cmd1_len; flags[0] = 0;
+    addrs[1] = resp1; lens[1] = VGPU_RESP_SLOT; flags[1] = VIRTQ_DESC_F_WRITE;
+    int head1 = virtq_submit(&g_vgpu.controlq, addrs, lens, flags, 2);
+
+    addrs[0] = g_vgpu.cmd_pages[1].phys; lens[0] = cmd2_len;
+    addrs[1] = resp2;
+    int head2 = (head1 >= 0) ? virtq_submit(&g_vgpu.controlq, addrs, lens, flags, 2) : -1;
+
+    if (head1 >= 0) {
+        g_vgpu.fence_of_head[head1] = fence;
+        g_vgpu.slot_of_head[head1] = s1;
+    }
+    if (head2 >= 0) {
+        g_vgpu.fence_of_head[head2] = fence;
+        g_vgpu.slot_of_head[head2] = s2;
+    }
+
+    if (head1 >= 0 && head2 >= 0) {
+        g_vgpu.stats.notify_count++;
+        virtq_notify(&g_vgpu.controlq);   // SATU notify untuk dua chain
+        spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
+        return fence;
+    }
+
+    // Degradasi (praktis tak terjadi bila pre-check lolos — single-context):
+    // apa yang sudah masuk avail tetap di-notify supaya chain tidak
+    // menggantung di ring, tapi batch dianggap gagal — caller skip present
+    // rect ini (semantik §8.10: frame dilewati, dirty state dipertahankan).
+    serial_log("[vgpu] submit2 partial submit\n");
+    g_vgpu.stats.notify_count++;
+    g_vgpu.stats.err_count++;
+    virtq_notify(&g_vgpu.controlq);
+    if (head1 >= 0) { uint32_t l; dev_wait_head((uint32_t)head1, &l); }
+    spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
     return 0;
+}
+
+int virtio_gpu_dev_poll_fences(void) {
+    if (!g_vgpu.initialized) return -1;
+    int n = 0;
+    for (;;) {
+        uint32_t h = 0, l = 0;
+        if (virtq_poll(&g_vgpu.controlq, &h, &l) != 0) break;
+        dev_on_reap(h);
+        n++;
+    }
+    return n;
+}
+
+int virtio_gpu_dev_fence_done(uint64_t fence) {
+    if (!g_vgpu.initialized || fence == 0) return 0;
+    virtio_gpu_dev_poll_fences();
+    return (fence <= g_vgpu.last_fence_done) ? 1 : 0;
+}
+
+int virtio_gpu_dev_fence_wait(uint64_t fence) {
+    if (!g_vgpu.initialized || fence == 0) return 0;
+    uint64_t t0;
+    stats_wait_begin(&t0);
+    uint32_t iter = 0;
+    int r = -1;
+    for (;;) {
+        uint32_t h = 0, l = 0;
+        if (virtq_poll(&g_vgpu.controlq, &h, &l) == 0) {
+            dev_on_reap(h);
+            if (fence <= g_vgpu.last_fence_done) { r = 0; break; }
+            continue;
+        }
+        if (fence <= g_vgpu.last_fence_done) { r = 0; break; }
+        if (++iter > VIRTQ_POLL_MAX_ITER) break;
+        __asm__ volatile("pause");
+    }
+    stats_wait_end(t0);
+    return r;
+}
+
+// ------------------------------------------------------------
+// Phase 2C §9.4 — command lewat CURSORQ (UPDATE/MOVE_CURSOR)
+// ------------------------------------------------------------
+
+// Synchronous submit→notify→wait di cursorq. Lock sendiri (cursor_lock):
+// dipanggil dari dua konteks — compositor_flush (timer IRQ, cursor_move)
+// dan syscall kwm_set_cursor (cursor_update). Response dibaca dari offset
+// 512 halaman cursor (cmd di offset 0).
+int virtio_gpu_dev_cursor_command(const void* cmd, uint32_t cmd_len) {
+    if (!g_vgpu.initialized) return -1;
+    if (cmd_len == 0 || cmd_len > 512) return -1;
+    if (g_vgpu.cursor_page.virt == NULL) return -1;   // alloc probe gagal
+
+    uint64_t lock_flags = spinlock_lock_irqsave(&g_vgpu.cursor_lock);
+    g_vgpu.stats.cmd_count++;
+    g_vgpu.stats.cmd_bytes += cmd_len;
+
+    memcpy(g_vgpu.cursor_page.virt, cmd, cmd_len);
+    uint8_t* rbase = (uint8_t*)g_vgpu.cursor_page.virt;
+    memset(rbase + 512, 0, 64);
+
+    uint64_t addrs[2];
+    uint32_t lens[2];
+    uint16_t flags[2];
+    addrs[0] = g_vgpu.cursor_page.phys; lens[0] = cmd_len; flags[0] = 0;
+    addrs[1] = g_vgpu.cursor_page.phys + 512; lens[1] = 64; flags[1] = VIRTQ_DESC_F_WRITE;
+
+    int head = virtq_submit(&g_vgpu.cursorq, addrs, lens, flags, 2);
+    if (head < 0) {
+        serial_log("[vgpu] cursorq submit penuh\n");
+        spinlock_unlock_irqrestore(&g_vgpu.cursor_lock, lock_flags);
+        return -1;
+    }
+    serial_log("[vgpu] cursorq submit head=");
+    serial_log_hex32((uint32_t)head);
+    serial_log("\n");
+    g_vgpu.stats.notify_count++;
+    virtq_notify(&g_vgpu.cursorq);
+
+    uint64_t t0;
+    stats_wait_begin(&t0);
+    uint32_t iter = 0;
+    int r = -1;
+    for (;;) {
+        uint32_t h = 0, l = 0;
+        if (virtq_poll(&g_vgpu.cursorq, &h, &l) == 0) {
+            if (h == (uint32_t)head) { r = 0; break; }
+            continue;   // chain lama selesai lebih dulu — direclaim oleh poll
+        }
+        if (++iter > VIRTQ_POLL_MAX_ITER) {
+            serial_log("[vgpu] cursorq WAIT TIMEOUT\n");
+            break;
+        }
+        __asm__ volatile("pause");
+    }
+    stats_wait_end(t0);
+
+    if (r == 0) {
+        uint32_t type = 0;
+        memcpy(&type, rbase + 512, sizeof(type));
+        if (type != VIRTIO_GPU_RESP_OK_NODATA) {
+            g_vgpu.stats.err_count++;
+            serial_log("[vgpu] cursor cmd error resp type=");
+            serial_log_hex32(type);
+            serial_log("\n");
+            r = -1;
+        }
+    }
+
+    spinlock_unlock_irqrestore(&g_vgpu.cursor_lock, lock_flags);
+    return r;
+}
+
+const virtio_gpu_stats_t* virtio_gpu_dev_stats(void) {
+    return &g_vgpu.stats;
 }

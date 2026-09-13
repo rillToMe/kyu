@@ -36,6 +36,19 @@ typedef struct {
 #define GHAL_CAP_ASYNC_PRESENT  (1u << 1)   // present non-blocking (fence-based)
 #define GHAL_CAP_PARTIAL_FLUSH  (1u << 2)   // resource_flush per-rect
 
+// Statistik GPU (§9.6). Counter kumulatif sejak boot; konsumen menghitung
+// delta per-frame dari dua sampel. Layout ini juga mirror di include/userlib.h
+// (gpu_stats_t, ABI syscall 65) — jangan ubah urutan field tanpa sinkron.
+typedef struct {
+    uint64_t present_count;   // frame present
+    uint64_t cmd_count;       // command device terkirim
+    uint64_t cmd_bytes;       // byte payload command
+    uint64_t notify_count;    // virtq_notify (kick) — metrik batching §9.1
+    uint64_t wait_calls;      // panggilan blocking-wait
+    uint64_t wait_ticks;      // total waktu blocking (timer ticks)
+    uint64_t err_count;       // response error device
+} ghal_gpu_stats_t;
+
 typedef struct {
     const char* name;                        // "software" / "virtio-gpu"
     uint32_t    capabilities;                // bitmask GHAL_CAP_*
@@ -45,6 +58,11 @@ typedef struct {
 
     ghal_surface_t* (*surface_create)(uint32_t w, uint32_t h, ghal_format_t fmt);
     void            (*surface_destroy)(ghal_surface_t* s);
+
+    // Buat scanout surface (framebuffer utama). Boleh NULL — HAL jatuh ke
+    // surface_create biasa. Backend software memakainya untuk membungkus
+    // framebuffer hardware langsung (menghindari double-copy).
+    ghal_surface_t* (*surface_create_scanout)(uint32_t w, uint32_t h, ghal_format_t fmt);
 
     // Upload dari system memory (canvas app) ke surface backend.
     // WAJIB ada di semua backend — software backend = memcpy.
@@ -56,12 +74,30 @@ typedef struct {
                  ghal_surface_t* src, ghal_rect_t src_rect);
 
     // Present: surface jadi scanout aktif. rect==NULL = full flush.
+    // Pada backend dengan GHAL_CAP_ASYNC_PRESENT, present TIDAK blocking —
+    // completion diverifikasi lewat fence (ops di bawah, §9.2).
     void (*present)(ghal_surface_t* s, const ghal_rect_t* rect);
+
+    // Fence async present (opsional — WAJIB NULL pada backend tanpa
+    // GHAL_CAP_ASYNC_PRESENT, pola fail-fast yang sama dengan cursor ops).
+    //   present_fence: fence_id present terakhir (0 = belum ada).
+    //   fence_pending: 1 = masih in-flight di device (poll dulu), 0 = selesai.
+    //   fence_wait   : block sampai fence selesai (timeout §6.9 driver core).
+    uint64_t (*present_fence)(void);
+    int      (*fence_pending)(uint64_t fence);
+    void     (*fence_wait)(uint64_t fence);
 
     // Hardware cursor (opsional — cek GHAL_CAP_HW_CURSOR sebelum panggil).
     // Backend tanpa cap ini WAJIB set ke NULL, bukan no-op silent.
-    void (*cursor_update)(ghal_surface_t* cursor_img, int hot_x, int hot_y);
+    // cursor_update: definisikan gambar kursor dari surface 64x64 ARGB8888
+    //   (resource harus sudah di-upload). Return 0 sukses, <0 gagal — caller
+    //   (compositor) fallback ke software cursor bila gagal.
+    int  (*cursor_update)(ghal_surface_t* cursor_img, int hot_x, int hot_y);
     void (*cursor_move)(int x, int y);
+
+    // Statistik device (Phase 2C §9.6, opsional — NULL bila tidak ada).
+    // Return 0 sukses; <0 bila backend tidak menyediakan.
+    int (*gpu_stats)(ghal_gpu_stats_t* out);
 } ghal_backend_ops_t;
 
 // --- API publik dipanggil compositor ---
@@ -71,6 +107,16 @@ const char* ghal_active_backend_name(void);
 uint32_t    ghal_capabilities(void);
 
 ghal_surface_t* ghal_surface_create(uint32_t w, uint32_t h, ghal_format_t fmt);
+
+// Buat SCANOUT surface (framebuffer utama compositor). Berbeda dari
+// surface_create biasa: backend software MEMBUNGKUS framebuffer hardware
+// (tanpa buffer perantara — upload menulis langsung ke layar, present no-op),
+// sedangkan backend virtio membuat resource + backing seperti biasa.
+//
+// Ini menghindari double-copy (backbuffer → surface → framebuffer) yang
+// membuat present software 2x lebih mahal dari jalur langsung lama.
+ghal_surface_t* ghal_surface_create_scanout(uint32_t w, uint32_t h, ghal_format_t fmt);
+
 void            ghal_surface_destroy(ghal_surface_t* s);
 void ghal_surface_upload(ghal_surface_t* s, const uint32_t* src,
                          uint32_t src_pitch, ghal_rect_t rect);
@@ -78,6 +124,32 @@ void ghal_fill_rect(ghal_surface_t* dst, ghal_rect_t rect, uint32_t argb);
 void ghal_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
                ghal_surface_t* src, ghal_rect_t src_rect);
 void ghal_present(ghal_surface_t* s, const ghal_rect_t* rect);
+
+// --- Fence async present (Phase 2C §9.2) ---
+// Compositor pola pakai: sebelum upload/present frame baru, panggil
+// ghal_fence_wait(fence frame sebelumnya) — backpressure alami supaya
+// backing surface tidak ditimpa saat device masih membacanya. Pada backend
+// sync (tanpa GHAL_CAP_ASYNC_PRESENT) semuanya no-op aman.
+uint64_t ghal_present_fence(void);            // fence_id present terakhir (0 = tidak ada)
+int      ghal_fence_pending(uint64_t fence);  // 1 = masih in-flight
+void     ghal_fence_wait(uint64_t fence);     // block sampai selesai
+
+// --- Hardware cursor (Phase 2C §9.4) ---
+// ghal_cursor_update: definisikan gambar kursor (surface 64x64 ARGB8888 —
+// 0xAARRGGBB per piksel; 0 = transparan). Return 0 sukses, <0 bila backend
+// tidak mendukung / gagal — compositor fallback ke software cursor.
+// ghal_cursor_move: posisi baru kiri-atas plane kursor (no-op bila image
+// belum pernah di-set).
+int  ghal_cursor_update(ghal_surface_t* cursor_img, int hot_x, int hot_y);
+void ghal_cursor_move(int x, int y);
+
+// --- Statistik GPU (Phase 2C §9.6) ---
+// 0 sukses, <0 bila backend tidak menyediakan (software).
+int  ghal_gpu_stats(ghal_gpu_stats_t* out);
+
+// Dump statistik ke TTY (shell command `gpu`, awal §9.8). Aman dipanggil
+// kapan pun setelah ghal_init.
+void ghal_stats_dump(void);
 
 // Diagnostics: pesan error statis dari operasi terakhir yang gagal.
 const char* ghal_last_error(void);

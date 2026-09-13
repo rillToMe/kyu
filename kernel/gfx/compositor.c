@@ -4,6 +4,7 @@
 #include "display.h"
 #include "spinlock.h"
 #include "aa_math.h"
+#include "heap.h"     // kmalloc/kfree — buffer image kursor HW (§9.4)
 #include "ghal.h"     // Phase 2B: present lewat Graphics HAL
 
 extern int32_t mouse_x;
@@ -286,12 +287,82 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
     }
 }
 
+// ------------------------------------------------------------
+// Phase 2C §9.4 — hardware cursor
+// Image 64x64 ARGB8888 di-render dari bitmap software yang sama (1=putih,
+// 2=hitam, 0=transparan) supaya output visual identik. Saat aktif, kursor
+// TIDAK lagi digambar ke backbuffer dan gerakannya tidak men-dirty layar —
+// device meng-composite plane kursor di atas scanout.
+// ------------------------------------------------------------
+#define HW_CURSOR_SIZE 64
+static ghal_surface_t* g_hw_cursor_surface;   // resource kursor (owner compositor)
+static uint32_t*       g_cursor_img_buf;      // 64x64 ARGB scratch
+static int             g_hw_cursor_active = 0;
+static int             g_hw_cursor_kind = -1;
+
+static void hw_cursor_fill(int kind) {
+    const uint8_t (*bm)[12] = kind == 0 ? cursor_bitmap
+                            : kind == 1 ? g_ibeam_bitmap
+                            : g_hand_bitmap;
+    for (int y = 0; y < HW_CURSOR_SIZE; y++) {
+        uint32_t* row = g_cursor_img_buf + y * HW_CURSOR_SIZE;
+        for (int x = 0; x < HW_CURSOR_SIZE; x++) {
+            uint32_t c = 0x00000000;   // transparan
+            if (x < CURSOR_WIDTH && y < CURSOR_HEIGHT) {
+                uint8_t p = bm[y][x];
+                if (p == 1) c = 0xFFFFFFFF;      // putih opaque
+                else if (p == 2) c = 0xFF000000; // hitam opaque
+            }
+            row[x] = c;
+        }
+    }
+}
+
+// Fill + upload + UPDATE_CURSOR ke device. Return 0 sukses.
+static int hw_cursor_set_kind(int kind) {
+    if (!g_hw_cursor_active || !g_hw_cursor_surface || !g_cursor_img_buf) return -1;
+    g_hw_cursor_kind = kind;
+    hw_cursor_fill(kind);
+    ghal_rect_t full = { 0, 0, HW_CURSOR_SIZE, HW_CURSOR_SIZE };
+    ghal_surface_upload(g_hw_cursor_surface, g_cursor_img_buf, HW_CURSOR_SIZE, full);
+    return ghal_cursor_update(g_hw_cursor_surface, 0, 0);
+}
+
+// Dipanggil dari compositor_ghal_init (task context — kmalloc + command
+// virtqueue tidak boleh di IRQ). Gagal di titik mana pun = fallback permanen
+// ke software cursor (jalur lama tetap utuh).
+static void compositor_hw_cursor_init(void) {
+    if (!(ghal_capabilities() & GHAL_CAP_HW_CURSOR)) return;
+    g_cursor_img_buf = (uint32_t*)kmalloc(HW_CURSOR_SIZE * HW_CURSOR_SIZE * 4);
+    if (!g_cursor_img_buf) return;
+    g_hw_cursor_surface = ghal_surface_create(HW_CURSOR_SIZE, HW_CURSOR_SIZE, GHAL_FMT_ARGB8888);
+    if (!g_hw_cursor_surface) {
+        kfree(g_cursor_img_buf);
+        g_cursor_img_buf = NULL;
+        return;
+    }
+    g_hw_cursor_active = 1;
+    if (hw_cursor_set_kind(g_cursor_kind) != 0) {
+        // Device menolak cursor (plane tidak tersedia dsb.) — rollback.
+        g_hw_cursor_active = 0;
+        ghal_surface_destroy(g_hw_cursor_surface);
+        g_hw_cursor_surface = NULL;
+        kfree(g_cursor_img_buf);
+        g_cursor_img_buf = NULL;
+    }
+}
+
 // Phase 9 — ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
-// Dipanggil dari syscall 58 (sys_kwm_set_cursor). Menandai rect kursor
-// saat ini dirty agar komposit berikutnya memakai bentuk baru.
+// Dipanggil dari syscall 58 (sys_kwm_set_cursor). Hardware cursor (§9.4):
+// re-definisi plane device (sync, task context). Software cursor: tandai
+// rect kursor dirty agar komposit berikutnya memakai bentuk baru.
 void kwm_set_cursor(int kind) {
     if (kind < 0 || kind >= 3) return;
     g_cursor_kind = kind;
+    if (g_hw_cursor_active) {
+        (void)hw_cursor_set_kind(kind);
+        return;
+    }
     screen_mark_dirty(mouse_x, mouse_y, CURSOR_WIDTH, CURSOR_HEIGHT);
 }
 
@@ -314,11 +385,23 @@ void kwm_set_cursor(int kind) {
 // ============================================================
 static ghal_surface_t* g_main_surface;
 
+// Fence present terakhir (Phase 2C §9.2). 0 = belum ada / backend sync.
+// Di-wait di awal flush BERIKUTNYA — sebelum upload menimpa backing yang
+// mungkin masih dibaca DMA device (backpressure alami, bukan command baru
+// menimpa command lama yang belum selesai).
+static uint64_t g_present_fence = 0;
+
+
 // Dipanggil dari kernel_main SETELAH ghal_init(), sebelum timer_callbacks_init.
 void compositor_ghal_init(void) {
     if (g_main_surface != NULL) return;
     if (fb_width == 0) return;
-    g_main_surface = ghal_surface_create(fb_width, fb_height, GHAL_FMT_XRGB8888);
+    // Scanout surface: backend software MEMBUNGKUS framebuffer HW (zero-copy —
+    // upload menulis langsung ke layar, present no-op). Backend virtio membuat
+    // resource + backing seperti biasa.
+    g_main_surface = ghal_surface_create_scanout(fb_width, fb_height, GHAL_FMT_XRGB8888);
+    // Phase 2C §9.4 — hardware cursor bila backend mendukung (fallback aman).
+    compositor_hw_cursor_init();
 }
 
 void compositor_flush() {
@@ -335,14 +418,27 @@ void compositor_flush() {
     spinlock_unlock_irqrestore(&g_dirty_lock, flags);
 
     // Cursor moves every frame it's dragged; both the vacated and the new cell
-    // must repaint, so fold them into the dirty set.
+    // must repaint, so fold them into the dirty set. Hardware cursor (§9.4):
+    // gerakan TIDAK men-dirty layar (plane device yang bergeser) — cukup
+    // MOVE_CURSOR; bila tak ada dirty lain, flush bisa langsung selesai.
     int32_t cx = mouse_x, cy = mouse_y;
-    if (g_last_cursor_x >= 0) {
-        Rect old = { g_last_cursor_x, g_last_cursor_y, CURSOR_WIDTH, CURSOR_HEIGHT };
-        dirty_region_mark(&dirty, old);
+    if (g_hw_cursor_active) {
+        if (dirty.count == 0) {
+            if (cx != g_last_cursor_x || cy != g_last_cursor_y) {
+                ghal_cursor_move(cx, cy);
+                g_last_cursor_x = cx;
+                g_last_cursor_y = cy;
+            }
+            return;
+        }
+    } else {
+        if (g_last_cursor_x >= 0) {
+            Rect old = { g_last_cursor_x, g_last_cursor_y, CURSOR_WIDTH, CURSOR_HEIGHT };
+            dirty_region_mark(&dirty, old);
+        }
+        Rect cur = { cx, cy, CURSOR_WIDTH, CURSOR_HEIGHT };
+        dirty_region_mark(&dirty, cur);
     }
-    Rect cur = { cx, cy, CURSOR_WIDTH, CURSOR_HEIGHT };
-    dirty_region_mark(&dirty, cur);
 
     if (dirty.count == 0) return;
 
@@ -355,48 +451,76 @@ void compositor_flush() {
     }
     spinlock_unlock_irqrestore(&kwm_lock, kwm_flags);
 
-    const uint8_t (*cbm)[12] = g_cursor_kind == 0 ? cursor_bitmap
-                             : g_cursor_kind == 1 ? g_ibeam_bitmap
-                             : g_hand_bitmap;
-    for (int y = 0; y < CURSOR_HEIGHT; y++) {
-        for (int x = 0; x < CURSOR_WIDTH; x++) {
-            // Bug 5.5: cek batas BAWAH juga — koordinat negatif membuat offset
-            // bernilai negatif → write sebelum backbuffer.
-            if (cy + y < 0 || cx + x < 0 ||
-                cy + y >= (int32_t)fb_height || cx + x >= (int32_t)fb_width) continue;
-            uint32_t offset = ((cy + y) * pitch4) + (cx + x);
-            if (cbm[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
-            else if (cbm[y][x] == 2) backbuffer[offset] = 0x000000;
+    if (g_hw_cursor_active) {
+        // Hw cursor: kursor tidak digambar ke backbuffer — cukup MOVE_CURSOR
+        // saat posisi berubah (device meng-composite plane di atas scanout).
+        if (cx != g_last_cursor_x || cy != g_last_cursor_y)
+            ghal_cursor_move(cx, cy);
+    } else {
+        const uint8_t (*cbm)[12] = g_cursor_kind == 0 ? cursor_bitmap
+                         : g_cursor_kind == 1 ? g_ibeam_bitmap
+                         : g_hand_bitmap;
+        for (int y = 0; y < CURSOR_HEIGHT; y++) {
+            for (int x = 0; x < CURSOR_WIDTH; x++) {
+                // Bug 5.5: cek batas BAWAH juga — koordinat negatif membuat offset
+                // bernilai negatif → write sebelum backbuffer.
+                if (cy + y < 0 || cx + x < 0 ||
+                    cy + y >= (int32_t)fb_height || cx + x >= (int32_t)fb_width) continue;
+                uint32_t offset = ((cy + y) * pitch4) + (cx + x);
+                if (cbm[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
+                else if (cbm[y][x] == 2) backbuffer[offset] = 0x000000;
+            }
         }
     }
     g_last_cursor_x = cx;
     g_last_cursor_y = cy;
 
     // --- Present lewat HAL (Phase 2B) ---
-    // Upload setiap region damage ke main surface, lalu SATU present dengan
-    // bounding rect gabungan (batching §8.9). Fallback ke jalur langsung
-    // (blit ke fb_db) bila main surface belum siap.
+    // Upload tiap region damage ke main surface. Pada backend software, surface
+    // MEMBUNGKUS framebuffer HW (zero-copy: upload = tulis langsung ke layar,
+    // present no-op), jadi biayanya sama dengan jalur langsung lama.
+    //
+    // Present: per-rect bila dirty-rect sedikit, union bila banyak.
+    // Union bounding-box atas rect yang tersebar (mis. kursor teks di tengah +
+    // HUD di pojok) bisa mencakup nyaris seluruh layar — jauh lebih mahal
+    // daripada beberapa present kecil. Threshold di bawah menghindari itu
+    // (roadmap §8.9 menyerahkan angka ini ke profiling).
+    #define PRESENT_UNION_THRESHOLD 4
     if (g_main_surface != NULL) {
-        int have_union = 0;
-        ghal_rect_t u = { 0, 0, 0, 0 };
-        for (uint32_t i = 0; i < dirty.count; i++) {
+        // Backpressure (§9.2): pastikan present frame sebelumnya selesai
+        // sebelum upload menulis backing yang sama. Steady state fence sudah
+        // selesai saat flush berikutnya datang — poll single-shot, tanpa spin.
+        if (g_present_fence != 0 && ghal_fence_pending(g_present_fence))
+            ghal_fence_wait(g_present_fence);
+        g_present_fence = 0;
+
+        Rect rects[MAX_DIRTY_REGIONS];
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < dirty.count && n < MAX_DIRTY_REGIONS; i++) {
             Rect r;
             if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
             ghal_rect_t gr = { (uint32_t)r.x, (uint32_t)r.y, r.width, r.height };
             ghal_surface_upload(g_main_surface, backbuffer, (uint32_t)pitch4, gr);
-            if (!have_union) { u = gr; have_union = 1; }
-            else {
-                uint32_t x1 = u.x + u.w, y1 = u.y + u.h;
-                uint32_t rx1 = gr.x + gr.w, ry1 = gr.y + gr.h;
-                if (gr.x < u.x) u.x = gr.x;
-                if (gr.y < u.y) u.y = gr.y;
-                if (rx1 > x1) x1 = rx1;
-                if (ry1 > y1) y1 = ry1;
-                u.w = x1 - u.x;
-                u.h = y1 - u.y;
-            }
+            rects[n++] = r;
         }
-        if (have_union) ghal_present(g_main_surface, &u);
+        if (n == 0) return;
+
+        if (n <= PRESENT_UNION_THRESHOLD) {
+            for (uint32_t i = 0; i < n; i++) {
+                ghal_rect_t gr = { (uint32_t)rects[i].x, (uint32_t)rects[i].y,
+                                   rects[i].width, rects[i].height };
+                ghal_present(g_main_surface, &gr);
+            }
+        } else {
+            // Banyak rect: satu present dengan bounding box gabungan.
+            Rect u = rects[0];
+            for (uint32_t i = 1; i < n; i++) u = rect_union(u, rects[i]);
+            ghal_rect_t gu = { (uint32_t)u.x, (uint32_t)u.y, u.width, u.height };
+            ghal_present(g_main_surface, &gu);
+        }
+        // Backend async: ghal_present tidak blocking — simpan fence untuk
+        // backpressure flush berikutnya. Backend sync: 0 (no-op).
+        g_present_fence = ghal_present_fence();
     } else {
         DisplayBuffer* fb_db = gfx_fb_buffer();
         if (fb_db) {

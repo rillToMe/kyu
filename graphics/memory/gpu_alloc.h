@@ -24,6 +24,13 @@ typedef struct {
 // pages[] diisi dari index 0..n. Caller menyediakan pages[count].
 uint32_t gpu_alloc_pages(uint32_t count, gpu_page_t* pages);
 
+// Alokasikan `count` halaman fisik yang BERURUTAN (contiguous). Diperlukan
+// oleh surface backing yang di-akses sebagai satu buffer linear
+// (`backing_virt + y*width`). PMM mengalokasi berurutan dari hint, jadi
+// biasanya langsung contiguous; bila tidak, blok dilepas dan dicoba ulang
+// (bounded). Return 0 sukses (pages[0..count-1] diisi), <0 gagal.
+int gpu_alloc_pages_contiguous(uint32_t count, gpu_page_t* pages);
+
 // Alokasikan SATU halaman fisik (untuk region virtqueue).
 // Return 0 sukses (out diisi), <0 gagal.
 int gpu_alloc_page(gpu_page_t* out);

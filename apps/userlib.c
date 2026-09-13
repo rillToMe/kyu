@@ -63,6 +63,10 @@ int sys_get_file_list(char* path, file_info_t* buffer, int max_entries) {
 int sys_mkdir(char* path) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(64), "b"((uint64_t)path)); return (int)ret;
 }
+// Phase 2C §9.6 — statistik GPU (syscall 65).
+int sys_gpu_stats(gpu_stats_t* out) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(65), "b"((uint64_t)out)); return (int)ret;
+}
 uint64_t sys_load_elf(char* filename) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(25), "b"((uint64_t)filename)); return ret;
 }

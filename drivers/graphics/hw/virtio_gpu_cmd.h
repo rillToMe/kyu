@@ -54,4 +54,14 @@ void virtio_gpu_cmd_transfer_to_host(virtio_gpu_transfer_to_host_2d_t* c,
                                      uint32_t x, uint32_t y,
                                      uint32_t w, uint32_t h);
 
+// Build UPDATE_CURSOR (set gambar + posisi kursor; resource 64x64).
+void virtio_gpu_cmd_update_cursor(virtio_gpu_update_cursor_t* c,
+                                  uint32_t scanout_id, uint32_t resource_id,
+                                  uint32_t x, uint32_t y);
+
+// Build MOVE_CURSOR (posisi baru; resource_id=0 = sembunyikan).
+void virtio_gpu_cmd_move_cursor(virtio_gpu_update_cursor_t* c,
+                                uint32_t scanout_id, uint32_t resource_id,
+                                uint32_t x, uint32_t y);
+
 #endif // VIRTIO_GPU_CMD_H

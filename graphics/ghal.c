@@ -123,6 +123,13 @@ ghal_surface_t* ghal_surface_create(uint32_t w, uint32_t h, ghal_format_t fmt) {
     return g_active->surface_create(w, h, fmt);
 }
 
+ghal_surface_t* ghal_surface_create_scanout(uint32_t w, uint32_t h, ghal_format_t fmt) {
+    if (!g_active) { g_last_error = "no active backend"; return NULL; }
+    if (g_active->surface_create_scanout)
+        return g_active->surface_create_scanout(w, h, fmt);
+    return g_active->surface_create(w, h, fmt);
+}
+
 void ghal_surface_destroy(ghal_surface_t* s) {
     if (!g_active || !s) return;
     g_active->surface_destroy(s);
@@ -148,4 +155,69 @@ void ghal_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
 void ghal_present(ghal_surface_t* s, const ghal_rect_t* rect) {
     if (!g_active || !s) return;
     g_active->present(s, rect);
+}
+
+// --- Fence async present (Phase 2C §9.2). Backend sync: fence selalu 0,
+// jadi semua panggilan di bawah jatuh ke jalur no-op. ---
+
+uint64_t ghal_present_fence(void) {
+    if (!g_active || !g_active->present_fence) return 0;
+    return g_active->present_fence();
+}
+
+int ghal_fence_pending(uint64_t fence) {
+    if (!g_active || !g_active->fence_pending || fence == 0) return 0;
+    return g_active->fence_pending(fence);
+}
+
+void ghal_fence_wait(uint64_t fence) {
+    if (!g_active || !g_active->fence_wait || fence == 0) return;
+    g_active->fence_wait(fence);
+}
+
+// --- Hardware cursor (Phase 2C §9.4) — fail-fast bila cap/ops tidak ada ---
+
+int ghal_cursor_update(ghal_surface_t* cursor_img, int hot_x, int hot_y) {
+    if (!g_active || !(g_active->capabilities & GHAL_CAP_HW_CURSOR) ||
+        !g_active->cursor_update) return -1;
+    return g_active->cursor_update(cursor_img, hot_x, hot_y);
+}
+
+void ghal_cursor_move(int x, int y) {
+    if (!g_active || !(g_active->capabilities & GHAL_CAP_HW_CURSOR) ||
+        !g_active->cursor_move) return;
+    g_active->cursor_move(x, y);
+}
+
+// --- Statistik GPU (Phase 2C §9.6) ---
+
+int ghal_gpu_stats(ghal_gpu_stats_t* out) {
+    if (!g_active || !g_active->gpu_stats || !out) return -1;
+    return g_active->gpu_stats(out);
+}
+
+// Dump statistik ke TTY (shell `gpu`). Format manual — freestanding.
+void ghal_stats_dump(void) {
+    extern void kprint(const char* s);
+    extern void kprint_num(uint64_t v);
+    if (!g_active) { kprint("[gpu] backend belum aktif\n"); return; }
+    kprint("[gpu] backend=");
+    kprint(g_active->name);
+    ghal_gpu_stats_t st;
+    if (ghal_gpu_stats(&st) != 0) { kprint(" (statistik tidak tersedia)\n"); return; }
+    kprint("\n[gpu] present=");
+    kprint_num(st.present_count);
+    kprint("  cmd=");
+    kprint_num(st.cmd_count);
+    kprint("  bytes=");
+    kprint_num(st.cmd_bytes);
+    kprint("\n[gpu] notify=");
+    kprint_num(st.notify_count);
+    kprint("  wait_calls=");
+    kprint_num(st.wait_calls);
+    kprint("  wait_ticks=");
+    kprint_num(st.wait_ticks);
+    kprint("  err=");
+    kprint_num(st.err_count);
+    kprint("\n");
 }
