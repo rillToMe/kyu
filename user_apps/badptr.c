@@ -66,6 +66,56 @@ void main(void) {
     sys_kwm_update_window(0, (uint32_t*)UNMAPPED_LOW);
     check("kwm_update_window(unmapped) tidak crash", 1);
 
+    // --- Grup 6: partial window update (syscall 66 / Phase 3) ---
+    // Validasi: ownership + batas rect + overflow + rentang buffer user.
+    int wid = sys_kwm_create_window(0, 0, 64, 64);
+    check("create_window(64x64) >= 0", wid >= 0);
+    if (wid >= 0) {
+        uint32_t* canvas = (uint32_t*)sys_alloc(64 * 64 * 4);
+        check("alloc canvas", canvas != 0);
+        if (canvas) {
+            for (int i = 0; i < 64 * 64; i++) canvas[i] = 0xFF204060;
+            kwm_rect_update_t req;
+            req.win_id = wid;
+            req.buffer = canvas;
+
+            req.x = 0;  req.y = 0;  req.width = 64; req.height = 64;
+            check("rect full 64x64 == 0", sys_kwm_update_window_rect(&req) == 0);
+            req.x = 10; req.y = 20; req.width = 30; req.height = 25;
+            check("rect interior == 0",   sys_kwm_update_window_rect(&req) == 0);
+            req.x = 63; req.y = 63; req.width = 1;  req.height = 1;
+            check("rect 1x1 corner == 0", sys_kwm_update_window_rect(&req) == 0);
+
+            req.x = -1; req.y = 0;  req.width = 8;  req.height = 8;
+            check("rect x<0 == -1",       sys_kwm_update_window_rect(&req) == -1);
+            req.x = 0;  req.y = -1; req.width = 8;  req.height = 8;
+            check("rect y<0 == -1",       sys_kwm_update_window_rect(&req) == -1);
+            req.x = 0;  req.y = 0;  req.width = 0;  req.height = 8;
+            check("rect width=0 == -1",   sys_kwm_update_window_rect(&req) == -1);
+            req.x = 0;  req.y = 0;  req.width = 8;  req.height = 0;
+            check("rect height=0 == -1",  sys_kwm_update_window_rect(&req) == -1);
+            req.x = 60; req.y = 0;  req.width = 8;  req.height = 8;
+            check("rect x+w>W == -1",     sys_kwm_update_window_rect(&req) == -1);
+            req.x = 0;  req.y = 60; req.width = 8;  req.height = 8;
+            check("rect y+h>H == -1",     sys_kwm_update_window_rect(&req) == -1);
+            req.x = 0x7FFFFFFF; req.y = 0; req.width = 0x7FFFFFFF; req.height = 1;
+            check("rect overflow x == -1", sys_kwm_update_window_rect(&req) == -1);
+
+            req.x = 0; req.y = 0; req.width = 8; req.height = 8;
+            req.buffer = (uint32_t*)UNMAPPED_LOW;
+            check("rect unmapped buf == -1", sys_kwm_update_window_rect(&req) == -1);
+
+            req.buffer = canvas;
+            req.win_id = -1;
+            check("rect win_id<0 == -1",  sys_kwm_update_window_rect(&req) == -1);
+            req.win_id = 999;
+            check("rect win_id OOB == -1", sys_kwm_update_window_rect(&req) == -1);
+
+            sys_free(canvas);
+        }
+        sys_kwm_destroy_window(wid);
+    }
+
     // --- Grup 5: kontrol positif — jalur normal harus tetap hidup ---
     check("file_exists(badptr.elf) == 1", sys_file_exists("/apps/badptr.elf") == 1);
     uint32_t t[6];

@@ -1,0 +1,11 @@
+# KyuzenOS Rust userspace workspace (Phase 1).
+# One workspace keeps Cargo metadata and target/ out of the C/C++ build tree.
+[workspace]
+resolver = "2"
+members = ["kyuzen-sys", "kyuzen-alloc", "kyuzen-gui", "apps/hello-slint"]
+
+# Panic=abort: Kyuzen loads ELFs without unwinding support (panic=abort is
+# also the built-in default for the x86_64-unknown-none target).
+[profile.release]
+opt-level = 2
+panic = "abort"

@@ -1,0 +1,38 @@
+// hello-slint: minimal Slint UI proving the full Kyuzen platform pipeline.
+// The window content area is owned by Slint; the titlebar/shadows stay KWM-owned.
+import { Button } from "std-widgets.slint";
+
+export component App inherits Window {
+    width: 360px;
+    height: 300px;
+    background: #F5F5F5;
+
+    in-out property <int> counter: 0;
+    callback increment();
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 14px;
+
+        Text {
+            text: "Hello from Slint!";
+            font-size: 24px;
+            color: #1565C0;
+            horizontal-alignment: center;
+        }
+
+        Button {
+            text: "Click Me";
+            clicked => {
+                root.increment();
+            }
+        }
+
+        Text {
+            text: "Counter: " + root.counter;
+            font-size: 18px;
+            color: #202020;
+            horizontal-alignment: center;
+        }
+    }
+}

@@ -38,10 +38,48 @@ static int _lgui_strlen(const char* s) {
     int n = 0; while (s[n]) n++; return n;
 }
 
+// ------------------------------------------------------------
+// Phase 4 — damage tracking.
+// Setiap primitif yang menyentuh canvas mencatat rect yang MUNGKIN berubah.
+// Union bbox ini di-upload gui_flush() via syscall 66, bukan seluruh canvas.
+// Rect sedikit lebih besar BOLEH; lebih kecil (meninggalkan pixel basi) TIDAK.
+// ------------------------------------------------------------
+static void _lgui_damage(gui_window_t* win, int x, int y, int w, int h) {
+    if (!win || w <= 0 || h <= 0) return;
+    int W = (int)win->width, H = (int)win->height;
+    // Clip ke [0,W) x [0,H). Guard overflow: x <= -w berarti seluruhnya di kiri.
+    if (x < 0) { if (x <= -w) return; w += x; x = 0; }
+    if (y < 0) { if (y <= -h) return; h += y; y = 0; }
+    if (x >= W || y >= H) return;
+    if (x + w > W) w = W - x;
+    if (y + h > H) h = H - y;
+    if (w <= 0 || h <= 0) return;
+
+    if (!win->dmg_valid) {
+        win->dmg_valid = 1;
+        win->dmg_x = x; win->dmg_y = y; win->dmg_w = w; win->dmg_h = h;
+        return;
+    }
+    int x1 = win->dmg_x + win->dmg_w, y1 = win->dmg_y + win->dmg_h;
+    if (x < win->dmg_x) win->dmg_x = x;
+    if (y < win->dmg_y) win->dmg_y = y;
+    if (x + w > x1) x1 = x + w;
+    if (y + h > y1) y1 = y + h;
+    win->dmg_w = x1 - win->dmg_x;
+    win->dmg_h = y1 - win->dmg_y;
+}
+
+// Phase 5 — public damage API untuk penulis canvas langsung (libui: image/
+// blend). Thin wrapper: clipping + union tetap di _lgui_damage (satu bbox).
+void gui_damage_rect(gui_window_t* win, int x, int y, int w, int h) {
+    _lgui_damage(win, x, y, w, h);
+}
+
 // CANVAS DRAWING — koordinat dalam canvas KONTEN (y=0 = baris isi
 // pertama; titlebar milik WM tidak pernah digambar app).
 
 static void _lgui_fill_rect(gui_window_t* win, int x, int y, int w, int h, uint32_t color) {
+    _lgui_damage(win, x, y, w, h);   // Phase 4: rect yang mungkin berubah
     uint32_t solid = color | 0xFF000000;
     int W = (int)win->width;
     int H = (int)win->height;
@@ -55,6 +93,7 @@ static void _lgui_fill_rect(gui_window_t* win, int x, int y, int w, int h, uint3
 
 static void _lgui_draw_char_abs(gui_window_t* win, char c, int x, int y, uint32_t color) {
     if (c < 0 || c > 127) return;
+    _lgui_damage(win, x, y, 8, 16);   // Phase 4: sel glyph 8x16
     const unsigned char* bitmap = font8x16[(int)(unsigned char)c];
     uint32_t solid = color | 0xFF000000;
     int W = (int)win->width;
@@ -97,6 +136,7 @@ gui_window_t* gui_create_window(uint32_t width, uint32_t height) {
     win->rel_x    = 0;
     win->rel_y    = 0;
     win->on_render = 0;
+    win->dmg_valid = 0;   // Phase 4
 
     // Phase 5C: canvas = konten murni; width/height = ukuran konten.
     win->win_id = sys_kwm_create_window(100, 80, width, height);
@@ -106,9 +146,10 @@ gui_window_t* gui_create_window(uint32_t width, uint32_t height) {
         return 0;
     }
 
-    // Gambar latar awal (konten penuh).
+    // Gambar latar awal (konten penuh) + upload penuh awal.
     _lgui_fill_rect(win, 0, 0, (int)width, (int)height, 0xF5F5F5);
     sys_kwm_update_window(win->win_id, win->canvas);
+    win->dmg_valid = 0;   // sudah ter-upload; jangan kirim ulang saat flush pertama
 
     return win;
 }
@@ -134,6 +175,7 @@ gui_window_t* gui_create_desktop(void) {
     win->rel_x    = 0;
     win->rel_y    = 0;
     win->on_render = 0;
+    win->dmg_valid = 0;   // Phase 4
 
     win->win_id = sys_kwm_create_desktop();
     if (win->win_id < 0) {
@@ -142,9 +184,10 @@ gui_window_t* gui_create_desktop(void) {
         return 0;
     }
 
-    // Latar awal (wallpaper default) lalu update.
+    // Latar awal (wallpaper default) lalu update penuh.
     _lgui_fill_rect(win, 0, 0, (int)sw, (int)sh, 0x1E293B);
     sys_kwm_update_window(win->win_id, win->canvas);
+    win->dmg_valid = 0;   // sudah ter-upload
 
     return win;
 }
@@ -160,8 +203,26 @@ void gui_set_render(gui_window_t* win, gui_render_fn fn) {
 }
 
 void gui_flush(gui_window_t* win) {
-    if (!win) return;
-    sys_kwm_update_window(win->win_id, win->canvas);
+    if (!win || !win->dmg_valid) return;   // Phase 4: tanpa gambar baru → tanpa upload
+
+    int x = win->dmg_x, y = win->dmg_y, w = win->dmg_w, h = win->dmg_h;
+
+    // Damage seluruh window → syscall 31 (canvas penuh) lebih sederhana.
+    if (x == 0 && y == 0 && w == (int)win->width && h == (int)win->height) {
+        sys_kwm_update_window(win->win_id, win->canvas);
+        win->dmg_valid = 0;
+        return;
+    }
+
+    // Parsial: kirim HANYA rect; buffer tetap canvas penuh (stride = width*4).
+    kwm_rect_update_t req;
+    req.win_id = win->win_id;
+    req.x = x; req.y = y;
+    req.width  = (uint32_t)w;
+    req.height = (uint32_t)h;
+    req.buffer = win->canvas;
+    if (sys_kwm_update_window_rect(&req) == 0)
+        win->dmg_valid = 0;   // gagal → simpan damage agar dicoba lagi
 }
 
 void gui_destroy(gui_window_t* win) {

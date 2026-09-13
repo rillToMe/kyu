@@ -1,0 +1,34 @@
+[package]
+name = "kyuzen-gui"
+version = "0.1.0"
+edition = "2021"
+
+# Kyuzen-specific Slint platform adapter: bridges Slint's Platform/WindowAdapter
+# API onto the Kyuzen userspace ABI (KWM window syscalls + per-task event queue).
+#
+# The Slint feature set is the embedded/MCU profile from slint's own mcu.md:
+#   - default-features = false  (no std, no backend-selector defaults)
+#   - compat-1-2                (feature-forwarding guard required when defaults off)
+#   - unsafe-single-threaded    (thread_local! replaced with unsafe statics)
+#   - libm                      (float math without std)
+#   - renderer-software         (Slint's SoftwareRenderer + MinimalSoftwareWindow)
+#   - software-renderer-path    (Path element support; std-widgets styles use it)
+[features]
+# Off by default: prints per-frame damage rect count + byte counts to the
+# console (mirrored to COM1 serial). Used to verify partial vs full updates.
+damage-debug = []
+
+[dependencies]
+kyuzen-sys = { path = "../kyuzen-sys" }
+slint = { version = "=1.17.1", default-features = false, features = [
+    "compat-1-2",
+    "unsafe-single-threaded",
+    "libm",
+    "renderer-software",
+    "software-renderer-path",
+] }
+
+
+[lib]
+test = false
+bench = false

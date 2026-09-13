@@ -140,6 +140,21 @@ int sys_kwm_create_window(int x, int y, uint32_t width, uint32_t height);
 void sys_kwm_update_window(int win_id, uint32_t* buffer);
 void sys_kwm_destroy_window(int win_id);
 
+// --- Phase 3: partial window update (syscall 66) ---
+// Kirim HANYA sebuah rect konten window. buffer tetap canvas penuh app
+// (stride = window_width * 4 byte); kernel menyalin baris/kolom rect saja.
+// Rect dalam koordinat konten window-local. Return 0 sukses, -1 ditolak.
+// Syscall 31 (sys_kwm_update_window) tetap ada untuk full-canvas update.
+typedef struct {
+    int32_t   win_id;
+    int32_t   x;
+    int32_t   y;
+    uint32_t  width;
+    uint32_t  height;
+    uint32_t* buffer;
+} kwm_rect_update_t;
+int sys_kwm_update_window_rect(kwm_rect_update_t* req);
+
 // sys_kwm_set_cursor (Phase 9): ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
 int sys_kwm_set_cursor(int kind);
 

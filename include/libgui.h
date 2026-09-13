@@ -42,6 +42,12 @@ struct gui_window_t {
 
     // User render callback — dipanggil setiap ada update
     gui_render_fn on_render;
+
+    // Phase 4: damage tracking — union bbox dari gambar sejak flush terakhir,
+    // koordinat konten window-local. dmg_valid=0 → tidak ada yang berubah,
+    // gui_flush() tidak meng-upload apa pun.
+    int         dmg_valid;
+    int         dmg_x, dmg_y, dmg_w, dmg_h;
 };
 
 // ============================================================
@@ -93,5 +99,9 @@ void gui_draw_bar(gui_window_t* win, int x, int y, int w, int h,
 
 // Paksa flush canvas ke layar (biasanya dipanggil otomatis oleh mainloop).
 void gui_flush(gui_window_t* win);
+
+// Phase 5: catat rect yang berubah ke damage bbox libgui. Untuk penulis
+// canvas langsung (mis. libui image()/blend()) agar ikut partial-damage.
+void gui_damage_rect(gui_window_t* win, int x, int y, int w, int h);
 
 #endif // LIBGUI_H

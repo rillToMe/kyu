@@ -1,0 +1,11 @@
+[package]
+name = "kyuzen-alloc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kyuzen-sys = { path = "../kyuzen-sys" }
+
+[lib]
+test = false
+bench = false

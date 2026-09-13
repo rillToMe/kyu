@@ -9,6 +9,18 @@ int  kwm_create_window(int x, int y, uint32_t width, uint32_t height);
 void kwm_update_window(int win_id, uint32_t* app_buffer);
 void kwm_destroy_window(int win_id);
 
+// Phase 3 — update HANYA sebuah rect konten window. app_buffer tetap canvas
+// penuh app (stride = window_width*4); hanya baris/kolom rect yang disalin,
+// baris demi baris. Caller syscall sudah memvalidasi rentang buffer user untuk
+// span baris ini; fungsi ini memvalidasi ulang ownership + batas rect.
+// Return 0 sukses, -1 ditolak.
+int  kwm_update_window_rect(int win_id, int32_t x, int32_t y,
+                            uint32_t width, uint32_t height, uint32_t* app_buffer);
+
+// Phase 3 — geometri konten window (0 sukses, -1 slot invalid). Dipakai
+// syscall 66 untuk menghitung stride canvas user sebelum validasi range.
+int  kwm_window_dims(int win_id, uint32_t* out_w, uint32_t* out_h);
+
 // Owner task dari sebuah window (-1 jika slot kosong/id invalid).
 int  kwm_window_owner(int win_id);
 

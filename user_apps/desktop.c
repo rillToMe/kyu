@@ -210,14 +210,18 @@ static void draw_icon(gui_window_t* d, int i, int cols) {
     gui_draw_text(d, lbl, cx + (ICON_SZ - n * 8) / 2, cy + ICON_SZ + 4, ICON_TXT);
 }
 
-static void render(gui_window_t* d) {
+// Phase 4: wallpaper + ikon (statis; hanya berubah saat discover/screen).
+static void render_wallpaper(gui_window_t* d) {
     int W = (int)d->width, H = (int)d->height;
-    // wallpaper
     gui_draw_rect(d, 0, 0, W, H - TB_H, WALL_BG);
     gui_draw_text(d, "KyuzenOS", W - 8 * 8 - 16, 12, WALL_TXT);
     int cols = grid_cols(d), cap = grid_cap(d);
     for (int i = 0; i < cap; i++) draw_icon(d, i, cols);
-    // taskbar
+}
+
+// Phase 4: taskbar saja — damage bbox = strip bawah, bukan layar penuh.
+static void render_taskbar(gui_window_t* d) {
+    int W = (int)d->width, H = (int)d->height;
     gui_draw_rect(d, 0, H - TB_H, W, TB_H, TASK_BG);
     gui_draw_rect(d, 0, H - TB_H, W, 1, TASK_EDGE);
     int bx = 8;
@@ -230,6 +234,11 @@ static void render(gui_window_t* d) {
         gui_draw_text(d, g_wins[i].title, bx + 10, H - TB_H + 9, 0xE0E0E0);
         bx += bw + 6;
     }
+}
+
+static void render(gui_window_t* d) {
+    render_wallpaper(d);
+    render_taskbar(d);
 }
 
 static void handle_click(gui_window_t* d, int mx, int my) {
@@ -270,33 +279,42 @@ void main(void) {
 
     kyuzen_event_t ev;
     int frame = 0;
-    int do_render = 1;   // render awal
+    int need_full = 1;       // render awal (wallpaper + taskbar)
+    int need_taskbar = 0;    // hanya strip taskbar yang berubah
 
     while (d->is_running) {
         if (sys_get_event(&ev)) {
             if (ev.type == EVENT_MOUSE_MOVE) {
+                // Phase 4: gerak pointer saja tidak mengubah tampilan apa pun
+                // (tak ada hover state) → TIDAK memicu repaint.
                 d->mouse_x = ev.param1;
                 d->mouse_y = ev.param2;
             } else if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
+                // Klik bisa mengubah fokus taskbar / spawn app → taskbar repaint.
                 handle_click(d, d->mouse_x, d->mouse_y);
+                need_taskbar = 1;
             }
-            do_render = 1;
         }
         // poll window list ~10Hz (bukan callback — tanpa infra notifikasi kernel)
         if (++frame % 10 == 0) {
-            if (winlist_changed()) do_render = 1;
+            if (winlist_changed()) need_taskbar = 1;   // fokus/title/daftar berubah
             // re-scan app tiap ~5s: app baru di FS langsung muncul di launcher.
             uint64_t now = sys_uptime();
             if (now - last_scan >= 5000) {
                 last_scan = now;
-                if (discover_apps()) do_render = 1;
+                if (discover_apps()) need_full = 1;    // grid ikon berubah
             }
         }
 
-        if (do_render) {
-            render(d);
-            sys_kwm_update_window(d->win_id, d->canvas);
-            do_render = 0;
+        if (need_full) {
+            render(d);                 // wallpaper + taskbar, damage = layar penuh
+            gui_flush(d);
+            need_full = 0;
+            need_taskbar = 0;
+        } else if (need_taskbar) {
+            render_taskbar(d);         // damage bbox = strip taskbar saja
+            gui_flush(d);
+            need_taskbar = 0;
         }
         sys_yield();
     }

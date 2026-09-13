@@ -107,57 +107,75 @@ class Painter {
 public:
     gui_window_t* win;
     const Theme& theme;
-    // Scissor rect (Phase 8). Aktif bila clip_on; semua primitif dipotong.
+    // Scissor rect widget-level (Phase 8) — set_clip/clear_clip dipakai widget.
     bool clip_on;
     int clip_x, clip_y, clip_w, clip_h;
+    // Phase 5: render/dirty clip — dipasang Window::render, TIDAK disentuh widget.
+    bool rclip_on;
+    int rclip_x, rclip_y, rclip_w, rclip_h;
     Painter(gui_window_t* w, const Theme& t)
         : win(w), theme(t), clip_on(false), clip_x(0), clip_y(0),
-          clip_w(0), clip_h(0) {}
+          clip_w(0), clip_h(0), rclip_on(false), rclip_x(0), rclip_y(0),
+          rclip_w(0), rclip_h(0) {}
+    void set_render_clip(int x, int y, int w, int h) {
+        rclip_on = true; rclip_x = x; rclip_y = y; rclip_w = w; rclip_h = h;
+    }
     void set_clip(int x, int y, int w, int h) {
         clip_on = true; clip_x = x; clip_y = y; clip_w = w; clip_h = h;
     }
     void clear_clip() { clip_on = false; }
-    void rect(int x, int y, int w, int h, uint32_t c) {
+    // Potong rect ke scissor widget + render clip + bounds window.
+    // Return false bila kosong. Semua primitif lewat sini (satu jalur clipping).
+    bool clip_rect(int& x, int& y, int& w, int& h) {
+        int x1 = x + w, y1 = y + h;
         if (clip_on) {
-            int x2 = x + w, y2 = y + h;
-            int cx2 = clip_x + clip_w, cy2 = clip_y + clip_h;
             if (x < clip_x) x = clip_x;
             if (y < clip_y) y = clip_y;
-            if (x2 > cx2) x2 = cx2;
-            if (y2 > cy2) y2 = cy2;
-            w = x2 - x; h = y2 - y;
-            if (w <= 0 || h <= 0) return;
+            int cx = clip_x + clip_w, cy = clip_y + clip_h;
+            if (x1 > cx) x1 = cx;
+            if (y1 > cy) y1 = cy;
         }
+        if (rclip_on) {
+            if (x < rclip_x) x = rclip_x;
+            if (y < rclip_y) y = rclip_y;
+            int rx = rclip_x + rclip_w, ry = rclip_y + rclip_h;
+            if (x1 > rx) x1 = rx;
+            if (y1 > ry) y1 = ry;
+        }
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x1 > (int)win->width)  x1 = (int)win->width;
+        if (y1 > (int)win->height) y1 = (int)win->height;
+        if (x1 <= x || y1 <= y) return false;
+        w = x1 - x; h = y1 - y;
+        return true;
+    }
+    void rect(int x, int y, int w, int h, uint32_t c) {
+        if (!clip_rect(x, y, w, h)) return;
         gui_draw_rect(win, x, y, w, h, c | 0xFF000000);
     }
     void text(const char* s, int x, int y, uint32_t c) {
-        if (!clip_on) { gui_draw_text(win, s, x, y, c | 0xFF000000); return; }
-        // Jalur ter-clip: gambar per-sel 8x16, lewati sel di luar scissor.
-        int cx2 = clip_x + clip_w, cy2 = clip_y + clip_h;
+        // Tanpa clip: jalur cepat (libgui menandai damage ter-clip sendiri).
+        if (!clip_on && !rclip_on) { gui_draw_text(win, s, x, y, c | 0xFF000000); return; }
+        // Ter-clip: gambar per-sel 8x16; hanya sel yang beririsan dengan clip.
         int cy = y;
         for (int i = 0; s[i] && i < 512; i++) {
             if (s[i] == '\n') { cy += 16; continue; }
             int cx = x + i * 8;
-            if (cx + 8 > clip_x && cx < cx2 && cy + 16 > clip_y && cy < cy2)
+            int rx = cx, ry = cy, rw = 8, rh = 16;
+            if (clip_rect(rx, ry, rw, rh))
                 gui_draw_char(win, s[i], cx, cy, c | 0xFF000000);
         }
     }
     // Blit PNG XRGB8888 (px = iw×ih) diskalakan nearest-neighbor ke rect
-    // (x,y,w,h). Menulis win->canvas langsung (libgui tak punya draw-image) —
-    // pola yang sama dengan blit_fit viewer.c. Loop dijepit ke scissor (bila
-    // aktif) agar isi yang digeser scroll tidak bocor keluar viewport.
+    // (x,y,w,h). Menulis win->canvas langsung (libgui tak punya draw-image).
+    // Phase 5: clip ke window + scissor + render clip, lalu catat damage rect.
     void image(int x, int y, int w, int h, const uint32_t* px, int iw, int ih) {
+        if (w <= 0 || h <= 0 || iw <= 0 || ih <= 0 || !px) return;
+        int dx = x, dy = y, dw = w, dh = h;
+        if (!clip_rect(dx, dy, dw, dh)) return;
+        int q0 = dx - x, py0 = dy - y, q1 = q0 + dw, py1 = py0 + dh;
         int cw = (int)win->width;
-        int py0 = 0, py1 = h, q0 = 0, q1 = w;
-        if (clip_on) {
-            if (y < clip_y) py0 = clip_y - y;
-            if (x < clip_x) q0 = clip_x - x;
-            int t;
-            t = (y + h) - (clip_y + clip_h); if (t > 0) py1 -= t;
-            t = (x + w) - (clip_x + clip_w); if (t > 0) q1 -= t;
-            if (py0 < 0) py0 = 0; if (q0 < 0) q0 = 0;
-            if (py1 > h) py1 = h; if (q1 > w) q1 = w;
-        }
         for (int py = py0; py < py1; py++) {
             int sy = py * ih / h;
             for (int q = q0; q < q1; q++) {
@@ -165,6 +183,7 @@ public:
                 win->canvas[(y + py) * cw + x + q] = px[sy * iw + sx];
             }
         }
+        gui_damage_rect(win, dx, dy, dw, dh);
     }
 
     // ----- Primitif "modern" (blend / gradient / rounded / shadow) -----
@@ -173,11 +192,11 @@ public:
     // baca pixel canvas, campur, tulis kembali.
     void blend(int px, int py, uint32_t c, uint32_t a) {
         if (a == 0) return;
-        if (px < 0 || py < 0 || px >= (int)win->width || py >= (int)win->height) return;
-        if (clip_on && (px < clip_x || py < clip_y ||
-                        px >= clip_x + clip_w || py >= clip_y + clip_h)) return;
-        uint32_t* d = &win->canvas[py * (int)win->width + px];
+        int x = px, y = py, w = 1, h = 1;
+        if (!clip_rect(x, y, w, h)) return;
+        uint32_t* d = &win->canvas[y * (int)win->width + x];
         *d = aa_mix(c, *d, a) | 0xFF000000;
+        gui_damage_rect(win, x, y, 1, 1);
     }
     void blend_rect(int x, int y, int w, int h, uint32_t c, uint32_t a) {
         for (int iy = y; iy < y + h; iy++)
@@ -280,6 +299,15 @@ public:
     virtual Widget* pick(int mx, int my) {
         if (!visible) return 0;
         return (mx >= x && mx < x + w && my >= y && my < y + h) ? this : 0;
+    }
+    // Phase 5: union bounds subtree ke (x0,y0,x1,y1) — untuk damage render luas
+    // (mis. tick) tanpa region engine. Default = rect widget sendiri.
+    virtual void collect_bounds(int& x0, int& y0, int& x1, int& y1) {
+        if (!visible || w <= 0 || h <= 0) return;
+        if (x < x0) x0 = x;
+        if (y < y0) y0 = y;
+        if (x + w > x1) x1 = x + w;
+        if (y + h > y1) y1 = y + h;
     }
     virtual void on_click(int mx, int my) {
         (void)mx; (void)my;
@@ -771,6 +799,10 @@ public:
             if (r) return r;
         }
         return 0;
+    }
+    virtual void collect_bounds(int& x0, int& y0, int& x1, int& y1) override {
+        arrange();   // posisi anak dihitung di sini
+        for (int i = 0; i < count; i++) children[i]->collect_bounds(x0, y0, x1, y1);
     }
 };
 
@@ -1527,6 +1559,9 @@ public:
     // ada perubahan → toolkit render (jam/task manager refresh tanpa event).
     ui_tick_cb tick_cb;
     void* tick_data;
+    // Phase 5: dirty rect render — region yang perlu digambar ulang frame ini.
+    int dirty_valid;
+    int dirty_x, dirty_y, dirty_w, dirty_h;
 
     Window(uint32_t width, uint32_t height)
         : gw(gui_create_window(width, height)), root(0),
@@ -1535,7 +1570,8 @@ public:
           dialog(0), notify_text(0), notify_until(0),
           drag_src(0), drag_payload(0), drag_x(0), drag_y(0),
           cur_cursor(UI_CURSOR_ARROW), n_shortcuts(0),
-          tick_cb(0), tick_data(0) {
+          tick_cb(0), tick_data(0),
+          dirty_valid(0), dirty_x(0), dirty_y(0), dirty_w(0), dirty_h(0) {
         for (int i = 0; i < 4; i++) top_bars[i] = 0;
         for (int i = 0; i < 16; i++) { shortcuts[i].cb = 0; shortcuts[i].data = 0; }
     }
@@ -1580,6 +1616,7 @@ public:
         if (popup && popup != m) popup->set_hover(false);
         popup = m;
         m->x = ox; m->y = oy;
+        damage_overlay(m);
         render();
     }
     void close_popup() {
@@ -1645,6 +1682,7 @@ public:
         _ui_free(notify_text);
         notify_text = n;
         notify_until = sys_uptime() + ms;
+        damage_notify();
         render();
     }
     bool notify_hit(int mx, int my) const {
@@ -1655,6 +1693,7 @@ public:
     void notify_dismiss() {
         _ui_free(notify_text);
         notify_text = 0;
+        damage_notify();   // hapus toast lama
         render();
     }
 
@@ -1666,10 +1705,12 @@ public:
         d->y = ((int)gw->height - d->h) / 2 - 20;   // sedikit di atas tengah
         if (d->x < 0) d->x = 0;
         if (d->y < 0) d->y = 0;
+        damage_overlay(d);
         render();
     }
     void close_dialog() {
         if (hovered == dialog) hovered = 0;
+        damage_overlay(dialog);   // hapus dialog + shadow
         delete dialog;
         dialog = 0;
         render();
@@ -1716,8 +1757,55 @@ public:
         if (drag_payload) p.text(drag_payload, gx + 6, gy + 2, p.theme.fg);
     }
 
+    // --- Phase 5: damage rect (satu bbox). Over-report BOLEH, under TIDAK. ---
+    void damage_rect(int x, int y, int w, int h) {
+        if (w <= 0 || h <= 0) return;
+        int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > (int)gw->width)  x1 = (int)gw->width;
+        if (y1 > (int)gw->height) y1 = (int)gw->height;
+        if (x1 <= x0 || y1 <= y0) return;
+        if (!dirty_valid) {
+            dirty_valid = 1;
+            dirty_x = x0; dirty_y = y0; dirty_w = x1 - x0; dirty_h = y1 - y0;
+            return;
+        }
+        int dx1 = dirty_x + dirty_w, dy1 = dirty_y + dirty_h;
+        if (x0 < dirty_x) dirty_x = x0;
+        if (y0 < dirty_y) dirty_y = y0;
+        if (x1 > dx1) dx1 = x1;
+        if (y1 > dy1) dy1 = y1;
+        dirty_w = dx1 - dirty_x; dirty_h = dy1 - dirty_y;
+    }
+    void damage_widget(Widget* w) { if (w) damage_rect(w->x, w->y, w->w, w->h); }
+    void damage_full() { damage_rect(0, 0, (int)gw->width, (int)gw->height); }
+    // Union bounds bar + root (recurse layout). Untuk tick/klik yang callback-nya
+    // bisa mengubah widget mana pun tanpa Window tahu rect persisnya.
+    void damage_all_widgets() {
+        int x0 = 0x7fffffff, y0 = 0x7fffffff, x1 = -0x7fffffff, y1 = -0x7fffffff;
+        for (int i = 0; i < n_bars; i++)
+            if (top_bars[i]) top_bars[i]->collect_bounds(x0, y0, x1, y1);
+        if (root) root->collect_bounds(x0, y0, x1, y1);
+        if (x1 > x0 && y1 > y0) damage_rect(x0, y0, x1 - x0, y1 - y0);
+        else damage_full();
+    }
+    void damage_notify() { damage_rect((int)gw->width - 218, 8, 210, 28); }
+    // Overlay (popup/dialog) + drop-shadow libui (4 ring, offset +3, extend 4px).
+    void damage_overlay(Widget* ov) {
+        if (ov) damage_rect(ov->x - 4, ov->y - 1, ov->w + 8, ov->h + 8);
+    }
+    void damage_ghost(int gx, int gy) {
+        int tw = drag_payload ? _ui_strlen(drag_payload) * 8 + 12 : 24;
+        damage_rect(gx, gy, tw + 12, 26);
+    }
+
     void render() {
+        if (!dirty_valid) return;   // tak ada perubahan → tak ada upload
+        int rx = dirty_x, ry = dirty_y, rw = dirty_w, rh = dirty_h;
+        dirty_valid = 0;
         Painter p(gw, theme);
+        p.set_render_clip(rx, ry, rw, rh);   // bg + widget di-clip ke dirty
         p.rect(0, 0, (int)gw->width, (int)gw->height, theme.bg);
         for (int i = 0; i < n_bars; i++) top_bars[i]->draw(p);
         if (root) root->draw(p);
@@ -1734,23 +1822,35 @@ public:
     void run() {
         if (!gw) return;
         kyuzen_event_t ev;
+        damage_full();   // render awal: seluruh window
         render();
         while (running) {
             // Phase 9: auto-expire notifikasi. Loop bangun ~60/s via
             // sys_yield + timer IRQ → cukup cek tiap iterasi, tanpa timer infra.
             if (notify_text && sys_uptime() >= notify_until) notify_dismiss();
             // Phase 10: tick periodik — jam/task manager render hanya saat berubah.
-            if (tick_cb && tick_cb(tick_data)) render();
+            if (tick_cb && tick_cb(tick_data)) { damage_all_widgets(); render(); }
             if (sys_get_event(&ev)) {
                 switch (ev.type) {
                 case EVENT_MOUSE_MOVE:
                     mouse_x = ev.param1; mouse_y = ev.param2;
                     if (drag_src) {
+                        damage_ghost(drag_x, drag_y);   // posisi lama
                         drag_x = mouse_x; drag_y = mouse_y;
+                        damage_ghost(drag_x, drag_y);   // posisi baru
                         render();
                     } else {
-                        if (grabbed && grabbed->on_drag(mouse_x, mouse_y)) render();
-                        if (track_hover()) render();
+                        if (grabbed && grabbed->on_drag(mouse_x, mouse_y)) {
+                            damage_widget(grabbed);     // mis. scrollbar/scroll
+                            render();
+                        }
+                        Widget* old_h = hovered;
+                        if (track_hover()) {
+                            damage_widget(old_h);       // state lama
+                            damage_widget(hovered);     // state baru
+                            if (popup) damage_widget(popup);
+                            render();
+                        }
                     }
                     break;
                 case EVENT_MOUSE_CLICK:
@@ -1760,9 +1860,11 @@ public:
                         } else if (dialog) {
                             // Modal: klik di luar dialog diabaikan (blok latar).
                             if (dialog->pick(mouse_x, mouse_y))
-                                dialog->on_click(mouse_x, mouse_y);
+                                dialog->on_click(mouse_x, mouse_y);   // bisa close
+                            if (dialog) damage_overlay(dialog);        // hover tombol
                             render();
                         } else if (popup) {
+                            Widget* old_pop = popup;
                             if (popup->pick(mouse_x, mouse_y)) {
                                 popup->on_click(mouse_x, mouse_y);   // item menu
                             } else {
@@ -1775,6 +1877,9 @@ public:
                                     close_popup();   // klik di luar → dismiss
                                 }
                             }
+                            damage_all_widgets();       // bar/status bisa berubah
+                            damage_overlay(old_pop);    // popup lama
+                            damage_overlay(popup);      // popup baru (0 = no-op)
                             render();
                         } else {
                             Widget* picked = pick_bar(mouse_x, mouse_y);
@@ -1790,6 +1895,8 @@ public:
                                 set_focus(grabbed && grabbed->focusable() ? grabbed : 0);
                                 if (grabbed) grabbed->on_click(mouse_x, mouse_y);
                             }
+                            // callback (on_click) bisa mengubah widget mana pun.
+                            damage_all_widgets();
                             render();
                         }
                     } else if (ev.param1 == 0 && ev.param2 == 0) {   // left up
@@ -1798,8 +1905,11 @@ public:
                             if (!t && root) t = root->pick(mouse_x, mouse_y);
                             if (t && t->drop_target && t->drop_cb)
                                 t->drop_cb(t->drop_data, drag_payload, mouse_x, mouse_y);
+                            damage_ghost(drag_x, drag_y);   // hapus ghost
+                            damage_all_widgets();           // drop_cb bisa ubah widget
                             drag_src = 0; drag_payload = 0;
                         } else if (grabbed) {
+                            damage_widget(grabbed);
                             grabbed->on_release(); grabbed = 0;
                         }
                         render();
@@ -1807,6 +1917,8 @@ public:
                     break;
                 case EVENT_KEY_PRESS:
                     if (ev.param1 == 27) {
+                        // ESC jarang → full-window aman (menu/dialog/keluar).
+                        damage_full();
                         if (popup) close_popup();   // ESC tutup menu dulu
                         else if (dialog) {
                             ui_dialog_cb c = dialog->cb; void* d = dialog->data;
@@ -1815,7 +1927,7 @@ public:
                         } else running = false;
                         render();
                     } else if (dialog) {
-                        render();   // modal menelan ketikan selain ESC
+                        render();   // modal menelan ketikan selain ESC (tak berubah)
                     } else {
                         // Shortcut registry dulu, baru dispatch ke widget fokus.
                         bool handled = false;
@@ -1832,11 +1944,16 @@ public:
                             focused->on_key((uint8_t)ev.param1,
                                             (uint32_t)ev.param3,
                                             (uint32_t)ev.param2);
+                        // Callback shortcut / focused->on_key bisa ubah widget mana pun.
+                        damage_all_widgets();
                         render();
                     }
                     break;
                 case EVENT_SCROLL:
-                    if (hovered && hovered->on_scroll(ev.param1)) render();
+                    if (hovered && hovered->on_scroll(ev.param1)) {
+                        damage_widget(hovered);   // viewport scroll area
+                        render();
+                    }
                     break;
                 case EVENT_WIN_CLOSE:
                     running = false;

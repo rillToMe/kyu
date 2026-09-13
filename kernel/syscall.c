@@ -848,6 +848,51 @@ void syscall_handler(registers_t *r) {
         if (ghal_gpu_stats(&st) != 0) ret_val = (uint64_t)-1;
         else ret_val = (copy_to_user(&uc, r->rbx, &st, sizeof(st)) == 0) ? 0 : (uint64_t)-1;
     }
+    // ============================================================
+    // Phase 3 — Partial window update (syscall 66)
+    // ============================================================
+    else if (syscall_num == 66) { // sys_kwm_update_window_rect(req)
+        // req = kwm_rect_update_t di user-space. Copy-in bounded dulu, lalu
+        // validasi independen: ownership/batas rect di KWM, dan rentang
+        // buffer user untuk span baris yang benar-benar diakses.
+        extern int kwm_update_window_rect(int, int32_t, int32_t,
+                                          uint32_t, uint32_t, uint32_t*);
+        extern int kwm_window_dims(int, uint32_t*, uint32_t*);
+        kwm_rect_update_t req;
+        if (copy_from_user(&uc, &req, r->rbx, sizeof(req)) != 0) {
+            ret_val = (uint64_t)-1;
+        } else if (req.win_id < 0 || req.win_id >= 16 ||
+                   req.x < 0 || req.y < 0 ||
+                   req.width == 0 || req.height == 0) {
+            ret_val = (uint64_t)-1;
+        } else {
+            uint32_t win_w = 0, win_h = 0;
+            if (kwm_window_dims(req.win_id, &win_w, &win_h) != 0 ||
+                (uint64_t)req.x + (uint64_t)req.width > (uint64_t)win_w ||
+                (uint64_t)req.y + (uint64_t)req.height > (uint64_t)win_h) {
+                ret_val = (uint64_t)-1;
+            } else {
+                // Span minimum yang mencakup SEMUA byte rect di canvas penuh:
+                //   stride(byte) = win_w * 4
+                //   span        = (height-1)*stride + width*4
+                // Bukan width*height*4: rect tidak kontigu (stride penuh).
+                // Semua operand <= 4096 → span <= ~64 MiB, aman di u64.
+                uint64_t stride = (uint64_t)win_w * 4u;
+                uint64_t span = (uint64_t)(req.height - 1) * stride
+                              + (uint64_t)req.width * 4u;
+                uint64_t ustart = (uint64_t)req.buffer
+                                + (uint64_t)req.y * stride
+                                + (uint64_t)req.x * 4u;
+                if (!user_range_ok(&uc, ustart, span)) {
+                    ret_val = (uint64_t)-1;
+                } else {
+                    ret_val = (uint64_t)kwm_update_window_rect(
+                        req.win_id, req.x, req.y,
+                        req.width, req.height, req.buffer);
+                }
+            }
+        }
+    }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;

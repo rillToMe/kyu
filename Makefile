@@ -203,6 +203,24 @@ test/virtqueue_test: test/virtqueue_test.c \
 apps:
 	$(MAKE) -C user_apps all
 
+# --- RUST APPS (Phase 1: no_std userspace Rust) ---
+# Cargo workspace ada di rust/; hasil akhir di-link dengan user_apps/app.ld
+# yang sama (ELF64 single-base 0x4000000, PT_LOAD saja) agar bisa dimuat
+# loader kernel. SELALU bangun lewat target ini: RUSTFLAGS meng-inject
+# script linker (path relatif tidak bisa ditaruh di rust/.cargo/config.toml).
+RUST_DIR  = rust
+RUST_TRIP = x86_64-unknown-none
+RUST_OUT  = $(RUST_DIR)/target/$(RUST_TRIP)/release
+
+.PHONY: rust-apps
+rust-apps:
+	cd $(RUST_DIR) && RUSTFLAGS="-C relocation-model=static -C link-arg=-T../user_apps/app.ld" cargo build --release
+	cp $(RUST_OUT)/hello-slint hello-slint.elf
+
+.PHONY: rust-clean
+rust-clean:
+	cd $(RUST_DIR) && cargo clean
+
 # Shortcut: bangun ELF secara individual
 fileman.elf:
 	$(MAKE) -C user_apps fileman
@@ -234,7 +252,7 @@ clean-apps:
 
 # ISO: tergantung pada kernel + ELF apps (auto-rebuild jika source berubah)
 # Tahap 3: Pembuatan ISO Hybrid (BIOS + UEFI 64-bit)
-boot_image.iso: $(TARGET) apps limine.conf kyuzen.png logo.png
+boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png logo.png
 	rm -rf iso_root
 	mkdir -p iso_root
 	# Buat folder EFI untuk standar boot UEFI 64-bit
@@ -242,7 +260,7 @@ boot_image.iso: $(TARGET) apps limine.conf kyuzen.png logo.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf hello-slint.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	# Manifest launcher (name=/color=/hidden=), dibaca desktop.elf saat scan
 	# app. Setiap file baru di manifests/ HARUS ditambah juga ke limine.conf.
 	cp manifests/*.app iso_root/

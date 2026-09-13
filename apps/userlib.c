@@ -105,6 +105,15 @@ void sys_kwm_destroy_window(int win_id) {
     __asm__ volatile("int $0x80" : : "a"(32), "b"(win_id));
 }
 
+// Phase 3 — partial window update (syscall 66). req = kwm_rect_update_t*
+// berisi win_id, rect window-local (x,y,width,height), dan pointer canvas
+// penuh app. Return 0 sukses / -1 ditolak.
+int sys_kwm_update_window_rect(kwm_rect_update_t* req) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(66), "b"((uint64_t)req));
+    return ret;
+}
+
 // sys_exec: Load app baru, replace current app, TIDAK PERNAH kembali ke caller.
 // OS yang free RAM lama, load app baru, lalu lompat langsung ke entry-nya.
 __attribute__((noreturn))

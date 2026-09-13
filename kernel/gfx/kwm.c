@@ -7,6 +7,7 @@
 #include "task.h"
 #include "spinlock.h"
 #include "smap.h"
+#include "string.h"   // memcpy — Phase 3 partial window copy
 
 // --- KYUZEN WINDOW MANAGER (KWM) ---
 // FIX_004: batas dimensi/ukuran canvas — w*h*4 dari app tidak boleh wrap
@@ -65,9 +66,17 @@ int focused_win_id = -1;
 
 // Frame + margin drop-shadow (compositor menggambar shadow di luar frame).
 // Semua repaint frame HARUS lewat sini agar sisa shadow tidak tertinggal.
+//
+// BUGFIX (Phase 4): shadow di compositor digeser +3px ke bawah (frame_shadow:
+// s.y = frame.y - k + 3). Ring terluar (k = KWM_SHADOW_MARGIN) jatuh di baris
+// bawah y + h + KWM_SHADOW_MARGIN + 2, sedangkan margin seragam hanya sampai
+// y + h + KWM_SHADOW_MARGIN - 1 → 3 baris bawah tidak ter-invalidate dan sisa
+// shadow tertinggal saat window pindah. Rentang dirty wajib mencakup bounding
+// box visual penuh (frame + shadow), bukan hanya frame + margin simetris.
 static void frame_dirty_area(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     int32_t m = KWM_SHADOW_MARGIN;
-    screen_mark_dirty(x - m, y - m, w + 2 * (uint32_t)m, h + 2 * (uint32_t)m);
+    screen_mark_dirty(x - m, y - m, w + 2 * (uint32_t)m,
+                      h + 2 * (uint32_t)m + 3);
 }
 
 // Caller MUST TIDAK memegang kwm_lock (dipanggil setelah unlock). Menandai area
@@ -184,8 +193,18 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             // tint titlebar-nya.
             int prev_focus = focused_win_id;
             focused_win_id = i;
+            int32_t ctx = kwm_windows[i].x;
+            int32_t cty = kwm_windows[i].y + KWM_TITLEBAR_H;
+            uint32_t cw = kwm_windows[i].width;
+            uint32_t ch = kwm_windows[i].height;
             spinlock_unlock_irqrestore(&kwm_lock, flags);
             kwm_frame_dirty(i);
+            // BUGFIX (Phase 4): jamin area KONTEN ter-invalidate sejak frame
+            // pertama — window baru tidak boleh muncul tanpa dirty region yang
+            // menutupi badannya, terlepas dari upload pertama app (frame_dirty
+            // sudah mencakupnya; ini mengunci kontrak + menutup race bila flush
+            // compositor jatuh di antara create dan upload pertama app).
+            screen_mark_dirty(ctx, cty, cw, ch);
             if (prev_focus >= 0 && prev_focus != i) kwm_frame_dirty(prev_focus);
             return i;
         }
@@ -359,6 +378,80 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
     screen_mark_dirty(mx, my, mw, mh);
 }
 
+// Phase 3 — geometri konten window. Return 0 sukses (out_w/out_h terisi),
+// -1 jika slot invalid/kosong. Caller menyediakan dua pointer out.
+int kwm_window_dims(int win_id, uint32_t* out_w, uint32_t* out_h) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS || !out_w || !out_h) return -1;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+    *out_w = kwm_windows[win_id].width;
+    *out_h = kwm_windows[win_id].height;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    return 0;
+}
+
+// Phase 3 — partial window update. app_buffer adalah canvas PENUH milik app
+// (stride = window_width*4); rect (x,y,width,height) adalah koordinat konten
+// window-local. Hanya baris rect yang disalin dari canvas app ke surface KWM,
+// baris demi baris (rect tidak kontigu di canvas penuh).
+//
+// Validasi di sini bersifat defense-in-depth: syscall 66 sudah memvalidasi
+// rentang buffer user + batas rect, tetapi KWM tetap memvalidasi ownership dan
+// batas rect sendiri (jangan pernah percaya user-space).
+int kwm_update_window_rect(int win_id, int32_t x, int32_t y,
+                           uint32_t width, uint32_t height, uint32_t* app_buffer) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS || !app_buffer) return -1;
+    if (x < 0 || y < 0 || width == 0 || height == 0) return -1;
+
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active || !kwm_windows[win_id].canvas) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+    // FIX_004: hanya pemilik yang boleh menulis canvas-nya.
+    if (kwm_windows[win_id].owner_task != smp_current_task_id()) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+
+    uint64_t win_w = kwm_windows[win_id].width;
+    uint64_t win_h = kwm_windows[win_id].height;
+    // Overflow-safe: x,y >= 0 (checked) dan width/height > 0; semua dihitung
+    // 64-bit sebelum dibandingkan dengan dimensi window.
+    if ((uint64_t)x + (uint64_t)width > win_w ||
+        (uint64_t)y + (uint64_t)height > win_h) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+
+    // stride == window width (dalam elemen u32) untuk source DAN dest.
+    uint32_t* dst = kwm_windows[win_id].canvas->pixels;
+    uint32_t* src = app_buffer;
+    uint64_t start = (uint64_t)y * win_w + (uint64_t)x;
+    uint64_t row_bytes = (uint64_t)width * 4u;
+
+    // FIX_005 Tahap 4: source adalah halaman user (US=1) → jendela SMAP
+    // selama copy. Satu jendela untuk seluruh rect, selalu di-close.
+    user_access_begin();
+    for (uint64_t row = 0; row < height; row++) {
+        uint64_t off = start + row * win_w;
+        memcpy(&dst[off], &src[off], (size_t)row_bytes);
+    }
+    user_access_end();
+
+    int32_t tb = (kwm_windows[win_id].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
+    int32_t mx = kwm_windows[win_id].x + x;
+    int32_t my = kwm_windows[win_id].y + tb + y;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+
+    // Hanya rect ini yang ditandai dirty (bukan seluruh window).
+    screen_mark_dirty(mx, my, width, height);
+    return 0;
+}
+
 void kwm_destroy_window(int win_id) {
     if(win_id < 0 || win_id >= MAX_WINDOWS) return;
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
@@ -385,10 +478,31 @@ void kwm_destroy_window(int win_id) {
 // menggantikan kwm_destroy_all_windows() agar lifecycle satu task tidak
 // menghancurkan window task lain.
 void kwm_destroy_windows_of(int task_id) {
+    // Phase 6: invalidasikan HANYA visual bounds window yang hancur, bukan
+    // seluruh layar. Bounding box semua window yang hancur diakumulasi di
+    // dalam kwm_lock (hanya 4 int, TANPA array rect — stack syscall sempit),
+    // lalu ditandai SETELAH unlock (screen_mark_dirty tidak boleh diambil di
+    // bawah kwm_lock). Compositor merekonstruksi area terekspos dari
+    // base_canvas + window yang tersisa. Bounds = frame + titlebar + shadow
+    // (margin sama dengan frame_dirty_area).
+    const int32_t m = KWM_SHADOW_MARGIN;
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
-    int focus_destroyed = 0;
+    int focus_destroyed = 0, any = 0;
+    int32_t bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (kwm_windows[i].active && kwm_windows[i].owner_task == task_id) {
+            uint32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
+            int32_t  x0 = kwm_windows[i].x - m;
+            int32_t  y0 = kwm_windows[i].y - m;
+            int32_t  x1 = kwm_windows[i].x + (int32_t)kwm_windows[i].width + m;
+            int32_t  y1 = kwm_windows[i].y + (int32_t)(kwm_windows[i].height + tb) + m + 3;
+            if (!any) { bx0 = x0; by0 = y0; bx1 = x1; by1 = y1; any = 1; }
+            else {
+                if (x0 < bx0) bx0 = x0;
+                if (y0 < by0) by0 = y0;
+                if (x1 > bx1) bx1 = x1;
+                if (y1 > by1) by1 = y1;
+            }
             if (focused_win_id == i) focus_destroyed = 1;
             kwm_free_slot(i);
         }
@@ -396,22 +510,46 @@ void kwm_destroy_windows_of(int task_id) {
     // Phase 5B: fokus hanya pindah jika window fokus ikut hancur — fokus
     // kosong yang disengaja (klik desktop) tidak boleh dicuri ulang.
     if (focus_destroyed) kwm_refocus_locked();
+    int new_focus = focused_win_id;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-    screen_mark_dirty(0, 0, fb_width, fb_height);
+
+    if (any && bx1 > bx0 && by1 > by0)
+        screen_mark_dirty(bx0, by0, (uint32_t)(bx1 - bx0), (uint32_t)(by1 - by0));
+    // Window yang mewarisi fokus berubah tint titlebar → repaint frame-nya.
+    if (focus_destroyed && new_focus >= 0) kwm_frame_dirty(new_focus);
 }
 
 // Destroy ALL KWM windows — hanya untuk path kernel/test, BUKAN syscall.
 // Tanpa ini, compositor akan membaca memori bebas saat render.
 void kwm_destroy_all_windows(void) {
+    // Phase 6: sama seperti kwm_destroy_windows_of — bounding box visual bounds
+    // window yang hancur, ditandai setelah unlock. (Desktop full-screen, bila
+    // ikut hancur, memang menutupi seluruh layar — hasilnya tetap benar.)
+    const int32_t m = KWM_SHADOW_MARGIN;
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    int any = 0;
+    int32_t bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (kwm_windows[i].active) {
+            uint32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
+            int32_t  x0 = kwm_windows[i].x - m;
+            int32_t  y0 = kwm_windows[i].y - m;
+            int32_t  x1 = kwm_windows[i].x + (int32_t)kwm_windows[i].width + m;
+            int32_t  y1 = kwm_windows[i].y + (int32_t)(kwm_windows[i].height + tb) + m + 3;
+            if (!any) { bx0 = x0; by0 = y0; bx1 = x1; by1 = y1; any = 1; }
+            else {
+                if (x0 < bx0) bx0 = x0;
+                if (y0 < by0) by0 = y0;
+                if (x1 > bx1) bx1 = x1;
+                if (y1 > by1) by1 = y1;
+            }
             kwm_free_slot(i);
         }
     }
     focused_win_id = -1;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-    screen_mark_dirty(0, 0, fb_width, fb_height);
+    if (any && bx1 > bx0 && by1 > by0)
+        screen_mark_dirty(bx0, by0, (uint32_t)(bx1 - bx0), (uint32_t)(by1 - by0));
 }
 
 // ============================================================
@@ -475,6 +613,10 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         kwm_windows[drag_win].x = new_x;
         kwm_windows[drag_win].y = new_y;
         spinlock_unlock(&kwm_lock);
+        // BUGFIX (Phase 4): invalidasikan bounding box visual LAMA dan BARU.
+        // frame_dirty_area kini mencakup seluruh frame + drop-shadow (termasuk
+        // offset +3px shadow). Compositor me-recomposite area lama dari scene
+        // (base_canvas + desktop + window di bawahnya), bukan menyalin window.
         frame_dirty_area(old_x, old_y, fw, fh);
         frame_dirty_area(new_x, new_y, fw, fh);
         return 1; // Konsumsi event — jangan sampai app salah deteksi klik

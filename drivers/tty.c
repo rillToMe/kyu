@@ -15,6 +15,13 @@ extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
 // menggeser pixel base_canvas langsung, jadi area geser itu wajib ditandai.
 extern void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height);
 
+// Serial COM1: mirror output TTY. Kernel serial sudah selalu di-init
+// (kernel.c — panic dump & watchdog memakainya), jadi cukup dipanggil.
+// Tujuan: output app TTY (mis. hello-rs via sys_print/syscall 1) tetap
+// terbaca di host (QEMU -serial stdio / file:serial.log) walaupun TTY
+// di layar tertutup jendela desktop/compositor.
+extern void serial_putc(char c);
+
 // tty_scroll harus scroll base_canvas (bukan backbuffer yang di-overwrite compositor tiap frame!)
 extern uint32_t base_canvas[1920 * 1080];
 
@@ -192,6 +199,9 @@ uint32_t tty_write(fs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buf
     (void)node; (void)offset;
     for (uint32_t i = 0; i < size; i++) {
         terminal_putchar(buffer[i]);
+        // Mirror ke COM1 — terminasi \n jadi \r\n (serial terminal butuh CR).
+        if (buffer[i] == '\n') serial_putc('\r');
+        serial_putc((char)buffer[i]);
     }
     return size;
 }

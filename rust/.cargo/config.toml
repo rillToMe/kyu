@@ -1,0 +1,23 @@
+# KyuzenOS Rust userspace build configuration.
+#
+# Target: the built-in Tier 2 `x86_64-unknown-none`.
+#   - precompiled core+alloc via `rustup target add x86_64-unknown-none`
+#   - no custom target JSON, no -Zbuild-std, no nightly
+#   - defaults match the kernel C ABI: panic=abort, soft-float, no SSE,
+#     static relocations, red zone disabled
+#
+# Linker: LLVM lld from the same MSYS2 clang64 toolchain the C build uses
+# (`LD = ld.lld` in the Makefile). Absolute path keeps builds working even
+# when the MSYS2 bin dir is not on PATH.
+#
+# The app linker script (user_apps/app.ld) is injected via RUSTFLAGS
+# (link-arg=-T...) from the Makefile because Cargo cannot expand relative
+# paths inside rustflags. `make rust-apps` is the supported entry point.
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+# rust-lld (shipped with the toolchain, GNU-flavor by default): consumes every
+# GNU-style link arg rustc emits (-pie, -z, --eh-frame-hdr) and is version
+# matched with the compiler. The MSYS2 ld.lld rejects several of those args.
+linker = "C:/Users/LOQ 15IAX9/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe"
