@@ -894,6 +894,16 @@ void syscall_handler(registers_t *r) {
         }
     }
 
+    // ============================================================
+    // Phase 14 — Deklarasi window 100% opaque (syscall 67)
+    // Owner-only; kernel memvalidasi seluruh canvas (alpha != 0) sebelum
+    // menandai. Hanya mengaktifkan fast-path memcpy compositor.
+    // ============================================================
+    else if (syscall_num == 67) { // sys_kwm_set_window_opaque(win_id)
+        extern int kwm_set_window_opaque(int);
+        ret_val = (uint64_t)kwm_set_window_opaque((int)r->rbx);
+    }
+
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;
 }

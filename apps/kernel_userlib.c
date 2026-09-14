@@ -29,6 +29,16 @@ extern int        kfs_exists(char* filename);
 extern uint32_t   kfs_get_file_size(char* filename);
 extern int        kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
 extern int        kfs_create_file(char* filename, char* data, uint32_t size);
+// Shell engine (apps/shell_core.c) memakai subset API generik ini; sediakan
+// padanannya di Ring 0. Signature memakai void*/char* agar tidak perlu
+// meng-include userlib.h (yang mendeklarasikan sys_alloc(uint32_t) bentrok
+// dengan sys_alloc(size_t) di sini).
+extern int        kfs_get_file_list(char* path, void* buffer, int max_entries);
+extern int        kfs_create_folder(char* path);
+extern uint32_t   get_cpu_usage(void);
+extern int        kernel_ping(const char* host);
+extern uint32_t   kfs_get_total_space(void);
+extern uint32_t   kfs_get_used_space(void);
 
 #include "timer.h"    // Unified timer API: timer_get_ms(), timer_sleep_ms(), timer_get_ticks()
 
@@ -95,6 +105,15 @@ int      sys_file_exists(char* fn)      { return kfs_exists(fn); }
 uint32_t sys_file_size(char* fn)        { return kfs_get_file_size(fn); }
 int      sys_read_file_to_buffer(char* fn, char* buf, uint32_t cap) { return kfs_read_to_buffer(fn, buf, cap); }
 int      sys_create_file(char* fn, char* data, uint32_t size) { return kfs_create_file(fn, data, size); }
+
+// Shell engine portable API (Ring 0 passthrough).
+int      sys_get_file_list(char* path, void* buffer, int max_entries) { return kfs_get_file_list(path, buffer, max_entries); }
+int      sys_mkdir(char* path)        { return kfs_create_folder(path); }
+uint32_t sys_get_cpu_usage(void)      { return get_cpu_usage(); }
+int      sys_ping(const char* host)   { return kernel_ping(host); }
+uint32_t sys_get_total_disk(void)     { return kfs_get_total_space(); }
+uint32_t sys_get_used_disk(void)      { return kfs_get_used_space(); }
+void     sys_sleep(uint32_t ms)       { timer_sleep_ms(ms); }
 
 // --- Memori (size_t agar cocok dengan heap.h) ---
 void*    sys_alloc(size_t size)                              { return kmalloc(size); }

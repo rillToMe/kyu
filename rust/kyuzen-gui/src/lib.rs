@@ -94,6 +94,11 @@ pub struct KyuzenWindow {
     /// the most recent move.
     last_pos: Cell<(f32, f32)>,
     close_requested: Cell<bool>,
+    /// Phase 14: set once `kwm_set_window_opaque` (syscall 67) has been accepted.
+    /// The Slint canvas is opaque by construction (`Vec::resize(0xFF000000)` +
+    /// every `TargetPixel` writer forces `0xFF`), so this only tells the kernel
+    /// the compositor may use its memcpy fast-path.
+    opaque_declared: Cell<bool>,
 }
 
 impl KyuzenWindow {
@@ -126,6 +131,7 @@ impl KyuzenWindow {
             canvas: RefCell::new(canvas),
             last_pos: Cell::new((0.0, 0.0)),
             close_requested: Cell::new(false),
+            opaque_declared: Cell::new(false),
         }))
     }
 
@@ -176,6 +182,16 @@ impl KyuzenWindow {
             Some(region) => self.upload_region(&region, buffer),
             // Drew but no region reported: safest is a full upload.
             None => self.upload_full(buffer),
+        }
+
+        // Phase 14: let the compositor use its memcpy fast-path once the
+        // kernel-visible canvas has been fully painted. The kernel validates
+        // every pixel (alpha != 0) and rejects otherwise; we retry on later
+        // frames until accepted — a persistent reject is a safe false negative.
+        if !self.opaque_declared.get()
+            && unsafe { sys::kwm_set_window_opaque(self.kmw_id) } == 0
+        {
+            self.opaque_declared.set(true);
         }
         true
     }

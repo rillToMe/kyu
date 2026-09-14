@@ -125,6 +125,17 @@ void sys_draw_string(const char* str, int x, int y, uint32_t color);
 void sys_set_uid(uint32_t uid);
 uint32_t sys_get_uid();
 
+// Identitas bersama (apps/userutil.c): isi `out` dengan username akun yang
+// UID-nya == sys_get_uid(), dibaca dari users.sys ("username:password:uid").
+// Bukan autentikasi — hanya resolusi nama untuk prompt. Return 1 sukses,
+// 0 gagal (out dikosongkan). `cap` termasuk terminator.
+int current_username(char* out, uint32_t cap);
+
+// True jika `pw` cocok dengan password akun UID saat ini (users.sys).
+// Dipakai `sudo` untuk verifikasi. Bukan autentikasi login (tidak mengubah
+// state apa pun). Return 1 cocok, 0 tidak.
+int current_password_match(const char* pw);
+
 // 2. Syscall Event Queue (Syscall 29)
 int sys_get_event(kyuzen_event_t* event_out);
 
@@ -154,6 +165,15 @@ typedef struct {
     uint32_t* buffer;
 } kwm_rect_update_t;
 int sys_kwm_update_window_rect(kwm_rect_update_t* req);
+
+// --- Phase 19: declare a window canvas fully opaque (syscall 67) ---
+// Owner-only. The kernel scans the WHOLE canvas and accepts only if every pixel
+// has a non-zero alpha byte; otherwise it rejects and the window keeps the
+// scalar compositor path. Purely a performance hint for the base-blit elision
+// (Phase 16-18) + opaque memcpy fast-path (Phase 14) — never a render semantic.
+// Call once, after the canvas is fully painted (e.g. libgui's initial fill).
+// Return 0 accepted / -1 rejected.
+int sys_kwm_set_window_opaque(int win_id);
 
 // sys_kwm_set_cursor (Phase 9): ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
 int sys_kwm_set_cursor(int kind);

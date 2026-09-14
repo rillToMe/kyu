@@ -1,0 +1,23 @@
+[package]
+name = "control-center"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Forward the platform crate's damage instrumentation for verification builds.
+damage-debug = ["kyuzen-gui/damage-debug"]
+
+[dependencies]
+kyuzen-sys = { path = "../../kyuzen-sys" }
+kyuzen-alloc = { path = "../../kyuzen-alloc" }
+kyuzen-gui = { path = "../../kyuzen-gui" }
+slint = { version = "=1.17.1", default-features = false, features = [
+    "compat-1-2",
+    "unsafe-single-threaded",
+    "libm",
+    "renderer-software",
+    "software-renderer-path",
+] }
+
+[build-dependencies]
+slint-build = "=1.17.1"

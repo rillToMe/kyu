@@ -57,9 +57,16 @@ void ui_window_destroy(ui_window_t* win);
 void ui_window_set_theme(ui_window_t* win, const ui_theme_t* theme); // 0 = default
 void ui_window_add(ui_window_t* win, ui_widget_t* widget);   // tambah ke layout root
 void ui_window_run(ui_window_t* win);   // blocking sampai window ditutup (X / ESC)
+// Minta event loop berhenti (mis. perintah `logout` di terminal). Efektif
+// setelah iterasi loop saat ini; panggil dari dalam callback aman.
+void ui_window_request_close(ui_window_t* win);
 
 // Phase 10: judul window (titlebar WM + taskbar desktop).
 void ui_window_set_title(ui_window_t* win, const char* title);
+
+// Fokus keyboard intra-window ke widget (mis. TextBox terminal saat startup,
+// agar ketikan langsung masuk tanpa perlu klik dulu).
+void ui_window_focus(ui_window_t* win, ui_widget_t* widget);
 
 // Phase 10: callback periodik tiap iterasi event loop (~60/s, via sys_yield
 // + timer IRQ). Return 1 = ada perubahan → toolkit render; 0 = tetap.
@@ -123,6 +130,9 @@ const char* ui_textedit_text(ui_widget_t* widget);      // pointer buffer intern
 void ui_textedit_set_readonly(ui_widget_t* widget, int ro);
 void ui_textedit_append(ui_widget_t* widget, const char* text);  // + auto-scroll bawah
 void ui_textedit_clear(ui_widget_t* widget);
+// Terminal shell: Enter memanggil cb (submit) alih-alih menyisip newline; kursor
+// terkunci di baris perintah terakhir sehingga output lama tidak bisa diedit.
+void ui_textedit_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 
 // --- Layout ---
 // VBox: susun anaknya vertikal (masing-masing setinggi ukurannya,

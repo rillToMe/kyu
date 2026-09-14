@@ -64,6 +64,11 @@ static int32_t drag_offset_y  = 0;
 // dibaca compositor.c untuk tint titlebar (fokus vs tidak).
 int focused_win_id = -1;
 
+// Window (+1; 0 = tidak ada) yang kursornya di atas tombol close titlebar.
+// Dipakai compositor untuk latar close merah saat hover; di-set di
+// kwm_process_mouse (tiap event mouse, bukan hanya klik).
+int hovered_close_win = 0;
+
 // Frame + margin drop-shadow (compositor menggambar shadow di luar frame).
 // Semua repaint frame HARUS lewat sini agar sisa shadow tidak tertinggal.
 //
@@ -151,8 +156,10 @@ static void kwm_free_slot(int i) {
     kwm_windows[i].active = 0;
     kwm_windows[i].owner_task = -1;
     kwm_windows[i].flags = 0;
+    kwm_windows[i].fully_opaque = 0;   // Phase 14: slot bebas = tidak dijamin opaque
     kwm_windows[i].title[0] = '\0';
     if (dragged_win_id == i) dragged_win_id = -1;
+    if (hovered_close_win == i + 1) hovered_close_win = 0;
 }
 
 int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
@@ -187,6 +194,7 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].z_index = next_z_index++;
             if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
             kwm_windows[i].flags = 0;
+            kwm_windows[i].fully_opaque = 0;   // Phase 14: default aman — jalur scalar
             kwm_windows[i].title[0] = '\0';
             kwm_windows[i].active = 1;
             // Phase 5B/5C: window baru memegang fokus — yang lama kehilangan
@@ -247,6 +255,7 @@ int kwm_create_desktop(void) {
             kwm_windows[i].owner_task = smp_current_task_id();
             kwm_windows[i].z_index = 0;          // selalu paling bawah
             kwm_windows[i].flags = KWM_WIN_DESKTOP;
+            kwm_windows[i].fully_opaque = 0;   // Phase 14: desktop app tidak mendeklarasikan
             kwm_windows[i].title[0] = '\0';
             kwm_windows[i].active = 1;
             spinlock_unlock_irqrestore(&kwm_lock, flags);
@@ -273,6 +282,44 @@ int kwm_set_title(int win_id, const char* title) {
     kwm_windows[win_id].title[n] = '\0';
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     kwm_frame_dirty(win_id);   // titlebar digambar compositor → repaint frame
+    return 0;
+}
+
+// Phase 14 — tandai window sebagai 100% opaque (fast-path memcpy compositor).
+// Hanya PEMILIK window yang boleh. Kernel MEMVALIDASI seluruh canvas: setiap
+// piksel harus punya alpha != 0. Bila ada satu saja piksel alpha == 0 →
+// TOLAK, jangan set flag (false negative aman; false positive = korupsi visual
+// karena compositor akan memcpy piksel transparan menimpa background).
+// Dipanggil platform Rust/Slint setelah frame pertama (canvas sudah terisi).
+// CATATAN: upload parsial SESUDAH ini tidak divalidasi ulang — aplikasi
+// kooperatif (Rust/Slint, diaudit Phase 13) tidak pernah menulis alpha == 0.
+// Return 0 sukses, -1 ditolak.
+int kwm_set_window_opaque(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return -1;
+
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active || !kwm_windows[win_id].canvas ||
+        kwm_windows[win_id].owner_task != smp_current_task_id()) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+    const uint32_t* px = kwm_windows[win_id].canvas->pixels;
+    uint32_t n = kwm_windows[win_id].canvas->width * kwm_windows[win_id].canvas->height;
+    // Scan di LUAR lock: canvas bisa besar (mis. full-screen); menahan kwm_lock
+    // (spinlock, IRQ-off) selama scan memblok timer/compositor. Race benign —
+    // hanya owner (caller) yang menulis canvas ini.
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+
+    for (uint32_t i = 0; i < n; i++) {
+        if ((px[i] >> 24) == 0) return -1;   // ada piksel transparan → bukan opaque
+    }
+
+    flags = spinlock_lock_irqsave(&kwm_lock);
+    if (kwm_windows[win_id].active &&
+        kwm_windows[win_id].owner_task == smp_current_task_id()) {
+        kwm_windows[win_id].fully_opaque = 1;
+    }
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
     return 0;
 }
 
@@ -576,6 +623,28 @@ static void kwm_bring_to_front(int win_id) {
 //   left_up   = 1 saat tombol kiri baru dilepas (edge detect)
 int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
                       uint8_t left_down, uint8_t left_up) {
+
+    // 0. Hover tombol close — diperbarui tiap event (gerak & klik), bukan hanya
+    //    saat klik, agar chrome bisa memerah tanpa menunggu tombol ditekan.
+    //    Window di-repaint hanya ketika status hover benar-benar berubah.
+    {
+        spinlock_lock(&kwm_lock);
+        int hov = 0;
+        int t = kwm_hit_test_locked(mouse_px, mouse_py);
+        if (t >= 0 && !(kwm_windows[t].flags & KWM_WIN_DESKTOP) &&
+            mouse_py < kwm_windows[t].y + KWM_TITLEBAR_H &&
+            mouse_px >= kwm_windows[t].x + (int32_t)kwm_windows[t].width -
+                         KWM_CLOSE_BTN_W) {
+            hov = t + 1;
+        }
+        int prev = hovered_close_win;
+        hovered_close_win = hov;
+        spinlock_unlock(&kwm_lock);
+        if (prev != hov) {
+            if (prev > 0) kwm_frame_dirty(prev - 1);
+            if (hov  > 0) kwm_frame_dirty(hov  - 1);
+        }
+    }
 
     // 1. Mouse Up — akhiri drag session
     if (left_up) {

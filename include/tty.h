@@ -8,6 +8,10 @@
 fs_node_t* init_tty(void);
 void tty_clear(void);
 
+// Warna teks TTY berikutnya (boot status). Hanya memengaruhi glyph yang
+// digambar setelahnya; tidak menyentuh compositor/KWM. Default FG_COLOR.
+void tty_set_fg(uint32_t color);
+
 // Scrollback: geser jendela tampilan `delta` baris (positif = ke riwayat lama,
 // negatif = kembali ke output terbaru). Dipanggil Phase 4 dari mouse wheel.
 void tty_scroll_view(int32_t delta_lines);

@@ -216,6 +216,7 @@ RUST_OUT  = $(RUST_DIR)/target/$(RUST_TRIP)/release
 rust-apps:
 	cd $(RUST_DIR) && RUSTFLAGS="-C relocation-model=static -C link-arg=-T../user_apps/app.ld" cargo build --release
 	cp $(RUST_OUT)/hello-slint hello-slint.elf
+	cp $(RUST_OUT)/control-center control-center.elf
 
 .PHONY: rust-clean
 rust-clean:
@@ -260,7 +261,7 @@ boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png logo.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf hello-slint.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf hello-slint.elf control-center.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	# Manifest launcher (name=/color=/hidden=), dibaca desktop.elf saat scan
 	# app. Setiap file baru di manifests/ HARUS ditambah juga ke limine.conf.
 	cp manifests/*.app iso_root/

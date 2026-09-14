@@ -132,6 +132,59 @@ Rect rect_union(Rect a, Rect b) {
     return out;
 }
 
+// ============================================================
+// Phase 15 — bounded dirty-region coalescing
+//
+// Before: once more than MAX_DIRTY_REGIONS rects accumulated, the entire list
+// was replaced by ONE bounding box (the old collapse branch). Scattered small
+// updates — glyph cells, widget hovers, a few windows — then made the
+// compositor base-blit + composite + upload the whole spanned area. Phase 11
+// ranked this collapse the #1 work amplifier.
+//
+// Over-invalidation is allowed; under-invalidation is forbidden. Every
+// transform below only ever grows coverage (rect_union), so
+//     union(coalesced)  is a SUPERSET of  union(requested)
+// always holds. That is the correctness invariant.
+//
+// The O(N^2) pair search runs only when the list is FULL and the new rect is
+// disjoint from every region. N = MAX_DIRTY_REGIONS = 64, so even that is a few
+// thousand cheap integer unions — negligible next to composing pixels.
+// ============================================================
+
+static uint64_t rect_area_u64(Rect r) {
+    return (uint64_t)r.width * (uint64_t)r.height;
+}
+
+// Extra pixels a merge forces the compositor to process: bounding-box area
+// minus both source areas. SIGNED: for two overlapping rects the bounding box
+// can be SMALLER than their sum, so this is negative and the merge is a strict
+// win (it also removes the double-processed overlap). For separated rects it is
+// positive and equals the wasted gap. This is the area cost used to choose
+// merges; it must be signed or the comparison wraps.
+static int64_t merge_inflation(Rect a, Rect b) {
+    Rect u = rect_union(a, b);
+    return (int64_t)rect_area_u64(u) - (int64_t)rect_area_u64(a)
+                                     - (int64_t)rect_area_u64(b);
+}
+
+// 1 if `inner` lies fully inside `outer` (64-bit safe; Rect may be negative).
+static int rect_contains(Rect outer, Rect inner) {
+    return inner.x >= outer.x && inner.y >= outer.y &&
+           (int64_t)inner.x + inner.width  <= (int64_t)outer.x + outer.width &&
+           (int64_t)inner.y + inner.height <= (int64_t)outer.y + outer.height;
+}
+
+// Drop regions fully contained in `cover` (regions[keep]). Used after a region
+// grows: the covered regions are now redundant. Compacts in place, O(N).
+static void dirty_drop_contained(DirtyRegionList* list, Rect cover, uint32_t keep) {
+    uint32_t k = 0;
+    for (uint32_t j = 0; j < list->count; j++) {
+        if (j != keep && rect_contains(cover, list->regions[j])) continue;
+        list->regions[k++] = list->regions[j];
+    }
+    list->count = k;
+}
+
 void dirty_region_clear(DirtyRegionList* list) {
     if (!list) return;
     list->count = 0;
@@ -141,22 +194,79 @@ void dirty_region_clear(DirtyRegionList* list) {
 void dirty_region_mark(DirtyRegionList* list, Rect r) {
     if (!list || r.width == 0 || r.height == 0) return;
 
-    if (list->collapsed) {
-        list->regions[0] = rect_union(list->regions[0], r);
+    // 1. Already covered by an existing region.
+    for (uint32_t i = 0; i < list->count; i++)
+        if (rect_contains(list->regions[i], r)) return;
+
+    // 2. Merge into the overlapping region that costs the least, but only when
+    //    the merge does not add work (inflation <= 0: the bounding box is no
+    //    larger than the two regions processed separately, and any shared
+    //    overlap stops being processed twice). Lightly-overlapping rects that
+    //    would inflate stay separate — a bbox is a worse representation than
+    //    the sum of the parts, so eagerly folding them would CREATE work.
+    int     m = -1;
+    int64_t m_cost = 0;
+    for (uint32_t i = 0; i < list->count; i++) {
+        Rect clip;
+        if (!rect_intersect(list->regions[i], r, &clip)) continue;
+        int64_t c = merge_inflation(list->regions[i], r);
+        if (m < 0 || c < m_cost) { m = (int)i; m_cost = c; }
+    }
+    if (m >= 0 && m_cost <= 0) {
+        list->regions[m] = rect_union(list->regions[m], r);
+        dirty_drop_contained(list, list->regions[m], (uint32_t)m);
         return;
     }
 
-    if (list->count >= MAX_DIRTY_REGIONS) {
-        Rect box = list->regions[0];
-        for (uint32_t i = 1; i < list->count; i++) box = rect_union(box, list->regions[i]);
-        box = rect_union(box, r);
-        list->regions[0] = box;
-        list->count = 1;
-        list->collapsed = 1;
+    // 3. Independent (or too costly to merge): append while there is room.
+    //    Regions r fully covers are superseded and dropped.
+    if (list->count < MAX_DIRTY_REGIONS) {
+        uint32_t k = 0;
+        for (uint32_t j = 0; j < list->count; j++) {
+            if (rect_contains(r, list->regions[j])) continue;
+            list->regions[k++] = list->regions[j];
+        }
+        list->regions[k++] = r;
+        list->count = k;
         return;
     }
 
-    list->regions[list->count++] = r;
+    // 4. Full. Do NOT collapse everything into one bbox. Keep the list bounded
+    //    by the least wasteful option — either grow one region to include r, or
+    //    merge the cheapest existing pair and keep r separate. O(N^2) is fine:
+    //    N = MAX_DIRTY_REGIONS = 64 and this runs only under pressure.
+    uint32_t best = 0;
+    int64_t  best_cost = merge_inflation(list->regions[0], r);
+    for (uint32_t i = 1; i < list->count; i++) {
+        int64_t c = merge_inflation(list->regions[i], r);
+        if (c < best_cost) { best_cost = c; best = i; }
+    }
+    uint32_t pi = 0, pj = 1;
+    int64_t  pair_cost = merge_inflation(list->regions[0], list->regions[1]);
+    for (uint32_t i = 0; i < list->count; i++) {
+        for (uint32_t j = i + 1; j < list->count; j++) {
+            int64_t c = merge_inflation(list->regions[i], list->regions[j]);
+            if (c < pair_cost) { pair_cost = c; pi = i; pj = j; }
+        }
+    }
+
+    if (best_cost <= pair_cost) {
+        // Growing one region to include r wastes less than merging two others.
+        Rect cover = rect_union(list->regions[best], r);
+        list->regions[best] = cover;
+        dirty_drop_contained(list, cover, best);
+        return;
+    }
+
+    // Merge the cheapest existing pair to free a slot, then place r.
+    Rect cover = rect_union(list->regions[pi], list->regions[pj]);
+    list->regions[pi] = cover;
+    for (uint32_t k = pj; k + 1 < list->count; k++) list->regions[k] = list->regions[k + 1];
+    list->count--;
+    if (pi > pj) pi--;
+    dirty_drop_contained(list, cover, pi);
+    if (list->count < MAX_DIRTY_REGIONS && !rect_contains(cover, r))
+        list->regions[list->count++] = r;
 }
 
 void viewport_scroll(Viewport* vp, int32_t dx, int32_t dy) {

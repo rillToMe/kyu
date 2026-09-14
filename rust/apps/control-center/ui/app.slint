@@ -1,0 +1,450 @@
+// control-center: a multi-view "system control center" Slint UI.
+// Proves the Kyuzen no_std pipeline on a non-trivial layout: sidebar nav,
+// switchable views, live widgets, lists, sliders, form and an interactive
+// log pane. Content area is owned by Slint; titlebar stays KWM.
+//
+// NOTE on ordering: in Slint a component must be declared before it is used,
+// so the leaf widgets (ProcessRow, GaugeCard, StatusCard, NavButton) come
+// first, then the views that compose them, then the exported root.
+
+import { Button, ComboBox, GroupBox, LineEdit, ListView,
+         ProgressIndicator, ScrollView, Slider, TextEdit } from "std-widgets.slint";
+
+export struct ProcessInfo {
+    name: string,
+    pid: int,
+    cpu: float,
+    mem: float,
+}
+
+// ============================================================
+// Leaf widgets (defined before use)
+// ============================================================
+component NavButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected: false;
+    callback clicked();
+    height: 34px;
+    border-radius: 6px;
+    background: root.selected ? #232A3A : transparent;
+
+    animate background { duration: 120ms; }
+
+    Text {
+        x: 12px;
+        vertical-alignment: center;
+        height: 100%;
+        text: root.text;
+        font-size: 13px;
+        color: root.selected ? #FFFFFF : #8B93A7;
+    }
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ProcessRow inherits Rectangle {
+    in property <string> name;
+    in property <int> pid;
+    in property <float> cpu;
+    in property <float> mem;
+    height: 28px;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        Text { text: root.name; color: #E8ECF3; vertical-alignment: center; }
+        Rectangle { }
+        Text { text: "pid " + root.pid; color: #8B93A7; vertical-alignment: center; }
+        Text { text: "cpu " + root.cpu + "%"; color: #8B93A7; vertical-alignment: center; }
+        Text { text: "mem " + root.mem + "%"; color: #8B93A7; vertical-alignment: center; }
+    }
+}
+
+component GaugeCard inherits Rectangle {
+    in property <string> label;
+    in property <float> value;
+    in property <string> unit;
+    in property <color> barColor: #4F8CFF;
+
+    background: #1A1F2B;
+    border-radius: 10px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        Text { text: root.label; font-size: 11px; color: #8B93A7; }
+        ProgressIndicator {
+            progress: root.value;
+            height: 10px;
+        }
+        Text {
+            text: "Value: " + (root.value * 100) + " " + root.unit;
+            font-size: 20px;
+            color: root.barColor;
+        }
+    }
+}
+
+component StatusCard inherits Rectangle {
+    in property <string> title;
+    in property <string> value;
+    background: #1A1F2B;
+    border-radius: 10px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 6px;
+        Text { text: root.title; font-size: 10px; color: #8B93A7; }
+        Text { text: root.value; font-size: 16px; color: #E8ECF3; }
+    }
+}
+
+// Hand-rolled checkbox. NOTE: std-widgets CheckBox is NOT used — it pulls an
+// SVG icon that trips the Slint 1.17.1 software-renderer glyph embedder
+// ("large glyph y coordinate" panic at build time). This equivalent builds
+// from primitives only.
+component MyCheckBox inherits Rectangle {
+    in property <string> text;
+    in-out property <bool> checked;
+    callback toggled();
+    height: 28px;
+    HorizontalLayout {
+        spacing: 10px;
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            background: root.checked ? #4F8CFF : #2A3140;
+            border-radius: 4px;
+            Text {
+                text: root.checked ? "X" : "";
+                color: white;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.text;
+            color: #E8ECF3;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea {
+        clicked => { root.checked = !root.checked; root.toggled(); }
+    }
+}
+
+// ============================================================
+// Views
+// ============================================================
+component Overview inherits Rectangle {
+    in property <bool> wifi;
+    // Fill the remaining content height when used as the active view.
+    vertical-stretch: 1;
+
+    ScrollView {
+        viewport-width: parent.width;
+        VerticalLayout {
+            spacing: 12px;
+
+            HorizontalLayout {
+                spacing: 12px;
+                GaugeCard { label: "CPU"; value: 0.63; unit: "%"; barColor: #4F8CFF; }
+                GaugeCard { label: "MEMORY"; value: 0.48; unit: "%"; barColor: #F2A03D; }
+                GaugeCard { label: "DISK"; value: 0.31; unit: "%"; barColor: #51C98F; }
+            }
+
+            GridLayout {
+                spacing: 12px;
+                Row {
+                    StatusCard { title: "Uptime"; value: "1 h 23 m"; }
+                    StatusCard { title: "Sessions"; value: "2"; }
+                }
+                Row {
+                    StatusCard { title: "Network"; value: root.wifi ? "Connected" : "Offline"; }
+                    StatusCard { title: "Temp"; value: "52 C"; }
+                }
+            }
+        }
+    }
+}
+
+component Processes inherits Rectangle {
+    in property <[ProcessInfo]> processes;
+    vertical-stretch: 1;
+
+    GroupBox {
+        title: "Running processes";
+        ListView {
+            for p in root.processes : ProcessRow {
+                name: p.name;
+                pid: p.pid;
+                cpu: p.cpu;
+                mem: p.mem;
+            }
+        }
+    }
+}
+
+component Settings inherits Rectangle {
+    in-out property <float> brightness;
+    in-out property <float> volume;
+    in-out property <bool> wifi;
+    in-out property <bool> bluetooth;
+    in-out property <bool> darkMode;
+    in-out property <int> theme;
+    in-out property <string> username;
+    callback saveSettings();
+    vertical-stretch: 1;
+
+    ScrollView {
+        viewport-width: parent.width;
+        VerticalLayout {
+            spacing: 12px;
+
+            GroupBox {
+                title: "Appearance";
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        Text { text: "Brightness"; color: #E8ECF3; vertical-alignment: center; }
+                        Slider {
+                            value: root.brightness;
+                            changed(v) => { root.brightness = v; }
+                        }
+                        Text { text: "Level: " + (root.brightness * 100) + "%"; color: #8B93A7; vertical-alignment: center; }
+                    }
+                    HorizontalLayout {
+                        Text { text: "Volume"; color: #E8ECF3; vertical-alignment: center; }
+                        Slider {
+                            value: root.volume;
+                            changed(v) => { root.volume = v; }
+                        }
+                        Text { text: "Level: " + (root.volume * 100) + "%"; color: #8B93A7; vertical-alignment: center; }
+                    }
+                    HorizontalLayout {
+                        Text { text: "Theme"; color: #E8ECF3; vertical-alignment: center; }
+                        ComboBox {
+                            model: ["System", "Dark", "Light"];
+                            current-index: root.theme;
+                            selected => { root.theme = self.current-index; }
+                        }
+                    }
+                    MyCheckBox {
+                        text: "Dark mode";
+                        checked: root.darkMode;
+                        toggled => { root.darkMode = self.checked; }
+                    }
+                }
+            }
+
+            GroupBox {
+                title: "Network";
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 8px;
+                    MyCheckBox { text: "Wi-Fi"; checked: root.wifi; toggled => { root.wifi = self.checked; } }
+                    MyCheckBox { text: "Bluetooth"; checked: root.bluetooth; toggled => { root.bluetooth = self.checked; } }
+                }
+            }
+
+            GroupBox {
+                title: "User";
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 8px;
+                    LineEdit {
+                        text: root.username;
+                        placeholder-text: "Username";
+                        edited(v) => { root.username = v; }
+                    }
+                }
+            }
+
+            Button {
+                text: "Save settings";
+                primary: true;
+                clicked => { root.saveSettings(); }
+            }
+        }
+    }
+}
+
+component Logs inherits Rectangle {
+    callback runCommand(string);
+    in-out property <string> log;
+    property <string> input: "";
+    vertical-stretch: 1;
+
+    VerticalLayout {
+        spacing: 10px;
+        Rectangle {
+            background: #0D1017;
+            border-radius: 6px;
+            // Fill the remaining view height (input row below keeps its size).
+            vertical-stretch: 1;
+            min-height: 80px;
+            TextEdit {
+                read-only: true;
+                text: root.log;
+                wrap: word-wrap;
+                width: parent.width;
+                height: parent.height;
+                font-size: 12px;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                text: root.input;
+                placeholder-text: "type a command…";
+                edited(v) => { root.input = v; }
+                accepted => { root.runCommand(root.input); root.input = ""; }
+            }
+            Button {
+                text: "Run";
+                clicked => { root.runCommand(root.input); root.input = ""; }
+            }
+        }
+    }
+}
+
+// ============================================================
+// ROOT: sidebar + content
+// ============================================================
+export component ControlCenter inherits Window {
+    width: 640px;
+    height: 460px;
+    title: "Control Center";
+    background: #10131A;
+
+    // --- shared state (drives every view) ---
+    in-out property <int> activeView: 0;
+    in-out property <float> brightness: 0.72;
+    in-out property <float> volume: 0.55;
+    in-out property <bool> wifi: true;
+    in-out property <bool> bluetooth: false;
+    in-out property <bool> darkMode: true;
+    in-out property <int> theme: 1;
+    in-out property <string> username;
+    in-out property <string> statusMsg;
+    in-out property <string> log;
+    in-out property <[ProcessInfo]> processes;
+
+    callback navigate(int);
+    callback saveSettings();
+    callback runCommand(string);
+
+    property <color> accent: #4F8CFF;
+
+    HorizontalLayout {
+        spacing: 0;
+
+        // ---------- Sidebar ----------
+        Rectangle {
+            width: 180px;
+            background: #151923;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+
+                Text {
+                    text: "KYUZEN OS";
+                    font-size: 18px;
+                    color: root.accent;
+                }
+                Text {
+                    text: "Control Center";
+                    font-size: 11px;
+                    color: #8B93A7;
+                }
+
+                Rectangle { height: 1px; background: #2A3140; }
+
+                for item in [
+                    { label: "Overview", idx: 0 },
+                    { label: "Processes", idx: 1 },
+                    { label: "Settings", idx: 2 },
+                    { label: "Logs", idx: 3 },
+                ] : NavButton {
+                    text: item.label;
+                    selected: root.activeView == item.idx;
+                    clicked => { root.navigate(item.idx); }
+                }
+
+                Rectangle { height: 1px; background: #2A3140; }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: root.username == "" ? "guest" : root.username;
+                        font-size: 13px;
+                        color: #E8ECF3;
+                    }
+                    Text {
+                        text: "v0.3.1 - x86_64";
+                        font-size: 10px;
+                        color: #8B93A7;
+                    }
+                }
+            }
+        }
+
+        Rectangle { width: 1px; background: #2A3140; }
+
+        // ---------- Content ----------
+        Rectangle {
+            background: #10131A;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: root.activeView == 0 ? "System Overview"
+                            : root.activeView == 1 ? "Processes"
+                            : root.activeView == 2 ? "Settings"
+                            : "System Log";
+                        font-size: 22px;
+                        color: #E8ECF3;
+                    }
+                    Rectangle { }
+                    Text {
+                        text: root.statusMsg;
+                        font-size: 11px;
+                        color: #8B93A7;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // View stack. `if` (not visible:) so ONLY the active view is
+                // instantiated. Sibling views — even with visible: false — still
+                // take part in the VerticalLayout's space distribution and
+                // squeeze the active view down to its ScrollView min-height,
+                // which clipped the page and forced a bogus scrollbar. With `if`
+                // exactly one view exists; its vertical-stretch (set on each
+                // view root) gives it the full remaining height.
+                if root.activeView == 0 : Overview {
+                    wifi: root.wifi;
+                }
+                if root.activeView == 1 : Processes {
+                    processes: root.processes;
+                }
+                if root.activeView == 2 : Settings {
+                    brightness: root.brightness; volume: root.volume;
+                    wifi: root.wifi; bluetooth: root.bluetooth;
+                    darkMode: root.darkMode; theme: root.theme;
+                    username: root.username;
+                    saveSettings => root.saveSettings();
+                }
+                if root.activeView == 3 : Logs {
+                    log <=> root.log;
+                    runCommand(cmd) => { root.runCommand(cmd); }
+                }
+            }
+        }
+    }
+}

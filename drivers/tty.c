@@ -49,6 +49,11 @@ static int32_t  tty_view_offset;  // 0 = tampilkan output terbaru; >0 = scroll k
 // --- ANIMASI KURSOR ---
 int cursor_state = 1; // 1 = Menyala, 0 = Mati
 
+// Warna glyph berikutnya (boot status). Di-reset tiap tty_clear(); kernel
+// men-set lewat tty_set_fg() dan mengembalikan ke putih setelah marker.
+static uint32_t tty_fg = FG_COLOR;
+void tty_set_fg(uint32_t color) { tty_fg = color; }
+
 static uint32_t tty_cols(void) { return fb_width / FONT_WIDTH; }
 static uint32_t tty_rows(void) { return fb_height / FONT_HEIGHT; }
 
@@ -169,7 +174,7 @@ void terminal_putchar(char c) {
     }
     else {
         draw_rect(terminal_column * FONT_WIDTH, terminal_row * FONT_HEIGHT, FONT_WIDTH, FONT_HEIGHT, BG_COLOR);
-        draw_char(c, terminal_column * FONT_WIDTH, terminal_row * FONT_HEIGHT, FG_COLOR);
+        draw_char(c, terminal_column * FONT_WIDTH, terminal_row * FONT_HEIGHT, tty_fg);
 
         if (terminal_column < TTY_MAX_COLS - 1) {
             char* line = tty_hist_line(tty_line_count);
@@ -191,6 +196,7 @@ void tty_clear(void) {
     terminal_column = 0;
     tty_line_count = 0;
     tty_view_offset = 0;
+    tty_fg = FG_COLOR;   // kembali ke teks normal
     tty_hist_clear_line(0);
     tty_draw_cursor();
 }

@@ -61,6 +61,8 @@ APP_BASE = 0x4000000
 
 # --- File Objek Bersama ---
 USERLIB_OBJ = userlib.o
+USERUTIL_OBJ = userutil.o   # helper identitas bersama (UID → username)
+SHELLCORE_OBJ = shell_core.o # shell engine bersama (parser/registry/built-in)
 LIBGUI_OBJ  = libgui.o
 LIBUI_OBJ   = libui.o   # Widget Toolkit Modern C++ (apps/libui.cpp)
 PNG_OBJ     = png.o     # Dekoder PNG bersama (apps/png.c, stb_image)
@@ -101,6 +103,16 @@ all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTE
 # COMPILE SHARED USERLIB
 $(USERLIB_OBJ): $(APPS_DIR)/userlib.c
 	@echo "[CC] Mengompilasi userlib (64-bit)..."
+	$(CC) $(CFLAGS_LIB) -c $< -o $@
+
+# COMPILE USERUTIL - helper identitas bersama (current_username)
+$(USERUTIL_OBJ): $(APPS_DIR)/userutil.c
+	@echo "[CC] Mengompilasi userutil (identitas user)..."
+	$(CC) $(CFLAGS_LIB) -c $< -o $@
+
+# COMPILE SHELLCORE - shell engine bersama (shell.h)
+$(SHELLCORE_OBJ): $(APPS_DIR)/shell_core.c
+	@echo "[CC] Mengompilasi shell_core (shell engine)..."
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
 # ==========================================================
@@ -233,9 +245,9 @@ terminal.o: terminal.c
 	@echo "[CC] Mengompilasi terminal.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(TERMINAL_ELF): terminal.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
-	@echo "[LD] Linking terminal.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) terminal.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+$(TERMINAL_ELF): terminal.o $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking terminal.elf (libui toolkit + shell engine + png)..."
+	$(LD) $(LDFLAGS) terminal.o $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] terminal.elf siap!"
 
 terminal: $(TERMINAL_ELF)
@@ -292,5 +304,5 @@ clean:
 	@echo "[CLEAN] Selesai."
 
 # --- Semua objek + header deps (harus sebelum -include) ---
-APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o desktop.o terminal.o settings.o
+APP_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o desktop.o terminal.o settings.o
 -include $(APP_OBJS:.o=.d)

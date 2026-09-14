@@ -58,6 +58,22 @@ static void net_print_ip(uint32_t addr_le) {
 }
 
 /* ===========================================================================
+ * Boot-console summary state.
+ *
+ * net_init() sendiri tidak boleh mencetak verbose ke console (kernel_main
+ * menahan kprint ke serial selama boot). State ringkas ini dibaca kernel_main
+ * untuk menampilkan satu baris status yang jujur: down / DHCP / static.
+ *   return: 0 = NIC gagal, 1 = DHCP, 2 = static fallback
+ * =========================================================================*/
+static int      g_boot_net_state = 0;
+static uint32_t g_boot_ip = 0;
+
+int net_boot_summary(uint32_t* ip_out) {
+    if (ip_out) *ip_out = g_boot_ip;
+    return g_boot_net_state;
+}
+
+/* ===========================================================================
  * net_init() — Entry Point
  *
  * Dipanggil dari kernel_main() setelah `sti`.
@@ -100,6 +116,7 @@ void net_init(void) {
 
     if (netif == NULL) {
         kprint("[net] ERROR: netif_add() failed! NIC not found or init error.\n");
+        g_boot_net_state = 0;   /* NIC gagal — boot console harus melaporkan FAIL */
         return;
     }
 
@@ -111,6 +128,9 @@ void net_init(void) {
 
     /* Set hostname (tampil di DHCP request option 12) */
     netif_set_hostname(&g_kyuzen_netif, "kyuzen");
+
+    /* Interface terdaftar; default static sampai DHCP membuktikan sebaliknya. */
+    g_boot_net_state = 2;
 
     kprint("[net] Network interface 'kz' registered and up\n");
 
@@ -156,6 +176,7 @@ void net_init(void) {
             /* Cek apakah DHCP sudah berhasil mendapatkan IP */
             if (!ip4_addr_isany_val(g_kyuzen_netif.ip_addr)) {
                 kprint("[net] DHCP complete!\n");
+                g_boot_net_state = 1;   /* DHCP sukses */
                 break;
             }
             /* Hemat CPU: tidur hingga interrupt berikutnya.
@@ -237,4 +258,8 @@ void net_init(void) {
     }
     kprint("\n");
     kprint("[net] ================================\n\n");
+
+    /* Ringkasan untuk boot console (kernel_main mencetak satu baris status). */
+    g_boot_ip = g_kyuzen_netif.ip_addr.addr;
+    if (g_boot_net_state == 0) g_boot_net_state = 2;   /* netif up, IP static */
 }

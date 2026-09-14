@@ -7,8 +7,17 @@
 
 extern void gdt_load(void);
 extern void idt_load(void);
-extern void kprint(const char* str);
-extern void kprint_num(uint64_t num);
+// Detail LAPIC/SMP = diagnostik, bukan boot-status console → serial COM1 saja.
+extern void serial_print(const char* s);
+static void smp_serial_num(uint32_t v) {
+    char b[12]; int n = 0;
+    if (v == 0) { serial_print("0"); return; }
+    char t[12]; int i = 0;
+    while (v > 0 && i < 11) { t[i++] = (char)('0' + (v % 10)); v /= 10; }
+    while (i > 0) b[n++] = t[--i];
+    b[n] = '\0';
+    serial_print(b);
+}
 
 // ============================================================
 // SMP BRING-UP AWAL
@@ -184,11 +193,11 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
 #endif
 
     smp_spin_lock(&smp_log_lock);
-    kprint("[smp] CPU #");
-    kprint_num(cpu->processor_id);
-    kprint(" online (lapic=");
-    kprint_num(cpu->lapic_id);
-    kprint(")\n");
+    serial_print("[smp] CPU #");
+    smp_serial_num(cpu->processor_id);
+    serial_print(" online (lapic=");
+    smp_serial_num(cpu->lapic_id);
+    serial_print(")\n");
     smp_spin_unlock(&smp_log_lock);
 
     // FIX_001: tinggalkan stack awal dari Limine — idle loop berjalan di
@@ -200,15 +209,15 @@ void smp_init(struct limine_mp_response *mp) {
     smp_register_cpu(0, 0, lapic_id(), 1);
 
     if (mp == NULL || mp->cpu_count == 0 || mp->cpus == NULL) {
-        kprint("[smp] MP response unavailable; running single-core\n");
+        serial_print("[smp] MP response unavailable; running single-core\n");
         return;
     }
 
-    kprint("[smp] BSP lapic=");
-    kprint_num(mp->bsp_lapic_id);
-    kprint(", CPUs reported=");
-    kprint_num(mp->cpu_count);
-    kprint("\n");
+    serial_print("[smp] BSP lapic=");
+    smp_serial_num(mp->bsp_lapic_id);
+    serial_print(", CPUs reported=");
+    smp_serial_num(mp->cpu_count);
+    serial_print("\n");
 
     uint32_t ap_slot = 0;
     for (uint64_t i = 0; i < mp->cpu_count && ap_slot + 1 < SMP_MAX_CPUS; i++) {
@@ -244,9 +253,9 @@ void smp_init(struct limine_mp_response *mp) {
         __asm__ volatile("pause");
     }
 
-    kprint("[smp] Online CPUs: ");
-    kprint_num(smp_cpu_online_count);
-    kprint("/");
-    kprint_num(ap_slot + 1);
-    kprint("\n");
+    serial_print("[smp] Online CPUs: ");
+    smp_serial_num(smp_cpu_online_count);
+    serial_print("/");
+    smp_serial_num(ap_slot + 1);
+    serial_print("\n");
 }

@@ -3,6 +3,11 @@
 
 #define COM1 0x3F8
 
+// Set 1 oleh serial_init(). Dipakai kprint_quiet (kernel/kyuzenfs.c) supaya
+// mirror diagnostik ke COM1 hanya setelah UART benar-benar siap (menghindari
+// spin di serial_putc menunggu LSR pada UART yang belum diinisialisasi).
+int g_serial_ready = 0;
+
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
 }
@@ -20,6 +25,7 @@ void serial_init(void) {
     outb(COM1 + 3, 0x03);
     outb(COM1 + 2, 0xC7);
     outb(COM1 + 4, 0x0B);
+    g_serial_ready = 1;   // aman dipakai kprint_quiet sebagai mirror diagnostik
 }
 
 void serial_putc(char c) {

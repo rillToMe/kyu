@@ -285,16 +285,47 @@ public:
     ui_drop_cb drop_cb;
     void* drop_data;
     int cursor_kind;
+    // Phase 8: dirty tracking per-widget (tetap satu bbox di Window).
+    // Widget yang benar-benar berubah menandai rect-nya sendiri; Window
+    // meng-unions hanya rect itu, bukan seluruh pohon widget.
+    bool dirty;
+    int dm_x, dm_y, dm_w, dm_h;
 
     Widget() : x(0), y(0), w(0), h(0), visible(true), has_focus(false),
               click_cb(0), userdata(0), draggable(false), dnd_payload(0),
               drop_target(false), drop_cb(0), drop_data(0),
-              cursor_kind(UI_CURSOR_ARROW) {}
+              cursor_kind(UI_CURSOR_ARROW),
+              dirty(false), dm_x(0), dm_y(0), dm_w(0), dm_h(0) {}
     virtual ~Widget() { _ui_free(dnd_payload); }
     virtual void draw(Painter& p) = 0;
     virtual void set_hover(bool on) { (void)on; }
-    virtual void set_focus(bool on) { has_focus = on; }
+    virtual void set_focus(bool on) { has_focus = on; mark_dirty(); }
     virtual bool focusable() { return false; }   // TextBox → true
+    // Phase 8: akumulasi rect kotor (window-local) — over-report BOLEH.
+    void mark_area(int ax, int ay, int aw, int ah) {
+        if (aw <= 0 || ah <= 0) return;
+        if (!dirty) { dirty = true; dm_x = ax; dm_y = ay; dm_w = aw; dm_h = ah; return; }
+        int x1 = ax + aw, y1 = ay + ah;
+        int dx1 = dm_x + dm_w, dy1 = dm_y + dm_h;
+        if (ax < dm_x) dm_x = ax;
+        if (ay < dm_y) dm_y = ay;
+        if (x1 > dx1) dx1 = x1;
+        if (y1 > dy1) dy1 = y1;
+        dm_w = dx1 - dm_x; dm_h = dy1 - dm_y;
+    }
+    void mark_dirty() { mark_area(x, y, w, h); }
+    // Ambil + reset damage akumulatif widget.
+    bool take_dirty(int& ox, int& oy, int& ow, int& oh) {
+        if (!dirty) return false;
+        ox = dm_x; oy = dm_y; ow = dm_w; oh = dm_h;
+        dirty = false; dm_x = dm_y = dm_w = dm_h = 0;
+        return true;
+    }
+    // Traversal dirty (Layout/Tab/ScrollView override).
+    virtual int dirty_child_count() { return 0; }
+    virtual Widget* dirty_child(int i) { (void)i; return 0; }
+    // Layout: hitung ulang posisi anak sebelum pengumpulan damage (reflow).
+    virtual void settle() {}
     // Hit-test: widget paling dalam yang memuat (mx,my), atau 0.
     virtual Widget* pick(int mx, int my) {
         if (!visible) return 0;
@@ -359,9 +390,11 @@ public:
     void set_text(const char* t) {
         char* n = _ui_strdup(t);
         if (!n) return;
+        mark_dirty();               // bounds lama (w bisa menyusut)
         _ui_free(text);
         text = n;
         w = _ui_strlen(text) * 8;
+        mark_dirty();               // bounds baru
     }
     virtual void draw(Painter& p) override { p.text(text, x, y, p.theme.fg); }
 };
@@ -394,12 +427,13 @@ public:
         p.text(text, x + (w - _ui_strlen(text) * 8) / 2,
                y + (h - 16) / 2 + (pressed ? 1 : 0), p.theme.button_fg);
     }
-    virtual void set_hover(bool on) override { hover = on; if (!on) pressed = false; }
+    virtual void set_hover(bool on) override { hover = on; if (!on) pressed = false; mark_dirty(); }
     virtual void on_click(int mx, int my) override {
         pressed = true;             // render() dipanggil Window setelah ini
+        mark_dirty();
         Widget::on_click(mx, my);
     }
-    virtual void on_release() override { pressed = false; }
+    virtual void on_release() override { pressed = false; mark_dirty(); }
 };
 
 // ------------------------------------------------------------
@@ -423,6 +457,7 @@ public:
         for (int i = 0; i < n; i++) text[i] = t[i];
         text[n] = '\0';
         cur = n;
+        mark_dirty();
     }
     virtual bool focusable() override { return true; }
     virtual void draw(Painter& p) override {
@@ -436,6 +471,7 @@ public:
         if (has_focus) p.rect(x + 4 + cur * 8, y + 4, 1, 16, p.theme.accent);
     }
     virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
+        mark_dirty();   // teks/kursor/kotak fokus bisa berubah
         // Phase 9: Ctrl+C/X/V = clipboard (salurkan via P1 dasar 'c'/'x'/'v',
         // plus control-code variant 0x03/0x18/0x16 bila driver memetakannya).
         if (mods & KEY_MOD_CTRL) {
@@ -476,13 +512,16 @@ public:
     int cur;
     int scroll_top;    // baris pertama yang tampak
     bool readonly;
+    ui_click_cb enter_cb;   // terminal: Enter diserahkan ke app (tanpa sisip '\n')
+    void* enter_data;
 
     TextEdit(int width, int height) : len(0), cur(0), scroll_top(0),
-                                      readonly(false) {
+                                      readonly(false), enter_cb(0), enter_data(0) {
         w = width; h = height;
         text[0] = '\0';
         cursor_kind = UI_CURSOR_IBEAM;
     }
+    void set_enter(ui_click_cb cb, void* u) { enter_cb = cb; enter_data = u; }
     // Readonly (output terminal) tak boleh mencuri fokus dari input.
     virtual bool focusable() override { return !readonly; }
 
@@ -519,13 +558,15 @@ public:
         text[len] = '\0';
     }
     void append(const char* s) {
+        mark_dirty();
         for (int i = 0; s[i] && len < MAX_TEXT - 1; i++) text[len++] = s[i];
         text[len] = '\0';
         cur = len;
         scroll_top = total_lines() - vis_lines();   // ikut ujung (terminal)
         clamp_scroll();
+        mark_dirty();
     }
-    void clear() { len = 0; cur = 0; scroll_top = 0; text[0] = '\0'; }
+    void clear() { mark_dirty(); len = 0; cur = 0; scroll_top = 0; text[0] = '\0'; }
 
     // --- scroll ---
     void clamp_scroll() {
@@ -543,6 +584,12 @@ public:
     }
 
     virtual void on_click(int mx, int my) override {
+        if (enter_cb) {              // terminal: kursor terkunci di baris perintah
+            cur = len;
+            ensure_cursor_visible();
+            mark_dirty();
+            return;
+        }
         int col = (mx - x - 4) / CHAR_W; if (col < 0) col = 0;
         int row = (my - y) / LINE_H + scroll_top;
         int idx = 0, ln = 0;
@@ -554,14 +601,17 @@ public:
         while (idx < len && text[idx] != '\n' && c < col) { idx++; c++; }
         cur = idx;
         ensure_cursor_visible();
+        mark_dirty();
     }
     virtual bool on_scroll(int delta) override {
         int old = scroll_top;
         scroll_top += delta;        // +1 roda bawah = lihat output lebih bawah
         clamp_scroll();
+        if (scroll_top != old) mark_dirty();
         return scroll_top != old;
     }
     virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
+        mark_dirty();
         if (mods & KEY_MOD_CTRL) {
             if (ascii == 'a' || ascii == 'A') { cur = line_start(cur); return; }  // Home baris
             if (ascii == 'e' || ascii == 'E') {                                  // End baris
@@ -572,15 +622,21 @@ public:
             return;
         }
         uint32_t sc = scancode & 0xFF;
+        // Terminal (enter_cb): Enter = submit ke app, bukan sisip '\n'.
+        if (enter_cb && (ascii == '\n' || ascii == '\r' || sc == 0x1C)) {
+            enter_cb(enter_data);
+            return;
+        }
+        int lower = enter_cb ? line_start(len) : 0;   // edit hanya baris perintah
         if (ascii >= 32) {                    // printable → sisip
             if (!readonly) { insert_at(cur, (char)ascii); cur++; }
         } else if (sc == 0x0E) {              // Backspace
-            if (!readonly && cur > 0) { delete_at(cur - 1); cur--; }
+            if (!readonly && cur > lower) { delete_at(cur - 1); cur--; }
         } else if (ascii == '\n' || ascii == '\r' || sc == 0x1C) {  // Enter
             if (!readonly) { insert_at(cur, '\n'); cur++; }
-        } else if (sc == 0x4B) { if (cur > 0) cur--; }               // Left
+        } else if (sc == 0x4B) { if (cur > lower) cur--; }           // Left
         else if (sc == 0x4D) { if (cur < len) cur++; }               // Right
-        else if (sc == 0x48) {                                       // Up
+        else if (sc == 0x48 && !enter_cb) {                          // Up
             int col = cur - line_start(cur);
             int ls = line_start(cur);
             if (ls > 0) {
@@ -588,7 +644,7 @@ public:
                 while (pe < len && text[pe] != '\n') pe++;
                 cur = ps + col; if (cur > pe) cur = pe;
             }
-        } else if (sc == 0x50) {                                       // Down
+        } else if (sc == 0x50 && !enter_cb) {                         // Down
             int col = cur - line_start(cur);
             int le = cur;
             while (le < len && text[le] != '\n') le++;
@@ -597,12 +653,16 @@ public:
                 while (ne < len && text[ne] != '\n') ne++;
                 cur = ns + col; if (cur > ne) cur = ne;
             }
-        } else if (sc == 0x47) { cur = line_start(cur); }             // Home
+        } else if (sc == 0x47) { cur = enter_cb ? lower : line_start(cur); }  // Home
         else if (sc == 0x4F) {                                        // End
             int i = cur; while (i < len && text[i] != '\n') i++; cur = i;
-        } else if (sc == 0x49) { scroll_top -= vis_lines(); clamp_scroll(); }  // PgUp
-        else if (sc == 0x51) { scroll_top += vis_lines(); clamp_scroll(); }    // PgDn
-        else return;                    // tombol lain: tanpa redraw
+        } else if (sc == 0x49) {                                     // PgUp
+            scroll_top -= vis_lines(); clamp_scroll();
+            if (enter_cb) return;          // terminal: biarkan viewport di atas
+        } else if (sc == 0x51) {                                     // PgDn
+            scroll_top += vis_lines(); clamp_scroll();
+            if (enter_cb) return;
+        } else return;                    // tombol lain: tanpa redraw
         ensure_cursor_visible();
     }
     virtual void draw(Painter& p) override {
@@ -654,10 +714,11 @@ public:
         w = _ui_strlen(label) * 8 + 20; h = 20;
     }
     virtual ~CheckBox() { _ui_free(label); }
-    void set_checked(bool c) { checked = c; }
+    void set_checked(bool c) { checked = c; mark_dirty(); }
     virtual void on_click(int mx, int my) override {
         (void)mx; (void)my;
         checked = !checked;
+        mark_dirty();
         if (toggle_cb) toggle_cb(toggle_data);
     }
     virtual void draw(Painter& p) override {
@@ -693,6 +754,7 @@ public:
         if (v < min) v = min;
         if (v > max) v = max;
         val = v;
+        mark_dirty();
     }
     void clamp_to(int mx) {
         int span = max - min;
@@ -734,6 +796,7 @@ public:
         if (v < 0) v = 0;
         if (v > 100) v = 100;
         val = v;
+        mark_dirty();
     }
     virtual void draw(Painter& p) override {
         p.rect(x, y, w, h, p.theme.button_bg);
@@ -759,13 +822,17 @@ public:
     void set_scale(int percent) {
         if (percent < 10) percent = 10;
         if (percent > 400) percent = 400;
+        mark_dirty();                     // bounds lama (bisa mengecil)
         if (iw > 0) { w = iw * percent / 100; h = ih * percent / 100; }
+        mark_dirty();                     // bounds baru
     }
     // Phase 10: ganti file PNG (viewer galeri) — muat ulang, reset zoom 100%.
     void set_file(const char* filename) {
+        mark_dirty();
         png_free(px);
         px = png_decode(filename, &iw, &ih);
         if (iw > 0) { w = iw; h = ih; }   // natural size; ScrollView menyesuaikan
+        mark_dirty();
     }
     virtual void draw(Painter& p) override {
         if (!px || iw <= 0 || ih <= 0) { p.rect(x, y, w, h, p.theme.button_bg); return; }
@@ -787,6 +854,17 @@ public:
 
     void add(Widget* c) { if (count < MAX_CHILDREN) children[count++] = c; }
     virtual void arrange() = 0;
+    // Phase 8: pindahkan anak; tandai posisi lama+baru bila berubah (reflow).
+    void place(Widget* c, int nx, int ny) {
+        if (c->x != nx || c->y != ny) {
+            c->mark_area(c->x, c->y, c->w, c->h);
+            c->x = nx; c->y = ny;
+            c->mark_area(c->x, c->y, c->w, c->h);
+        }
+    }
+    virtual int dirty_child_count() override { return count; }
+    virtual Widget* dirty_child(int i) override { return children[i]; }
+    virtual void settle() override { arrange(); }
 
     virtual void draw(Painter& p) override {
         arrange();
@@ -816,8 +894,7 @@ public:
     virtual void arrange() override {
         int cy = y;
         for (int i = 0; i < count; i++) {
-            children[i]->x = x;
-            children[i]->y = cy;
+            place(children[i], x, cy);
             cy += children[i]->h + spacing;
         }
         h = cy - y;   // ukuran diri = isi; dipakai ScrollView untuk hitung scroll
@@ -835,8 +912,7 @@ public:
         int cx = x;
         int mh = 0;
         for (int i = 0; i < count; i++) {
-            children[i]->x = cx;
-            children[i]->y = y;
+            place(children[i], cx, y);
             cx += children[i]->w + spacing;
             if (children[i]->h > mh) mh = children[i]->h;
         }
@@ -878,6 +954,7 @@ public:
         scroll += delta * ROW_H;
         if (scroll < 0) scroll = 0;
         if (scroll > scroll_max) scroll = scroll_max;
+        if (scroll != old) mark_dirty();
         return scroll != old;
     }
     virtual void on_click(int mx, int my) override {
@@ -890,6 +967,7 @@ public:
             if (range > 0) scroll = (my - y - th / 2) * scroll_max / range;
             if (scroll < 0) scroll = 0;
             if (scroll > scroll_max) scroll = scroll_max;
+            mark_dirty();
         } else {
             on_content_click(mx, my);
         }
@@ -903,6 +981,7 @@ public:
         scroll = bar_grab_scroll + (my - bar_grab_y) * scroll_max / range;
         if (scroll < 0) scroll = 0;
         if (scroll > scroll_max) scroll = scroll_max;
+        mark_dirty();
         return true;
     }
     virtual void on_release() override { bar_drag = false; }
@@ -943,6 +1022,17 @@ public:
     void set_child(Widget* c) {
         child = c;
         set_scroll_max(c ? c->h : 0);
+        if (c) mark_dirty();
+    }
+    virtual int dirty_child_count() override { return child ? 1 : 0; }
+    virtual Widget* dirty_child(int i) override { (void)i; return child; }
+    // Konten (mis. Image zoom) bisa berubah ukuran tanpa event → scrollbar
+    // muncul/hilang. Recompute sebelum panen damage agar strip ikut ter-render.
+    virtual void settle() override {
+        if (!child) return;
+        int old = scroll_max;
+        set_scroll_max(child->h);
+        if (scroll_max != old) mark_dirty();
     }
     virtual void on_content_click(int mx, int my) override {
         if (!child) { if (click_cb) click_cb(userdata); return; }
@@ -990,9 +1080,10 @@ public:
         if (n >= MAX_ITEMS) return;
         items[n++] = _ui_strdup(label);
         set_scroll_max(n * ROW_H);
+        mark_dirty();
     }
     void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
-    virtual void set_hover(bool on) override { if (!on) hover_row = -1; }
+    virtual void set_hover(bool on) override { if (!on && hover_row >= 0) { hover_row = -1; mark_dirty(); } }
     virtual bool track_hover(int mx, int my) override {
         (void)mx;
         int r = -1;
@@ -1002,6 +1093,7 @@ public:
         }
         if (r == hover_row) return false;
         hover_row = r;
+        mark_dirty();
         return true;
     }
     virtual void on_content_click(int mx, int my) override {
@@ -1009,6 +1101,7 @@ public:
         int r = (scroll + my - y) / ROW_H;
         if (r >= 0 && r < n) {
             selected = r;
+            mark_dirty();
             if (change_cb) change_cb(change_data);
         }
     }
@@ -1061,6 +1154,7 @@ public:
         col[ncols] = _ui_strdup(title);
         col_w[ncols] = width;
         ncols++;
+        mark_dirty();
     }
     void add_row(const char* const* vals, int n) {
         if (nrows >= MAX_ROWS || n > MAX_COLS) return;
@@ -1068,15 +1162,17 @@ public:
         for (int c = n; c < ncols; c++) cells[nrows][c] = 0;
         nrows++;
         set_scroll_view(nrows * ROW_H, h - HEADER_H - BAR_W);
+        mark_dirty();
     }
     void clear() {
         for (int r = 0; r < nrows; r++)
             for (int c = 0; c < ncols; c++) { _ui_free(cells[r][c]); cells[r][c] = 0; }
         nrows = 0;
         set_scroll_view(0, h - HEADER_H - BAR_W);
+        mark_dirty();
     }
     void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
-    virtual void set_hover(bool on) override { if (!on) hover_row = -1; }
+    virtual void set_hover(bool on) override { if (!on && hover_row >= 0) { hover_row = -1; mark_dirty(); } }
     virtual bool track_hover(int mx, int my) override {
         (void)mx;
         int r = -1;
@@ -1086,6 +1182,7 @@ public:
         }
         if (r == hover_row) return false;
         hover_row = r;
+        mark_dirty();
         return true;
     }
     virtual void on_content_click(int mx, int my) override {
@@ -1093,6 +1190,7 @@ public:
         int r = (scroll + my - (y + HEADER_H)) / ROW_H;
         if (r >= 0 && r < nrows) {
             selected = r;
+            mark_dirty();
             if (change_cb) change_cb(change_data);
         }
     }
@@ -1153,9 +1251,10 @@ public:
         nodes[n].expanded = expanded;
         n++;
         recompute_scroll();
+        mark_dirty();
     }
     void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
-    virtual void set_hover(bool on) override { if (!on) hover_row = -1; }
+    virtual void set_hover(bool on) override { if (!on && hover_row >= 0) { hover_row = -1; mark_dirty(); } }
 
     // Node i terlihat bila ancestor terdekatnya (node j<i depth lebih kecil)
     // sedang expanded. Flat pre-order.
@@ -1193,6 +1292,7 @@ public:
             r = node_at_vis((scroll + my - y) / ROW_H);
         if (r == hover_row) return false;
         hover_row = r;
+        mark_dirty();
         return true;
     }
     virtual void on_content_click(int mx, int my) override {
@@ -1202,8 +1302,10 @@ public:
         if (mx >= ind && mx < ind + 12) {
             nodes[idx].expanded = !nodes[idx].expanded;
             recompute_scroll();
+            mark_dirty();
         } else if (mx >= ind + 12) {
             selected = idx;
+            mark_dirty();
             if (change_cb) change_cb(change_data);
         }
     }
@@ -1251,7 +1353,10 @@ public:
         titles[n] = _ui_strdup(title);
         panels[n] = panel;
         n++;
+        mark_dirty();
     }
+    virtual int dirty_child_count() override { return n; }
+    virtual Widget* dirty_child(int i) override { return panels[i]; }
     int title_at(int mx) const {
         if (n == 0 || mx < x || mx >= x + w) return -1;
         int tw = w / n;
@@ -1269,7 +1374,7 @@ public:
     virtual void on_click(int mx, int my) override {
         if (my >= y && my < y + STRIP_H) {
             int i = title_at(mx);
-            if (i >= 0) active = i;
+            if (i >= 0 && i != active) { active = i; mark_dirty(); }
             return;
         }
         if (active < n && panels[active]) {
@@ -1317,7 +1422,12 @@ public:
         btns[n].cb = cb; btns[n].data = u;
         n++;
     }
-    virtual void set_hover(bool on) override { if (!on) hover_idx = -1; }
+    void mark_item(int i) {
+        if (i < 0 || i >= n) return;
+        int bw = n ? w / n : w;
+        mark_area(x + i * bw, y, bw, h);
+    }
+    virtual void set_hover(bool on) override { if (!on && hover_idx >= 0) { mark_item(hover_idx); hover_idx = -1; } }
     virtual bool track_hover(int mx, int my) override {
         int i = -1;
         if (my >= y && my < y + h && n) {
@@ -1325,7 +1435,9 @@ public:
             if (i < 0 || i >= n) i = -1;
         }
         if (i == hover_idx) return false;
+        mark_item(hover_idx);       // item lama
         hover_idx = i;
+        mark_item(hover_idx);       // item baru
         return true;
     }
     virtual void on_click(int mx, int my) override {
@@ -1434,10 +1546,16 @@ public:
             p.text(btns[i], bx + 10, by + 6, p.theme.fg);
         }
     }
+    void mark_btn(int i) {
+        if (i < 0 || i >= n_btns) return;
+        mark_area(btn_x(i), btn_row_y(), btn_w(i), 28);
+    }
     virtual bool track_hover(int mx, int my) override {
         int i = hit_button(mx, my);
         if (i == hover_btn) return false;
+        mark_btn(hover_btn);
         hover_btn = i;
+        mark_btn(hover_btn);
         return true;
     }
     // out-of-class: butuh Window lengkap (close_dialog)
@@ -1462,13 +1580,20 @@ public:
         items[n].cb = cb; items[n].data = u;
         n++;
         h = n * 20 + 4;
+        mark_dirty();
     }
-    virtual void set_hover(bool on) override { if (!on) hover_idx = -1; }
+    void mark_item(int i) {
+        if (i < 0 || i >= n) return;
+        mark_area(x + 1, y + 2 + i * 20, w - 2, 20);
+    }
+    virtual void set_hover(bool on) override { if (!on && hover_idx >= 0) { mark_item(hover_idx); hover_idx = -1; } }
     virtual bool track_hover(int mx, int my) override {
         int i = (my - y - 2) / 20;
         if (i < 0 || i >= n || mx < x || mx >= x + w) i = -1;
         if (i == hover_idx) return false;
+        mark_item(hover_idx);
         hover_idx = i;
+        mark_item(hover_idx);
         return true;
     }
     virtual void draw(Painter& p) override {
@@ -1508,7 +1633,12 @@ public:
         return titles[n - 1].menu;
     }
     virtual bool is_menu_bar() override { return true; }
-    virtual void set_hover(bool on) override { if (!on) hover_idx = -1; }
+    void mark_title(int i) {
+        if (i < 0 || i >= n) return;
+        int tw = n ? w / n : w;
+        mark_area(x + i * tw, y, tw, h);
+    }
+    virtual void set_hover(bool on) override { if (!on && hover_idx >= 0) { mark_title(hover_idx); hover_idx = -1; } }
     int title_at(int mx) const {
         if (n == 0 || mx < x || mx >= x + w) return -1;
         int tw = w / n;
@@ -1519,7 +1649,9 @@ public:
         int i = -1;
         if (my >= y && my < y + h) i = title_at(mx);
         if (i == hover_idx) return false;
+        mark_title(hover_idx);
         hover_idx = i;
+        mark_title(hover_idx);
         return true;
     }
     // out-of-class: butuh Window lengkap (popup switch/open/close)
@@ -1589,6 +1721,7 @@ public:
         theme.bg = t->bg; theme.fg = t->fg; theme.accent = t->accent;
         theme.button_bg = t->button_bg; theme.button_fg = t->button_fg;
         theme.button_hover = t->button_hover;
+        damage_full();   // tema mengubah warna SEMUA widget → broad by design
     }
 
     // Bar full-width (MenuBar/Toolbar) di puncak window, di atas root.
@@ -1612,10 +1745,18 @@ public:
         return 0;
     }
 
+    // MenuBar::draw mewarnai judul yang popup-nya terbuka (win->popup) —
+    // state itu berubah di sini, jadi bar harus ikut ditandai dirty.
+    void mark_menubars() {
+        for (int i = 0; i < n_bars; i++)
+            if (top_bars[i] && top_bars[i]->is_menu_bar()) top_bars[i]->mark_dirty();
+    }
     void open_popup(Widget* m, int ox, int oy) {
         if (popup && popup != m) popup->set_hover(false);
+        bool changed = (popup != m);
         popup = m;
         m->x = ox; m->y = oy;
+        if (changed) mark_menubars();
         damage_overlay(m);
         render();
     }
@@ -1625,6 +1766,7 @@ public:
             popup->set_hover(false);
         }
         popup = 0;
+        mark_menubars();
     }
 
     // Kembalikan true bila hovered berubah (memicu redraw). Saat popup
@@ -1780,6 +1922,33 @@ public:
     }
     void damage_widget(Widget* w) { if (w) damage_rect(w->x, w->y, w->w, w->h); }
     void damage_full() { damage_rect(0, 0, (int)gw->width, (int)gw->height); }
+    // Phase 8: kumpulkan rect kotor dari widget yang benar-benar berubah saja
+    // (bukan seluruh pohon). Tetap satu bbox via damage_rect.
+    void collect_dirty(Widget* w) {
+        if (!w) return;
+        w->settle();    // Layout: reflow sebelum baca damage (old+new bounds)
+        int dx, dy, dw, dh;
+        if (w->take_dirty(dx, dy, dw, dh)) damage_rect(dx, dy, dw, dh);
+        int n = w->dirty_child_count();
+        for (int i = 0; i < n; i++) collect_dirty(w->dirty_child(i));
+    }
+    void damage_dirty_widgets() {
+        for (int i = 0; i < n_bars; i++) collect_dirty(top_bars[i]);
+        collect_dirty(root);
+        collect_dirty(popup);
+        collect_dirty(dialog);
+    }
+    // Buang damage tertunda tanpa menggambar (mis. setelah render awal).
+    void forget_dirty(Widget* w) {
+        if (!w) return;
+        int a, b, c, d; w->take_dirty(a, b, c, d);
+        int n = w->dirty_child_count();
+        for (int i = 0; i < n; i++) forget_dirty(w->dirty_child(i));
+    }
+    void forget_dirty_widgets() {
+        for (int i = 0; i < n_bars; i++) forget_dirty(top_bars[i]);
+        forget_dirty(root); forget_dirty(popup); forget_dirty(dialog);
+    }
     // Union bounds bar + root (recurse layout). Untuk tick/klik yang callback-nya
     // bisa mengubah widget mana pun tanpa Window tahu rect persisnya.
     void damage_all_widgets() {
@@ -1801,6 +1970,10 @@ public:
     }
 
     void render() {
+        // Phase 8: panen flag dirty widget SETIAP render, apa pun jalur
+        // pemanggilnya — mark yang dibuat callback setelah render() lain
+        // (mis. dialog close) tidak boleh tertunda.
+        damage_dirty_widgets();
         if (!dirty_valid) return;   // tak ada perubahan → tak ada upload
         int rx = dirty_x, ry = dirty_y, rw = dirty_w, rh = dirty_h;
         dirty_valid = 0;
@@ -1824,12 +1997,13 @@ public:
         kyuzen_event_t ev;
         damage_full();   // render awal: seluruh window
         render();
+        forget_dirty_widgets();   // bersihkan mark reflow dari render awal
         while (running) {
             // Phase 9: auto-expire notifikasi. Loop bangun ~60/s via
             // sys_yield + timer IRQ → cukup cek tiap iterasi, tanpa timer infra.
             if (notify_text && sys_uptime() >= notify_until) notify_dismiss();
             // Phase 10: tick periodik — jam/task manager render hanya saat berubah.
-            if (tick_cb && tick_cb(tick_data)) { damage_all_widgets(); render(); }
+            if (tick_cb && tick_cb(tick_data)) render();
             if (sys_get_event(&ev)) {
                 switch (ev.type) {
                 case EVENT_MOUSE_MOVE:
@@ -1844,11 +2018,9 @@ public:
                             damage_widget(grabbed);     // mis. scrollbar/scroll
                             render();
                         }
-                        Widget* old_h = hovered;
                         if (track_hover()) {
-                            damage_widget(old_h);       // state lama
-                            damage_widget(hovered);     // state baru
-                            if (popup) damage_widget(popup);
+                            // Widget hover/bar yang berubah menandai rect-nya
+                            // sendiri; render() memanennya (bukan seluruh widget).
                             render();
                         }
                     }
@@ -1877,7 +2049,6 @@ public:
                                     close_popup();   // klik di luar → dismiss
                                 }
                             }
-                            damage_all_widgets();       // bar/status bisa berubah
                             damage_overlay(old_pop);    // popup lama
                             damage_overlay(popup);      // popup baru (0 = no-op)
                             render();
@@ -1895,8 +2066,9 @@ public:
                                 set_focus(grabbed && grabbed->focusable() ? grabbed : 0);
                                 if (grabbed) grabbed->on_click(mouse_x, mouse_y);
                             }
-                            // callback (on_click) bisa mengubah widget mana pun.
-                            damage_all_widgets();
+                            // callback (on_click) bisa mengubah widget mana pun;
+                            // yg berubah menandai dirty diri masing-masing; render()
+                            // memanennya menjadi satu bbox.
                             render();
                         }
                     } else if (ev.param1 == 0 && ev.param2 == 0) {   // left up
@@ -1906,8 +2078,7 @@ public:
                             if (t && t->drop_target && t->drop_cb)
                                 t->drop_cb(t->drop_data, drag_payload, mouse_x, mouse_y);
                             damage_ghost(drag_x, drag_y);   // hapus ghost
-                            damage_all_widgets();           // drop_cb bisa ubah widget
-                            drag_src = 0; drag_payload = 0;
+                            drag_src = 0; drag_payload = 0; // drop_cb marks widgets
                         } else if (grabbed) {
                             damage_widget(grabbed);
                             grabbed->on_release(); grabbed = 0;
@@ -1944,8 +2115,8 @@ public:
                             focused->on_key((uint8_t)ev.param1,
                                             (uint32_t)ev.param3,
                                             (uint32_t)ev.param2);
-                        // Callback shortcut / focused->on_key bisa ubah widget mana pun.
-                        damage_all_widgets();
+                        // Callback shortcut / focused->on_key bisa ubah widget mana
+                        // pun; yg berubah menandai dirty; render() memanennya.
                         render();
                     }
                     break;
@@ -2029,10 +2200,22 @@ void ui_window_run(ui_window_t* win) {
     reinterpret_cast<ui::Window*>(win)->run();
 }
 
+// Hentikan event loop window (mis. `logout` di terminal). Aman dipanggil dari
+// dalam callback: loop memeriksa `running` tiap iterasi.
+void ui_window_request_close(ui_window_t* win) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    if (w) w->running = false;
+}
+
 // Phase 10: judul window (titlebar + taskbar).
 void ui_window_set_title(ui_window_t* win, const char* title) {
     ui::Window* w = reinterpret_cast<ui::Window*>(win);
     if (w && w->gw) gui_set_window_title(w->gw, title);
+}
+
+void ui_window_focus(ui_window_t* win, ui_widget_t* widget) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    if (w) w->set_focus(reinterpret_cast<ui::Widget*>(widget));
 }
 
 // Phase 10: callback periodik tiap iterasi loop (~60/s). Return 1 = berubah →
@@ -2153,6 +2336,7 @@ void ui_textedit_set_text(ui_widget_t* widget, const char* text) {
     }
     te->text[te->len] = '\0';
     te->cur = te->len;
+    te->mark_dirty();
 }
 
 const char* ui_textedit_text(ui_widget_t* widget) {
@@ -2160,7 +2344,15 @@ const char* ui_textedit_text(ui_widget_t* widget) {
 }
 
 void ui_textedit_set_readonly(ui_widget_t* widget, int ro) {
-    reinterpret_cast<ui::TextEdit*>(widget)->readonly = ro != 0;
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    te->readonly = ro != 0;
+    te->mark_dirty();
+}
+
+// Terminal shell: Enter diserahkan ke app (submit), edit terkunci di baris
+// perintah terakhir. Output historis tidak bisa diubah.
+void ui_textedit_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::TextEdit*>(widget)->set_enter(cb, userdata);
 }
 
 void ui_textedit_append(ui_widget_t* widget, const char* text) {
@@ -2185,7 +2377,9 @@ ui_widget_t* ui_hbox_create(ui_window_t* win, int spacing) {
 // Phase 10: paksa ukuran widget (tombol kalkulator seragam dalam grid).
 void ui_widget_set_size(ui_widget_t* widget, int w, int h) {
     ui::Widget* wid = reinterpret_cast<ui::Widget*>(widget);
+    wid->mark_dirty();          // bounds lama
     wid->w = w; wid->h = h;
+    wid->mark_dirty();          // bounds baru
 }
 
 void ui_layout_add(ui_widget_t* layout, ui_widget_t* child) {

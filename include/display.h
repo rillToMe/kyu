@@ -69,19 +69,22 @@ int rect_intersect(Rect a, Rect b, Rect* out);
 Rect rect_union(Rect a, Rect b);
 
 // ============================================================
-// Dirty region tracking (Phase 3B)
+// Dirty region tracking (Phase 3B; coalescing Phase 15)
 //
-// Only touched screen areas are recomposited/presented each frame. When more
-// than MAX_DIRTY_REGIONS distinct rects accumulate, the list collapses to a
-// single bounding box — always a correct superset of what changed, never less.
+// Only touched screen areas are recomposited/presented each frame. Marks are
+// coalesced on insert: contained/overlapping rects merge in place, and when the
+// list is full the cheapest pair is merged (area-inflation heuristic) instead
+// of collapsing everything into one bounding box. The coalesced set is always a
+// correct SUPERSET of what changed — never less (over-invalidation is safe;
+// under-invalidation is not).
 // ============================================================
 
 #define MAX_DIRTY_REGIONS 64
 
 typedef struct DirtyRegionList {
-    Rect regions[MAX_DIRTY_REGIONS];
+    Rect regions[MAX_DIRTY_REGIONS];   // live region count == `count`
     uint32_t count;
-    uint8_t collapsed;   // 1 = regions[0] is the bounding box of everything marked
+    uint8_t collapsed;   // retained for layout compatibility; unused since Phase 15
 } DirtyRegionList;
 
 void dirty_region_clear(DirtyRegionList* list);

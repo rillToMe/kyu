@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <string.h>   // Phase 14: memcpy — fast-path window opaque
 #include "gfx.h"
 #include "kwm_internal.h"
 #include "display.h"
@@ -81,6 +82,129 @@ void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height) {
 static void blit_rect_db(DisplayBuffer* dst, DisplayBuffer* src, Rect r) {
     Viewport vp = { r, r.x, r.y, src };
     viewport_render(&vp, dst);
+}
+
+// ------------------------------------------------------------
+// Phase 16/17/18 — base-blit elimination around opaque windows
+//
+// Why the base copy can be skipped for a sub-rect: if a fully-opaque window's
+// CONTENT rect contains that sub-rect, composition clips the window's content
+// to it and — because the window passed the Phase 14 kernel opacity validation
+// — writes EVERY pixel of it. Windows below are overwritten first; windows
+// above only draw on top (their transparent pixels leave the opaque layer
+// showing). So those pixels never depend on base_canvas, and copying base ->
+// backbuffer for them is pure waste.
+//
+// Phase 16: full rect inside one opaque window. Phase 17: split around the
+// LARGEST opaque intersection. Phase 18: consume MORE THAN ONE opaque window
+// per region, greedily by how much of the still-uncovered remainder each one
+// covers, subtracting each cover in turn.
+//
+// Composition is UNCHANGED and still runs exactly ONCE over the original rect
+// (compositor_flush calls composite_windows_in_rect(r) once); only the base
+// copy is decomposed. The remainder list is bounded (KWM_MAX_SPLIT_RECTS) and
+// the number of windows consumed is bounded (KWM_MAX_OPAQUE_SPLITS); when a
+// bound is hit the unresolved remainder is simply base-blitted, which is always
+// safe (over-invalidation). When uncertain we keep the base blit: a false
+// negative costs performance, a false positive would corrupt the frame.
+// ------------------------------------------------------------
+
+// Don't split for covers smaller than this (pixels); the extra blit calls cost
+// more than the bytes saved. A cover that removes a whole remaining rect is
+// always used, however small. Tunable; 32x32.
+#define KWM_SPLIT_MIN_PIXELS   1024
+// Consume at most this many opaque windows per dirty region.
+#define KWM_MAX_OPAQUE_SPLITS  4
+// Bounded remainder list (stack, no allocation). Fragmentation cannot grow past
+// this; the split stops and the rest is base-blitted.
+#define KWM_MAX_SPLIT_RECTS    12
+
+// 1 if `inner` lies fully inside `outer` (64-bit safe; Rect may be negative).
+static int rect_covers(Rect outer, Rect inner) {
+    return inner.x >= outer.x && inner.y >= outer.y &&
+           (int64_t)inner.x + inner.width  <= (int64_t)outer.x + outer.width &&
+           (int64_t)inner.y + inner.height <= (int64_t)outer.y + outer.height;
+}
+
+// Append a non-empty strip; on overflow set the flag (caller aborts the split).
+static void split_push(Rect* out, int* m, int* overflow, Rect p) {
+    if (p.width == 0 || p.height == 0) return;
+    if (*m >= KWM_MAX_SPLIT_RECTS) { *overflow = 1; return; }
+    out[(*m)++] = p;
+}
+
+// Content rect of window w, mirroring composite_windows_in_rect geometry.
+static Rect window_content_rect(int w) {
+    const uint32_t wflags = kwm_windows[w].flags;
+    const uint32_t tb_h = (wflags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
+    Rect c = { kwm_windows[w].x, kwm_windows[w].y + (int32_t)tb_h,
+               kwm_windows[w].width, kwm_windows[w].height };
+    return c;
+}
+
+// Base-blit only the parts of `r` NOT covered by validated opaque window
+// content. Caller must hold kwm_lock and call composite_windows_in_rect(r).
+static void base_blit_for_region(DisplayBuffer* back_db, DisplayBuffer* screen_db,
+                                 Rect r) {
+    Rect remain[KWM_MAX_SPLIT_RECTS];
+    Rect out[KWM_MAX_SPLIT_RECTS];
+    int  n = 1;
+    remain[0] = r;
+
+    for (int step = 0; step < KWM_MAX_OPAQUE_SPLITS && n > 0; step++) {
+        // Greedy: pick the opaque window whose content covers the most of what
+        // is still uncovered. A window already subtracted scores 0 and is not
+        // re-picked. Bounded scan: MAX_WINDOWS * n, both small.
+        Rect     best = r;
+        uint64_t best_score = 0;
+        int      best_full = 0, have = 0;
+        for (int w = 0; w < MAX_WINDOWS; w++) {
+            if (!(kwm_windows[w].active && kwm_windows[w].canvas)) continue;
+            if (!kwm_windows[w].fully_opaque) continue;
+            if (kwm_windows[w].z_index > next_z_index) continue;  // not composited
+            Rect crect = window_content_rect(w);
+            uint64_t score = 0;
+            int full = 0;
+            for (int i = 0; i < n; i++) {
+                Rect t;
+                if (rect_intersect(crect, remain[i], &t)) {
+                    score += (uint64_t)t.width * t.height;
+                    if (rect_covers(crect, remain[i])) full = 1;
+                }
+            }
+            if (score > best_score) { best = crect; best_score = score;
+                                      best_full = full; have = 1; }
+        }
+        if (!have) break;                                   // nothing useful left
+        // Small-cover guard: skip tiny gains unless a whole rect is removed.
+        if (best_score < KWM_SPLIT_MIN_PIXELS && !best_full) break;
+
+        // Subtract `best` from every remaining rect into out[] (up to 4 strips
+        // each). If the bounded list would overflow, abandon this step and keep
+        // `remain` untouched — the unresolved area is then base-blitted.
+        int m = 0, overflow = 0;
+        for (int i = 0; i < n; i++) {
+            Rect R = remain[i], C;
+            if (!rect_intersect(R, best, &C)) { split_push(out, &m, &overflow, R); continue; }
+            const int64_t rx = R.x, ry = R.y, rx1 = rx + R.width,  ry1 = ry + R.height;
+            const int64_t cx = C.x, cy = C.y, cx1 = cx + C.width,  cy1 = cy + C.height;
+            if (cy > ry)   { Rect t = { R.x, R.y, R.width, (uint32_t)(cy - ry) };
+                             split_push(out, &m, &overflow, t); }
+            if (cy1 < ry1) { Rect b = { R.x, (int32_t)cy1, R.width, (uint32_t)(ry1 - cy1) };
+                             split_push(out, &m, &overflow, b); }
+            if (cx > rx)   { Rect l = { R.x, (int32_t)cy, (uint32_t)(cx - rx), C.height };
+                             split_push(out, &m, &overflow, l); }
+            if (cx1 < rx1) { Rect rt = { (int32_t)cx1, (int32_t)cy,
+                                         (uint32_t)(rx1 - cx1), C.height };
+                             split_push(out, &m, &overflow, rt); }
+        }
+        if (overflow) break;
+        for (int i = 0; i < m; i++) remain[i] = out[i];
+        n = m;
+    }
+
+    for (int i = 0; i < n; i++)
+        blit_rect_db(back_db, screen_db, remain[i]);
 }
 
 // Isi area solid, dipotong ke `clip` (bounds check per baris sekali).
@@ -170,6 +294,20 @@ static void frame_shadow(uint32_t* fb, int pitch4, Rect frame, Rect clip) {
     }
 }
 
+// Garis tepi 1px tepat di luar frame (kiri/kanan/bawah). Pemisah tegas antara
+// window (terutama konten terang) dan desktop. Digambar SEBELUM konten window,
+// jadi hanya menyentuh piksel di luar badan konten — tepi bawah yang tadinya
+// kosong (shadow bawah offset ~3px lebih ke bawah) kini jelas. Sisi atas sudah
+// dibedakan oleh titlebar terang; sudut bawah tetap mengikuti geometri konten.
+static void frame_edge(uint32_t* fb, int pitch4, Rect frame, Rect clip) {
+    Rect l = { frame.x - 1, frame.y, 1, frame.height };
+    Rect r = { frame.x + (int)frame.width, frame.y, 1, frame.height };
+    Rect b = { frame.x - 1, frame.y + (int)frame.height, frame.width + 2, 1 };
+    blend_rect_clip(fb, pitch4, l, KWM_EDGE_COLOR, KWM_EDGE_ALPHA, clip);
+    blend_rect_clip(fb, pitch4, r, KWM_EDGE_COLOR, KWM_EDGE_ALPHA, clip);
+    blend_rect_clip(fb, pitch4, b, KWM_EDGE_COLOR, KWM_EDGE_ALPHA, clip);
+}
+
 // Segmen garis (DDA) dipotong ke `clip` — untuk glyph "X" tombol close.
 static void titlebar_line(uint32_t* fb, int pitch4,
                           int x0, int y0, int x1, int y1,
@@ -211,7 +349,85 @@ static void titlebar_text(uint32_t* fb, int pitch4, int x, int y,
 // Composite every window overlapping `r` (z-order low→high) onto the backbuffer.
 // Caller must hold kwm_lock. Phase 5C: frame window = konten + titlebar milik
 // WM; titlebar digambar di sini (tint beda untuk window fokus + tombol close).
+//
+// ------------------------------------------------------------
+// Phase 20 — opaque occlusion culling
+//
+// A window W only needs to write the pixels that are NOT already destined to be
+// overwritten by a VALIDATED fully-opaque window drawn in FRONT of W. Such a
+// window writes every pixel of its content rect when composited (Phase 14), so
+// anything W draws underneath it is dead work. We therefore render W's content
+// only over `clip MINUS union(front opaque content rects)`.
+//
+// Only `fully_opaque` windows may occlude — never a normal window, never a
+// titlebar/shadow/decoration (only the kernel-validated content canvas). The
+// subtraction is rectangle-based and bounded; on overflow we fall back to the
+// full clip (more work, still correct).
+// ------------------------------------------------------------
+#define KWM_MAX_OCCLUSION_RECTS 8   // bounded visible-area list (stack, no alloc)
+
+// Append up to four disjoint pieces of R minus C to out[] (capacity cap).
+// Returns 0 if the result would exceed cap (caller must fall back safely).
+// Pieces are emitted only when non-empty, so they exactly partition R minus C.
+static int rect_subtract(Rect R, Rect C, Rect* out, int* m, int cap) {
+    Rect I;
+    if (!rect_intersect(R, C, &I)) {
+        if (*m >= cap) return 0;
+        out[(*m)++] = R;
+        return 1;
+    }
+    const int64_t rx = R.x, ry = R.y, rx1 = rx + R.width,  ry1 = ry + R.height;
+    const int64_t cx = I.x, cy = I.y, cx1 = cx + I.width,  cy1 = cy + I.height;
+    if (cy > ry)   { if (*m >= cap) return 0; out[(*m)++] = (Rect){ R.x, R.y, R.width, (uint32_t)(cy - ry) }; }
+    if (cy1 < ry1) { if (*m >= cap) return 0; out[(*m)++] = (Rect){ R.x, (int32_t)cy1, R.width, (uint32_t)(ry1 - cy1) }; }
+    if (cx > rx)   { if (*m >= cap) return 0; out[(*m)++] = (Rect){ R.x, (int32_t)cy, (uint32_t)(cx - rx), I.height }; }
+    if (cx1 < rx1) { if (*m >= cap) return 0; out[(*m)++] = (Rect){ (int32_t)cx1, (int32_t)cy, (uint32_t)(rx1 - cx1), I.height }; }
+    return 1;
+}
+
+// Copy a window's content canvas into the backbuffer over `c` (a sub-rect of its
+// content area, already clipped to the dirty rect). `opaque` = Phase 14
+// validated fully-opaque canvas -> bulk row copy; else scalar alpha test.
+static void mix_content(const DisplayBuffer* canvas, int32_t win_x, int32_t cty,
+                        int pitch4, Rect c, int opaque) {
+    for (uint32_t yy = 0; yy < c.height; yy++) {
+        int32_t sy = c.y + (int32_t)yy - cty;
+        const uint32_t* src = canvas->pixels +
+            (uint32_t)sy * canvas->stride + (uint32_t)(c.x - win_x);
+        uint32_t* dst = backbuffer +
+            ((uint32_t)c.y + yy) * (uint32_t)pitch4 + (uint32_t)c.x;
+        if (opaque) {
+            memcpy(dst, src, (size_t)c.width * sizeof(uint32_t));
+        } else {
+            for (uint32_t xx = 0; xx < c.width; xx++) {
+                uint32_t pixel = src[xx];
+                // Alpha byte acts as a per-pixel mask: 0 = transparent.
+                if (pixel >> 24) dst[xx] = pixel & 0xFFFFFF;
+            }
+        }
+    }
+}
+
 static void composite_windows_in_rect(Rect r, int pitch4) {
+    // Phase 20: opaque occluders whose content intersects r, computed once.
+    // Only validated fully-opaque, composited windows qualify.
+    int      occ_slot[MAX_WINDOWS];
+    uint32_t occ_z[MAX_WINDOWS];
+    Rect     occ_rect[MAX_WINDOWS];
+    int      nocc = 0;
+    for (int v = 0; v < MAX_WINDOWS; v++) {
+        if (!(kwm_windows[v].active && kwm_windows[v].canvas)) continue;
+        if (!kwm_windows[v].fully_opaque) continue;
+        if (kwm_windows[v].z_index > next_z_index) continue;   // not composited
+        Rect cr = window_content_rect(v);
+        Rect t;
+        if (!rect_intersect(cr, r, &t)) continue;
+        occ_slot[nocc] = v;
+        occ_z[nocc]    = kwm_windows[v].z_index;
+        occ_rect[nocc] = cr;
+        nocc++;
+    }
+
     // Phase 10: z=0 adalah window desktop (paling bawah).
     for (uint32_t z = 0; z <= next_z_index; z++) {
         for (int w = 0; w < MAX_WINDOWS; w++) {
@@ -232,22 +448,53 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
             if (!(wflags & KWM_WIN_DESKTOP)) {
                 Rect frame = { win_x, win_y, cw, ch + tb_h };
                 frame_shadow(backbuffer, pitch4, frame, r);
+                frame_edge(backbuffer, pitch4, frame, r);
             }
 
             // --- Konten (canvas = konten murni) ---
             Rect crect = { win_x, cty, cw, ch };
             Rect clip;
             if (rect_intersect(crect, r, &clip)) {
-                for (uint32_t yy = 0; yy < clip.height; yy++) {
-                    int32_t sy = clip.y + (int32_t)yy - cty;
-                    const uint32_t* src = canvas->pixels +
-                        (uint32_t)sy * canvas->stride + (uint32_t)(clip.x - win_x);
-                    uint32_t* dst = backbuffer +
-                        ((uint32_t)clip.y + yy) * (uint32_t)pitch4 + (uint32_t)clip.x;
-                    for (uint32_t xx = 0; xx < clip.width; xx++) {
-                        uint32_t pixel = src[xx];
-                        // Alpha byte acts as a per-pixel mask: 0 = transparent.
-                        if (pixel >> 24) dst[xx] = pixel & 0xFFFFFF;
+                const int win_opaque = kwm_windows[w].fully_opaque;
+#ifdef FORCE_SCALAR_COMPOSITOR
+                // TEMPORARY (Phase 14): -DFORCE_SCALAR_COMPOSITOR rebuilds the
+                // pre-Phase-14 scalar composition for a pixel-identical diff.
+                const int win_opaque_final = 0; (void)win_opaque;
+#else
+                const int win_opaque_final = win_opaque;
+#endif
+                // Phase 20: drop the pixels already covered by a fully-opaque
+                // window drawn IN FRONT of this one (higher z, or same z and a
+                // later slot). vis = clip minus that union; nvis == 0 means the
+                // whole content is occluded. On bounded overflow, fall back to
+                // the full clip (safe, just no culling this window).
+                if (nocc == 0) {
+                    mix_content(canvas, win_x, cty, pitch4, clip, win_opaque_final);
+                } else {
+                    Rect vis[KWM_MAX_OCCLUSION_RECTS];
+                    vis[0] = clip;
+                    int nvis = 1, overflow = 0;
+                    for (int i = 0; i < nocc && !overflow; i++) {
+                        const int front = (occ_z[i] > z) ||
+                                          (occ_z[i] == z && occ_slot[i] > w);
+                        if (!front) continue;
+                        Rect next[KWM_MAX_OCCLUSION_RECTS];
+                        int m = 0;
+                        for (int k = 0; k < nvis; k++)
+                            if (!rect_subtract(vis[k], occ_rect[i], next, &m,
+                                               KWM_MAX_OCCLUSION_RECTS)) {
+                                overflow = 1; break;
+                            }
+                        if (overflow) break;
+                        for (int k = 0; k < m; k++) vis[k] = next[k];
+                        nvis = m;
+                        if (nvis == 0) break;   // fully occluded
+                    }
+                    if (overflow) {
+                        mix_content(canvas, win_x, cty, pitch4, clip, win_opaque_final);
+                    } else {
+                        for (int k = 0; k < nvis; k++)
+                            mix_content(canvas, win_x, cty, pitch4, vis[k], win_opaque_final);
                     }
                 }
             }
@@ -256,31 +503,36 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
             if (!(wflags & KWM_WIN_DESKTOP)) {
                 Rect tb = { win_x, win_y, cw, KWM_TITLEBAR_H };
                 if (rect_intersect(tb, r, &clip)) {
-                    // Gradient vertikal ~±12% + sudut atas membulat (AA).
+                    // Chrome netral: isian rata (tanpa gradient biru), sudut
+                    // atas membulat. Fokus hanya sedikit lebih terang.
                     uint32_t base = (w == focused_win_id) ? KWM_TITLEBAR_COLOR
                                                           : KWM_TITLEBAR_INACT;
-                    round_grad_fill(backbuffer, pitch4, tb,
-                                    aa_shade(base, 14), aa_shade(base, -12),
+                    round_grad_fill(backbuffer, pitch4, tb, base, base,
                                     KWM_CORNER_R, 0, r);
-                    // Tombol close: rounded square di dalam area klik 40px.
-                    Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W / 2 - 11,
-                                win_y + 3, 22, 18 };
-                    round_grad_fill(backbuffer, pitch4, cb,
-                                    aa_shade(KWM_CLOSE_COLOR, 12),
-                                    aa_shade(KWM_CLOSE_COLOR, -10), 4, 4, r);
-                    // Glyph "X" di dalam tombol close.
-                    titlebar_line(backbuffer, pitch4,
-                                  cb.x + 7, cb.y + 5,
-                                  cb.x + 14, cb.y + 12, 0xFFFFFF, r);
-                    titlebar_line(backbuffer, pitch4,
-                                  cb.x + 14, cb.y + 5,
-                                  cb.x + 7, cb.y + 12, 0xFFFFFF, r);
-                    // Phase 10: teks judul, clamp ke area sebelum tombol close.
+                    // Tombol close: hit area penuh-tinggi di tepi kanan.
+                    // Normal: transparan + ikon abu. Hover: latar merah + ikon putih.
+                    Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W, win_y,
+                                KWM_CLOSE_BTN_W, KWM_TITLEBAR_H };
+                    int hovered = (hovered_close_win == w + 1);
+                    uint32_t ico = KWM_CTL_FG;
+                    if (hovered) {
+                        fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_HOVER_BG, r);
+                        ico = KWM_CLOSE_HOVER_FG;
+                    }
+                    // Glyph "X": dua garis tipis 11x11, terpusat di hit area.
+                    int ccx = cb.x + (int)KWM_CLOSE_BTN_W / 2;
+                    int ccy = win_y + (int)KWM_TITLEBAR_H / 2;
+                    titlebar_line(backbuffer, pitch4, ccx - 5, ccy - 5,
+                                  ccx + 5, ccy + 5, ico, r);
+                    titlebar_line(backbuffer, pitch4, ccx + 5, ccy - 5,
+                                  ccx - 5, ccy + 5, ico, r);
+                    // Judul: padding kiri 12px, vertikal tengah, teks gelap.
                     if (kwm_windows[w].title[0])
-                        titlebar_text(backbuffer, pitch4, win_x + 12, win_y + 4,
+                        titlebar_text(backbuffer, pitch4, win_x + 12,
+                                      win_y + ((int)KWM_TITLEBAR_H - 16) / 2,
                                       kwm_windows[w].title,
                                       win_x + (int32_t)cw - KWM_CLOSE_BTN_W - 8,
-                                      0xFFFFFF, r);
+                                      KWM_TITLE_FG, r);
                 }
             }
         }
@@ -446,7 +698,9 @@ void compositor_flush() {
     for (uint32_t i = 0; i < dirty.count; i++) {
         Rect r;
         if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
-        blit_rect_db(back_db, screen_db, r);
+        // Phase 16/17: base-blit only the parts not covered by an opaque
+        // window; then compose the whole rect exactly as before.
+        base_blit_for_region(back_db, screen_db, r);
         composite_windows_in_rect(r, pitch4);
     }
     spinlock_unlock_irqrestore(&kwm_lock, kwm_flags);

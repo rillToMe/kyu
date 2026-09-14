@@ -151,6 +151,12 @@ gui_window_t* gui_create_window(uint32_t width, uint32_t height) {
     sys_kwm_update_window(win->win_id, win->canvas);
     win->dmg_valid = 0;   // sudah ter-upload; jangan kirim ulang saat flush pertama
 
+    // Phase 19: canvas barusan diisi penuh opaque (0xF5F5F5) dan semua primitif
+    // libgui/libui memaksa alpha 0xFF, jadi scan seluruh canvas kernel menerima.
+    // Ini mengaktifkan base-blit elision (Phase 16-18) untuk window ini. Gagal
+    // ditolak = window tetap dirender lewat jalur scalar (aman).
+    sys_kwm_set_window_opaque(win->win_id);
+
     return win;
 }
 
@@ -188,6 +194,11 @@ gui_window_t* gui_create_desktop(void) {
     _lgui_fill_rect(win, 0, 0, (int)sw, (int)sh, 0x1E293B);
     sys_kwm_update_window(win->win_id, win->canvas);
     win->dmg_valid = 0;   // sudah ter-upload
+
+    // Phase 19: desktop = full-screen opaque wallpaper (lihat catatan di
+    // gui_create_window). Semua pixel opaque → declare diterima; base blit untuk
+    // tiap region yang tertutup desktop (seluruh layar) bisa dihilangkan.
+    sys_kwm_set_window_opaque(win->win_id);
 
     return win;
 }

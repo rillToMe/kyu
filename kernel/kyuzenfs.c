@@ -15,17 +15,31 @@ static spinlock_t fs_lock = SPINLOCK_INIT;
 extern fs_node_t tty_node;
 extern void print_hex(uint32_t num); 
 extern uint32_t ata_get_total_sectors(void);
+extern void serial_print(const char* s);
+extern int g_serial_ready;
+
+// Boot-console separation: saat 1, kprint menahan output dari TTY/framebuffer
+// dan mengalirkannya ke COM1 (serial) saja. Dipakai kernel_main untuk meredam
+// log verbose subsistem selama boot. 0 = perilaku normal (console).
+int kprint_quiet = 0;
 
 static uint32_t slen(const char* str) {
     uint32_t l = 0; while(str[l]) l++; return l;
 }
 void kprint(const char* str) {
-    if (!str || !tty_node.write) return;
+    if (!str) return;
+
+    // Mode verbose: diagnostik penuh → serial, console tetap bersih.
+    if (kprint_quiet) {
+        if (g_serial_ready) serial_print(str);
+        return;
+    }
+
+    if (!tty_node.write) return;
 
 #ifdef HEAP_WATCH_DEBUG
     // Mirror kprint to COM1 so boot log survives a watchpoint freeze / BSOD,
     // where the framebuffer TTY is no longer readable on the host side.
-    extern void serial_print(const char* s);
     serial_print(str);
 #endif
 

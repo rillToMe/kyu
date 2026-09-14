@@ -649,6 +649,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "control-center"
+version = "0.1.0"
+dependencies = [
+ "kyuzen-alloc",
+ "kyuzen-gui",
+ "kyuzen-sys",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -114,6 +114,15 @@ int sys_kwm_update_window_rect(kwm_rect_update_t* req) {
     return ret;
 }
 
+// Phase 19 — declare window canvas fully opaque (syscall 67). Owner-only;
+// kernel validates every pixel (alpha != 0) before enabling the compositor's
+// base-blit elision / opaque memcpy fast-path. Return 0 accepted / -1 rejected.
+int sys_kwm_set_window_opaque(int win_id) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(67), "b"((uint64_t)win_id));
+    return ret;
+}
+
 // sys_exec: Load app baru, replace current app, TIDAK PERNAH kembali ke caller.
 // OS yang free RAM lama, load app baru, lalu lompat langsung ke entry-nya.
 __attribute__((noreturn))

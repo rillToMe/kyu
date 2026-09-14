@@ -29,6 +29,7 @@ const SYS_EXIT: u64 = 34;
 const SYS_SLEEP: u64 = 46;
 const SYS_KWM_SET_TITLE: u64 = 60;
 const SYS_KWM_UPDATE_WINDOW_RECT: u64 = 66;
+const SYS_KWM_SET_WINDOW_OPAQUE: u64 = 67;
 
 /// The kernel copies at most UC_MAX_STR (1024) bytes per print.
 const PRINT_BUF: usize = 512;
@@ -326,6 +327,15 @@ pub unsafe fn kwm_update_window_rect(req: *const KwmRectUpdate) -> i32 {
 /// success, -1 on failure (invalid window or not the owner).
 pub unsafe fn kwm_set_title(win_id: i32, title: *const u8) -> i32 {
     syscall3(SYS_KWM_SET_TITLE, win_id as u64, title as u64, 0) as i32
+}
+
+/// Declares this window's canvas as fully opaque (syscall 67, Phase 14).
+/// Owner-only. The kernel validates that every canvas pixel has a non-zero
+/// alpha byte before enabling the compositor's memcpy fast-path. Returns 0 on
+/// success, -1 if the window is not owned by the caller, does not exist, or any
+/// pixel is transparent (in which case the scalar compositor path is retained).
+pub unsafe fn kwm_set_window_opaque(win_id: i32) -> i32 {
+    syscall1(SYS_KWM_SET_WINDOW_OPAQUE, win_id as u64) as i32
 }
 
 /// Gets the screen size in pixels (syscall 63). Returns 0 on success, -1 on failure.
