@@ -11,7 +11,9 @@ void sys_yield() {
     __asm__ volatile("int $0x80" : : "a"(4));
 }
 
-void fs_format() { __asm__ volatile("int $0x80" : : "a"(5)); }
+int fs_format() {
+    int64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(5)); return (int)ret;
+}
 void fs_list() { __asm__ volatile("int $0x80" : : "a"(6)); }
 void fs_read(char* filename) { __asm__ volatile("int $0x80" : : "a"(7), "b"((uint64_t)filename)); }
 void fs_delete(char* filename) { __asm__ volatile("int $0x80" : : "a"(8), "b"((uint64_t)filename)); }
@@ -73,8 +75,8 @@ uint64_t sys_load_elf(char* filename) {
 void sys_draw_string(const char* str, int x, int y, uint32_t color) {
     __asm__ volatile("int $0x80" : : "a"(26), "b"((uint64_t)str), "c"((uint64_t)x), "d"((uint64_t)y), "S"((uint64_t)color));
 }
-void sys_set_uid(uint32_t uid) {
-    __asm__ volatile("int $0x80" : : "a"(27), "b"((uint64_t)uid));
+int sys_set_uid(uint32_t uid) {
+    int64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(27), "b"((uint64_t)uid)); return (int)ret;
 }
 uint32_t sys_get_uid() {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(28)); return (uint32_t)ret;
@@ -138,6 +140,13 @@ int sys_spawn(char* filename) {
     return ret;
 }
 
+// sys_spawn_argv (P0 Phase 2, syscall 68): spawn dengan argc/argv.
+int sys_spawn_argv(char* filename, int argc, char** argv) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(68), "b"((uint64_t)filename), "c"((uint64_t)argc), "d"((uint64_t)argv));
+    return ret;
+}
+
 // sys_kwm_set_cursor (Phase 9): ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
 int sys_kwm_set_cursor(int kind) {
     int ret;
@@ -183,11 +192,51 @@ int sys_get_screen_size(uint32_t* w, uint32_t* h) {
 }
 
 // sys_exit: App selesai, kembali ke shell.
-// Kernel membebaskan RAM app dan jump langsung ke shell command loop.
+// P0 Phase 2: exit(0) — syscall 34 merekam RBX sebagai status, jadi lewatkan
+// 0 eksplisit (dulu RBX tak terdefinisi, diabaikan kernel).
 __attribute__((noreturn))
 void sys_exit(void) {
-    __asm__ volatile("int $0x80" : : "a"(34));
+    __asm__ volatile("int $0x80" : : "a"(34), "b"((uint64_t)0));
     __builtin_unreachable();
+}
+
+// sys_exit_code: exit dengan status untuk waitpid parent.
+__attribute__((noreturn))
+void sys_exit_code(int code) {
+    __asm__ volatile("int $0x80" : : "a"(34), "b"((uint64_t)(int64_t)code));
+    __builtin_unreachable();
+}
+
+// sys_waitpid (69): tunggu child keluar. Blokir tanpa polling.
+int sys_waitpid(int pid, int* status, int options) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(69), "b"((uint64_t)(int64_t)pid), "c"((uint64_t)status), "d"((uint64_t)(int64_t)options));
+    return (int)ret;
+}
+
+int32_t sys_getpid(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(70));
+    return (int32_t)ret;
+}
+
+int32_t sys_getppid(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(71));
+    return (int32_t)ret;
+}
+
+int sys_proc_list(proc_info_t* buf, int max) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(72), "b"((uint64_t)buf), "c"((uint64_t)(int64_t)max));
+    return (int)ret;
+}
+
+// sys_kill (73): minta terminasi pid. -> 0 sukses, -1 ditolak/tak valid.
+int sys_kill(int pid) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(73), "b"((uint64_t)(int64_t)pid));
+    return (int)ret;
 }
 
 void print_num(uint32_t num) {
@@ -320,6 +369,48 @@ int sys_lseek(int fd, int32_t offset, int whence) {
 int sys_close(int fd) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(51), "b"((uint64_t)fd));
+    return (int)ret;
+}
+
+// sys_dup: Syscall 74 — dup(oldfd) -> fd baru (>=0) atau -1.
+// sys_dup2: Syscall 75 — dup2(oldfd, newfd) -> newfd atau -1.
+int sys_dup(int oldfd) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(74), "b"((uint64_t)(int64_t)oldfd));
+    return (int)ret;
+}
+
+int sys_dup2(int oldfd, int newfd) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(75), "b"((uint64_t)(int64_t)oldfd), "c"((uint64_t)(int64_t)newfd));
+    return (int)ret;
+}
+
+// sys_pipe: Syscall 76 — pipe(fds) -> 0 sukses (fds[0]=read, fds[1]=write).
+int sys_pipe(int fds[2]) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(76), "b"((uint64_t)fds));
+    return (int)ret;
+}
+
+// sys_spawn_redir: Syscall 77 — spawn + stdio inheritance eksplisit.
+int sys_spawn_redir(char* filename, int argc, char** argv, spawn_stdio_t* spec) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(77), "b"((uint64_t)filename), "c"((uint64_t)argc), "d"((uint64_t)argv), "S"((uint64_t)spec));
+    return (int)ret;
+}
+
+// sys_fork: Syscall 78 — duplicate caller (parent: child pid, child: 0).
+int sys_fork(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(78));
+    return (int)ret;
+}
+
+// sys_execve: Syscall 79 — replace caller image (returns only on failure).
+int sys_execve(char* path, int argc, char** argv) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(79), "b"((uint64_t)path), "c"((uint64_t)argc), "d"((uint64_t)argv));
     return (int)ret;
 }
 

@@ -155,6 +155,11 @@ void task_sleep_ms(uint32_t ms) {
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
 
     block_current_task(TASK_SLEEPING);
+    // P0 Phase 3: kill observed on wake (killer unblocks sleepers; the
+    // sleep condition is not re-checked, so the flag is the wake reason).
+    if (tasks[self].kill_pending) {
+        proc_exit_kill();   // noreturn, authoritative termination
+    }
 }
 
 void sleepq_check_wakeups(uint64_t now_ms) {

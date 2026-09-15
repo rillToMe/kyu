@@ -8,6 +8,7 @@
 // ============================================================
 
 #include "task.h"
+#include "proc.h"
 #include "uheap.h"
 #include "heap.h"
 #include "spinlock.h"
@@ -84,6 +85,46 @@ static void task_strncpy(char* dst, const char* src, int n) {
     dst[i] = '\0';
 }
 
+// P0 Phase 1 — credential accessors. Task-local reads, no locks:
+// each cred is written only at creation (under scheduler_lock, before
+// READY) or by its own task via sys_set_uid (under scheduler_lock);
+// 32-bit aligned reads are atomic on x86. Remote reads are advisory,
+// same contract as cpu_current_task[].
+uint32_t cred_task_uid(const task_t* t) { return t ? t->cred.uid : CRED_ROOT_UID; }
+uint32_t cred_task_gid(const task_t* t) { return t ? t->cred.gid : CRED_ROOT_GID; }
+
+uint32_t cred_current_uid(void) {
+    int id = smp_current_task_id();
+    if (id < 0 || id >= task_count) return CRED_ROOT_UID; // idle/early = kernel
+    return tasks[id].cred.uid;
+}
+
+uint32_t cred_current_gid(void) {
+    int id = smp_current_task_id();
+    if (id < 0 || id >= task_count) return CRED_ROOT_GID; // idle/early = kernel
+    return tasks[id].cred.gid;
+}
+
+int cred_current_is_root(void) {
+    return cred_current_uid() == CRED_ROOT_UID;
+}
+
+// Inherit creator cred + parent for a new slot. Caller holds scheduler_lock.
+// Parent is the running task on this CPU; it cannot be DEAD under us.
+static void task_cred_inherit_locked(int slot) {
+    int parent = smp_current_task_id();
+    if (parent >= 0 && parent < task_count) {
+        cred_inherit(&tasks[slot].cred, &tasks[parent].cred);
+        tasks[slot].parent_id = parent;
+    } else {
+        // No creator (early boot / idle kthread path): kernel identity,
+        // explicit — not a silent privilege grant to a user task.
+        tasks[slot].cred.uid = CRED_ROOT_UID;
+        tasks[slot].cred.gid = CRED_ROOT_GID;
+        tasks[slot].parent_id = PROC_NO_PARENT;
+    }
+}
+
 static void task_entry_trampoline(void (*func)(void)) {
     if (func != NULL) {
         func();
@@ -106,6 +147,11 @@ void tasking_init(void) {
         tasks[i].uheap_brk = 0;
         tasks[i].uheap_regions = NULL;
         tasks[i].kind = TASK_KIND_KERNEL;
+        tasks[i].parent_id = PROC_NO_PARENT;
+        tasks[i].exit_code = 0;
+        tasks[i].argc = 0;
+        tasks[i].exit_reason = 0;
+        tasks[i].kill_pending = 0;
     }
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
@@ -114,6 +160,12 @@ void tasking_init(void) {
     runq_init();
 
     sched_stacks_init();
+
+    // P0 Phase 2: process wait queue (parent/child exit synchronization).
+    {
+        extern void proc_init(void);
+        proc_init();
+    }
 
     // Task 0 = kernel main thread yang sedang berjalan
     // RSP-nya akan diisi oleh schedule() pada preemption pertama
@@ -126,6 +178,13 @@ void tasking_init(void) {
     tasks[0].priority   = PRIO_NORMAL;
     tasks[0].enqueue_ms = 0;
     tasks[0].kind       = TASK_KIND_KERNEL;
+    tasks[0].cred.uid   = CRED_ROOT_UID;   // P0 Phase 1: kernel/root identity
+    tasks[0].cred.gid   = CRED_ROOT_GID;
+    tasks[0].parent_id  = PROC_NO_PARENT;  // P0 Phase 2: no parent (reaper placeholder)
+    tasks[0].exit_code  = 0;
+    tasks[0].argc       = 0;
+    tasks[0].exit_reason  = 0;
+    tasks[0].kill_pending = 0;
     task_strncpy(tasks[0].name, "kmain", 16);
 
     current_task = 0;
@@ -250,9 +309,23 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
     tasks[slot].wake_at_ms = 0;
     tasks[slot].priority   = priority;
     tasks[slot].kind       = TASK_KIND_KERNEL;
+    tasks[slot].exit_code  = 0;
+    tasks[slot].argc       = 0;
+    tasks[slot].exit_reason  = 0;
+    tasks[slot].kill_pending = 0;
+    task_cred_inherit_locked(slot);            // P0 Phase 1: child = parent cred
+                                               // + P0 Phase 2: parent_id
     task_strncpy(tasks[slot].name, name ? name : "task", 16);
 
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    // P0 Phase 2: stdio per-task (fd 0/1/2 -> TTY). Outside scheduler_lock
+    // (vfs has its own lock, must not nest). Slot not yet in runq, so the
+    // new task cannot run before stdio is ready.
+    {
+        extern void vfs_task_init(int task_id);
+        vfs_task_init(slot);
+    }
 
     // Place the new task on the least-loaded CPU and wake only that one CPU.
     // This replaces the old broadcast-to-all-idle-cores wakeup, which made
@@ -290,9 +363,15 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
 // pml4_phys/cookie/kind di-set DI DALAM scheduler_lock sebelum state=READY —
 // scheduler membaca pml4_phys untuk CR3 switch saat task pertama dipilih;
 // jika di-set setelah READY, AP lain bisa menjemput task dengan CR3 salah.
+//
+// P0 Phase 2: argc/argv_uaddr dimuat ke RDI/RSI (SysV main(argc,argv)).
+// argv array + strings sudah di user stack AS target. Old apps
+// (void main) mengabaikan RDI/RSI — backward compatible.
 // ============================================================
 int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
-                     phys_addr_t pml4_phys, uint32_t cookie, const char* name) {
+                     phys_addr_t pml4_phys, uint32_t cookie, const char* name,
+                     uint64_t argc, uint64_t argv_uaddr,
+                     const int inherit_fds[3]) {
     uint32_t kick_cpus[SMP_MAX_CPUS];
     uint32_t kick_count = 0;
 
@@ -323,8 +402,8 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
     *(--p) = 0ULL;   // rcx
     *(--p) = 0ULL;   // rdx
     *(--p) = 0ULL;   // rbp
-    *(--p) = 0ULL;   // rsi
-    *(--p) = 0ULL;   // rdi — bukan argumen: app mulai di main() tanpa trampoline
+    *(--p) = argv_uaddr; // rsi = argv (P0 Phase 2 ABI)
+    *(--p) = argc;       // rdi = argc (old void-main apps ignore both)
     *(--p) = 0ULL;   // r8
     *(--p) = 0ULL;   // r9
     *(--p) = 0ULL;   // r10
@@ -369,6 +448,14 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
     }
 
     // Semua field terisi SEBELUM state=READY — lihat komentar di atas.
+    // P0 Phase 1: child inherits caller cred. No creator (idle/early) =
+    // fail safely — never silently spawn a root user task.
+    int creator = smp_current_task_id();
+    if (creator < 0 || creator >= task_count) {
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        kfree(stack);
+        return -1;
+    }
     tasks[slot].id         = (uint32_t)slot;
     tasks[slot].rsp        = (uint64_t)p;
     tasks[slot].stack_base = (uint64_t)stack;
@@ -378,9 +465,41 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
     tasks[slot].wake_at_ms = 0;
     tasks[slot].priority   = PRIO_NORMAL;
     tasks[slot].kind       = TASK_KIND_SPAWNED;
+    tasks[slot].exit_code  = 0;
+    tasks[slot].argc       = (int32_t)argc;
+    tasks[slot].exit_reason  = 0;
+    tasks[slot].kill_pending = 0;
+    cred_inherit(&tasks[slot].cred, &tasks[creator].cred);
+    tasks[slot].parent_id  = creator;   // P0 Phase 2: explicit parent
     task_strncpy(tasks[slot].name, name ? name : "app", 16);
 
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    // P0 Phase 2: stdio per-task. Outside scheduler_lock (see create_task_prio).
+    {
+        extern void vfs_task_init(int task_id);
+        vfs_task_init(slot);
+    }
+
+    // P0 Phase 5: explicit stdio inheritance (sys_spawn_redir, shell
+    // redirection/pipelines). Still outside scheduler_lock (vfs has its
+    // own lock, must not nest); the slot is not on any run queue yet, so
+    // no CPU can observe the half-inherited table. Bad fd -> release the
+    // half-built child (fds + stack) and fail, never publish it.
+    if (inherit_fds) {
+        extern int vfs_inherit_stdio(int child, int parent, const int spec[3]);
+        extern void vfs_close_all(int task_id);
+        if (vfs_inherit_stdio(slot, creator, inherit_fds) != 0) {
+            vfs_close_all(slot);
+            uint64_t fail = spinlock_lock_irqsave(&scheduler_lock);
+            tasks[slot].state = TASK_DEAD;
+            tasks[slot].rsp   = 0;
+            tasks[slot].stack_base = 0;
+            spinlock_unlock_irqrestore(&scheduler_lock, fail);
+            kfree(stack);
+            return -1;
+        }
+    }
 
     uint32_t target = pick_target_cpu();
     if (runq_push(target, slot) != 0) {
@@ -405,63 +524,170 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
     return slot;
 }
 
-void task_exit(void) {
-    uint32_t cpu_id = smp_current_cpu_index();
+// ============================================================
+// task_fork — P0 Phase 6B: duplicate a RUNNING user task.
+//
+// Unlike create_user_task (fresh ELF image), fork clones live state:
+// full-copy address space + forged syscall-return frame (child resumes
+// after the fork trap with rax=0) + shared fd table + heap metadata.
+//
+// All-or-nothing: any failure destroys what was built (child AS via
+// vmm_destroy_address_space, kernel stack, uheap nodes, fd refs never
+// taken before the fail point) and returns -1 with the parent and its
+// slot state untouched. The pid is unknown to anyone until return, so
+// no CPU can observe the half-built child before runq_push — same
+// argument as create_user_task.
+//
+// parent_id: cloning task (must own a user AS). parent_rf: its live
+// syscall trap frame (user registers are copied verbatim).
+// Returns: child slot id (>= 0), or -1.
+// ============================================================
+int task_fork(int parent_id, registers_t* parent_rf) {
+    if (!parent_rf) return -1;
+    if (parent_id < 0 || parent_id >= MAX_TASKS) return -1;
 
-    // Flush and release any open fds before tearing the task down. Done outside
-    // scheduler_lock: vfs has its own lock and must not nest under it.
-    vfs_close_all(smp_current_task_id());
+    uint32_t kick_cpus[SMP_MAX_CPUS];
+    uint32_t kick_count = 0;
 
-    // Phase 5B: buang sisa event queue milik task yang mati — slot task bisa
-    // dipakai ulang; event app lama tidak boleh ikut ke pemilik baru.
-    {
-        extern void flush_event_queue(int task_id);
-        flush_event_queue(smp_current_task_id());
+    phys_addr_t parent_as = tasks[parent_id].pml4_phys;
+    if (parent_as == PHYS_NULL) return -1;   // kernel task: no user AS to clone
+    if (tasks[parent_id].state != TASK_RUNNING) return -1;
+
+    // 1. Clone the address space first (heaviest step; parent untouched
+    // on failure — vmm_clone_user_as only reads parent tables).
+    phys_addr_t child_as = vmm_clone_user_as(parent_as);
+    if (child_as == PHYS_NULL) return -1;
+
+    // 2. Child kernel stack (never shared with the parent).
+    uint8_t* stack = (uint8_t*)kmalloc(TASK_STACK_SIZE);
+    if (!stack) {
+        vmm_destroy_address_space(child_as, 1);
+        return -1;
     }
-
-    void*       old_stack = NULL;
-    phys_addr_t dead_pml4 = PHYS_NULL;
+    for (int i = 0; i < TASK_STACK_SIZE; i++) stack[i] = 0;
 
     uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
 
-    if (cpu_id < SMP_MAX_CPUS) {
-        int cur = cpu_current_task[cpu_id];
-        if (cur > 0 && cur < task_count) {
-            // FIX_001: pindahkan ownership stack task ke register LOKAL.
-            // Setelah stack_base di-zero-kan, slot reaper di create_task
-            // (CPU lain) tidak akan pernah menyentuh stack ini — ia hanya
-            // di-free oleh CPU ini, SETELAH pindah ke idle stack permanen.
-            old_stack = (void*)tasks[cur].stack_base;
-            tasks[cur].stack_base = 0;
-
-            // If task has a private address space, destroy it
-            if (tasks[cur].pml4_phys != PHYS_NULL) {
-                // Switch to kernel PML4 (safe — uses saved boot PML4)
-                vmm_switch_to_kernel_as();
-                dead_pml4 = tasks[cur].pml4_phys;
-                tasks[cur].pml4_phys = PHYS_NULL;
-            }
-
-            // FIX_005 Tahap 3: bebaskan metadata heap user SEBELUM slot
-            // terlihat DEAD — reaper create_task tidak akan double-free.
-            // kfree di bawah scheduler_lock = pola yang sama dengan fallback
-            // stack_base di create_task_prio.
-            uheap_reset(&tasks[cur]);
-
-            tasks[cur].state = TASK_DEAD;
-            tasks[cur].rsp = 0;
+    int slot = -1;
+    for (int i = 1; i < task_count; i++) {
+        if (tasks[i].state == TASK_DEAD) {
+            slot = i;
+            break;
         }
-        cpu_current_task[cpu_id] = -1;
+    }
+    if (slot < 0 && task_count < MAX_TASKS) {
+        slot = task_count++;
+    }
+    if (slot < 0) {
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        kfree(stack);
+        vmm_destroy_address_space(child_as, 1);
+        return -1;
+    }
+
+    // Same slot-reuse hygiene as create_user_task.
+    if (tasks[slot].stack_base != 0) {
+        kfree((void*)tasks[slot].stack_base);
+    }
+    uheap_reset(&tasks[slot]);
+    {
+        extern void flush_event_queue(int task_id);
+        flush_event_queue(slot);
+    }
+
+    tasks[slot].id         = (uint32_t)slot;
+    tasks[slot].rsp        = 0;   // set after forging the frame below
+    tasks[slot].stack_base = (uint64_t)stack;
+    tasks[slot].state      = TASK_READY;
+    tasks[slot].pml4_phys  = child_as;
+    tasks[slot].cookie     = as_cookie_next();
+    tasks[slot].wake_at_ms = 0;
+    tasks[slot].priority   = PRIO_NORMAL;
+    tasks[slot].kind       = TASK_KIND_SPAWNED;
+    tasks[slot].exit_code  = 0;
+    tasks[slot].argc       = tasks[parent_id].argc;
+    tasks[slot].exit_reason  = 0;
+    tasks[slot].kill_pending = 0;
+    cred_inherit(&tasks[slot].cred, &tasks[parent_id].cred);
+    tasks[slot].parent_id  = parent_id;
+    task_strncpy(tasks[slot].name, tasks[parent_id].name, 16);
+
+    // Heap metadata follows the cloned pages (same user vaddrs).
+    if (uheap_clone(&tasks[slot], &tasks[parent_id]) != 0) {
+        tasks[slot].state = TASK_DEAD;
+        tasks[slot].rsp   = 0;
+        tasks[slot].stack_base = 0;
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        kfree(stack);
+        vmm_destroy_address_space(child_as, 1);
+        return -1;
     }
 
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
 
-    // Must run outside scheduler_lock (it acquires paging_lock). Aman di
-    // stack lama: stack belum bisa di-free siapa pun (ownership di register).
-    if (dead_pml4 != PHYS_NULL) {
-        vmm_destroy_address_space(dead_pml4, 1);
+    // 3. Forge the child's trap frame: parent's user registers verbatim,
+    // rax forced to 0 (the child's fork() return). Layout is registers_t
+    // by construction (see isr_macro.inc) — the child returns through the
+    // normal POPA64+iretq path like any syscall exit.
+    {
+        registers_t* cp = (registers_t*)((uint64_t)stack + TASK_STACK_SIZE -
+                                          sizeof(registers_t));
+        *cp = *parent_rf;
+        cp->rax = 0;
+        cp->int_num = 128;
+        cp->error_code = 0;
+        tasks[slot].rsp = (uint64_t)cp;
     }
 
-    // Pindah ke idle stack permanen DULU (asm), baru kfree(old_stack) di sana.
-    task_exit_via_idle(task_idle_stack_top(cpu_id), old_stack);
+    // 4. Whole fd table, same numbers, shared descriptions. Child table
+    // must be empty (stale occupant -> fail, never clobber). No KWM
+    // windows: ownership is per-task and the fresh slot has none; the
+    // parent keeps its own (exit paths tear down per owner).
+    {
+        extern int vfs_fork_inherit(int child, int parent);
+        if (vfs_fork_inherit(slot, parent_id) != 0) {
+            uint64_t fail = spinlock_lock_irqsave(&scheduler_lock);
+            tasks[slot].state = TASK_DEAD;
+            tasks[slot].rsp   = 0;
+            tasks[slot].stack_base = 0;
+            spinlock_unlock_irqrestore(&scheduler_lock, fail);
+            uheap_reset(&tasks[slot]);
+            kfree(stack);
+            vmm_destroy_address_space(child_as, 1);
+            return -1;
+        }
+    }
+
+    uint32_t target = pick_target_cpu();
+    if (runq_push(target, slot) != 0) {
+        uint64_t reclaim = spinlock_lock_irqsave(&scheduler_lock);
+        tasks[slot].state = TASK_DEAD;
+        tasks[slot].rsp   = 0;
+        tasks[slot].stack_base = 0;
+        spinlock_unlock_irqrestore(&scheduler_lock, reclaim);
+        {
+            extern void vfs_close_all(int task_id);
+            vfs_close_all(slot);
+        }
+        uheap_reset(&tasks[slot]);
+        kfree(stack);
+        vmm_destroy_address_space(child_as, 1);
+        return -1;
+    }
+
+    if (target != smp_current_cpu_index()) {
+        kick_cpus[kick_count++] = target;
+    }
+
+    for (uint32_t i = 0; i < kick_count; i++) {
+        smp_mark_reschedule(kick_cpus[i]);
+        lapic_send_reschedule(kick_cpus[i]);
+    }
+
+    return slot;
+}
+
+void task_exit(void) {
+    extern void proc_exit(int code) __attribute__((noreturn));
+    proc_exit(0);
 }

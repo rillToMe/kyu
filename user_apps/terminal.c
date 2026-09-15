@@ -19,13 +19,68 @@ static char g_prompt[64];   // "<username>@kyuzen:~$ "
 static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
 
 // ---------- output adapter: shell → TextEdit ----------
+// TERM_SERIAL_MIRROR (test build only): echo the transcript to the tty so
+// the GUI terminal is observable over COM1. No-op in production builds.
+static void term_mirror(const char* text) {
+#ifdef TERM_SERIAL_MIRROR
+    int n = slen(text);
+    if (n > 0) sys_write_fd(1, text, (uint32_t)n);
+#else
+    (void)text;
+#endif
+}
 static void term_out(void* ctx, const char* text) {
     (void)ctx;
+    term_mirror(text);
     ui_textedit_append(out, text);
 }
 static void term_clear(void* ctx) {
     (void)ctx;
+    term_mirror("\n[term:clear]\n");
     ui_textedit_clear(out);
+}
+// Semua append transkrip lewat sini agar mirror serial mencakup prompt/banner.
+static void term_show(const char* text) {
+    term_mirror(text);
+    ui_textedit_append(out, text);
+}
+
+// P0 Phase 6A poll: pompa antrian event KWM selama join foreground.
+// Ctrl+C (scancode fisik 0x2E + Ctrl, layout-independen) dikonsumsi -> 1.
+// Event lain ikut termakan (terdokumentasi: tanpa type-ahead dan tanpa
+// interaksi window selama pipeline berjalan; klik lagi setelahnya).
+static int term_poll_input(void* ctx) {
+    (void)ctx;
+    kyuzen_event_t ev;
+    while (sys_get_event(&ev)) {
+        if (ev.type == EVENT_KEY_PRESS &&
+            (ev.param2 & KEY_MOD_CTRL) &&
+            (ev.param3 & 0x1FF) == 0x2Eu) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// P0 Phase 6A: Ctrl-C tanpa foreground (loop event jalan normal) —
+// shortcut menelan keypress SEBELUM masuk TextBox (tak ada huruf 'c'
+// nyasar). Potong baris input saat ini, cetak ^C, prompt segar.
+// Saat pipeline jalan, loop terblokir di shell_execute: shortcut tak
+// menyala, event mentah dibaca term_poll_input sebagai interupsi.
+static void on_ctrl_c(void* userdata) {
+    (void)userdata;
+    if (shell_awaiting_input(g_sh)) return;   // prompt password: telan saja
+    const char* t = ui_textedit_text(out);
+    int len = slen(t), ls = len;
+    while (ls > 0 && t[ls - 1] != '\n') ls--;   // buang "prompt+ketikan"
+    char keep[8192]; int k = 0;
+    for (int i = 0; i < ls && k < 8180; i++) keep[k++] = t[i];
+    const char* mark = "^C\n";
+    for (int i = 0; mark[i] && k < 8180; i++) keep[k++] = mark[i];
+    for (int i = 0; g_prompt[i] && k < 8180; i++) keep[k++] = g_prompt[i];
+    keep[k] = '\0';
+    ui_textedit_set_text(out, keep);
+    term_mirror("\n^C\n");
 }
 
 static void on_enter(void* userdata) {
@@ -39,7 +94,7 @@ static void on_enter(void* userdata) {
     for (int i = ls; i < len && rn < 255; i++) raw[rn++] = t[i];
     raw[rn] = '\0';
 
-    ui_textedit_append(out, "\n");   // tutup baris
+    term_show("\n");   // tutup baris
 
     // Mode input tertunda (password sudo / password user baru): baris = prompt + input.
     if (shell_awaiting_input(g_sh)) {
@@ -47,7 +102,7 @@ static void on_enter(void* userdata) {
         int skip = 0; while (pf[skip] && raw[skip] == pf[skip]) skip++;
         int st = shell_supply_input(g_sh, raw + skip);
         if (st == SHELL_STATUS_EXIT) { ui_window_request_close(g_win); return; }
-        ui_textedit_append(out, g_prompt);
+        term_show(g_prompt);
         return;
     }
 
@@ -66,7 +121,7 @@ static void on_enter(void* userdata) {
     }
     // Jika shell minta input, ia sudah mencetak promptnya — jangan tambahkan
     // prompt; user mengetik di baris yang sama.
-    if (!shell_awaiting_input(g_sh)) ui_textedit_append(out, g_prompt);
+    if (!shell_awaiting_input(g_sh)) term_show(g_prompt);
 }
 
 void main(void) {
@@ -90,16 +145,21 @@ void main(void) {
     ui_textedit_set_enter(out, on_enter, 0);
     ui_window_add(win, out);
     ui_window_focus(win, out);           // langsung bisa mengetik
+    // P0 Phase 6A: Ctrl-C tanpa foreground (shift mengubah P1 -> daftarkan
+    // dua-duanya, pola widget_demo). Saat pipeline jalan tak menyala.
+    ui_window_add_shortcut(win, KEY_MOD_CTRL, 'c', on_ctrl_c, 0);
+    ui_window_add_shortcut(win, KEY_MOD_CTRL, 'C', on_ctrl_c, 0);
 
     // Shell engine bersama + prompt dari akun yang login.
     shell_io_t io;
     io.out = term_out; io.err = term_out; io.clear = term_clear; io.ctx = 0;
+    io.poll_input = term_poll_input;
     g_sh = shell_init(&io);
     shell_build_prompt(g_prompt, sizeof(g_prompt), "@kyuzen:~$ ");
 
-    ui_textedit_append(out, "KyuzenOS Terminal\n");
-    ui_textedit_append(out, "Type 'help' for available commands.\n\n");
-    ui_textedit_append(out, g_prompt);
+    term_show("KyuzenOS Terminal\n");
+    term_show("Type 'help' for available commands.\n\n");
+    term_show(g_prompt);
 
     ui_window_run(win);   // blocking; keluar via X titlebar / ESC
     ui_window_destroy(win);

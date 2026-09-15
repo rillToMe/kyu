@@ -132,6 +132,8 @@ static int cmd_help(shell_t* sh, int argc, char** argv) {
         shell_writeln(sh, sh->cmds[i].desc ? sh->cmds[i].desc : "");
         if (sh->cmds[i].sudo) shell_writeln(sh, "  (butuh: sudo)");
     }
+    shell_writeln(sh, "Redir/pipe (app eksternal): cmd > f | cmd >> f | cmd < f | a | b");
+    shell_writeln(sh, "Ctrl-C menghentikan foreground pipeline yang sedang jalan.");
     return SHELL_OK;
 }
 
@@ -243,7 +245,7 @@ static int cmd_time(shell_t* sh, int argc, char** argv) {
 }
 
 static int cmd_start(shell_t* sh, int argc, char** argv) {
-    if (argc < 2) { shell_writeln(sh, "Penggunaan: start [app]"); return SHELL_ERR; }
+    if (argc < 2) { shell_writeln(sh, "Penggunaan: start [app] [arg...]"); return SHELL_ERR; }
     char elf[32]; int i = 0;
     while (argv[1][i] && i < 27) { elf[i] = argv[1][i]; i++; }
     elf[i] = '\0';
@@ -251,7 +253,19 @@ static int cmd_start(shell_t* sh, int argc, char** argv) {
     if (!has_ext && i < 28) { elf[i++]='.'; elf[i++]='e'; elf[i++]='l'; elf[i++]='f'; elf[i]='\0'; }
     char app[40]; build_app_path(app, sizeof(app), elf);
     if (!sys_file_exists(app)) { shell_writeln(sh, "start: file tidak ada"); return SHELL_ERR; }
-    int tid = sys_spawn(app);
+    // P0 Phase 2: teruskan argumen ke child argv.
+    // child argc = argc-1, child argv[0] = nama app seperti diketik (argv[1]),
+    // argv[1..] = argv[2..]. Tanpa argumen ekstra: argc=1 (kompatibel lama).
+    int cargc = argc - 1;
+    if (cargc < 1) cargc = 1;
+    if (cargc > PROC_MAX_ARGC) cargc = PROC_MAX_ARGC;
+    char* cargv[PROC_MAX_ARGC];
+    for (int k = 0; k < cargc; k++) cargv[k] = argv[1 + k];
+    int tid = sys_spawn_argv(app, cargc, cargv);
+    if (tid < 0) {
+        // Fallback: spawn lama tanpa argumen (kompatibilitas).
+        tid = sys_spawn(app);
+    }
     if (tid < 0) { shell_writeln(sh, "start: gagal (slot task penuh / OOM)"); return SHELL_ERR; }
     shell_write(sh, "start: "); shell_write(sh, elf);
     shell_write(sh, " (task "); shell_writenum(sh, (uint32_t)tid); shell_writeln(sh, ")");
@@ -285,10 +299,17 @@ static int cmd_restart(shell_t* sh, int argc, char** argv) {
 }
 
 // Jalankan baris perintah dengan hak root (dipakai sudo).
+// P0 Phase 1: elevasi lewat sys_set_uid butuh caller root (kernel boundary).
+// Non-root yang lolos verifikasi password TETAP ditolak kernel di sini —
+// sudo password-mandiri bukan mekanisme privilegel; eskalasi non-root yang
+// benar (setuid/sudoers) adalah fase berikutnya. Gagal = jangan eksekusi.
 static int run_elevated(shell_t* sh, const char* line) {
     uint32_t old_uid = sys_get_uid();
+    if (old_uid != 0 && sys_set_uid(0) != 0) {
+        shell_writeln(sh, "sudo: elevation ditolak kernel (butuh root)");
+        return SHELL_ERR;
+    }
     sh->elevated = 1;
-    if (old_uid != 0) sys_set_uid(0);
     int st = shell_execute(sh, line);
     if (old_uid != 0) sys_set_uid(old_uid);
     sh->elevated = 0;
@@ -376,10 +397,13 @@ static void user_create(shell_t* sh, const char* name, const char* pass) {
     shell_writeln(sh, "' berhasil ditambahkan.");
 }
 
-// --- format (destruktif; portable lewat fs_format) ---
+// --- format (destruktif; portable lewat fs_format, root-only di kernel) ---
 static int cmd_format(shell_t* sh, int argc, char** argv) {
-    (void)sh; (void)argc; (void)argv;
-    fs_format();
+    (void)argc; (void)argv;
+    if (fs_format() != 0) {
+        shell_writeln(sh, "format: ditolak kernel (butuh root)");
+        return SHELL_ERR;
+    }
     return SHELL_OK;
 }
 
@@ -554,6 +578,68 @@ static int cmd_wait(shell_t* sh, int argc, char** argv) {
     return SHELL_OK;
 }
 
+// P0 Phase 3: daftar child milik shell ini (read-only, tanpa WNOHANG).
+// Reaping eksplisit lewat `reap <pid>`; tidak ada polling latar.
+static const char* job_state_(uint8_t st) {
+    switch (st) {
+        case 0: return "READY";
+        case 1: return "RUNNING";
+        case 2: return "SLEEP";
+        case 4: return "BLOCK";
+        case 5: return "ZOMBIE";
+        default: return "?";
+    }
+}
+
+static int cmd_jobs(shell_t* sh, int argc, char** argv) {
+    (void)argc; (void)argv;
+    proc_info_t list[16];
+    int n = sys_proc_list(list, 16);
+    if (n < 0) { shell_writeln(sh, "jobs: gagal"); return SHELL_ERR; }
+    int32_t me = sys_getpid();
+    int found = 0;
+    for (int i = 0; i < n; i++) {
+        if (list[i].ppid != me) continue;
+        found = 1;
+        shell_write(sh, "  ["); shell_writenum(sh, (uint32_t)list[i].pid);
+        shell_write(sh, "] "); shell_write(sh, job_state_(list[i].state));
+        shell_write(sh, " "); shell_writeln(sh, list[i].name);
+    }
+    if (!found) shell_writeln(sh, "(tidak ada child)");
+    return SHELL_OK;
+}
+
+// P0 Phase 3: tunggu SATU child sampai keluar lalu reap (blocking eksplisit).
+// Tanpa WNOHANG tidak ada reap non-blocking; jangan polling waitpid di sini.
+// P0 Phase 3: minta terminasi proses (otorisasi di kernel: child/root).
+static int cmd_kill(shell_t* sh, int argc, char** argv) {
+    if (argc < 2) { shell_writeln(sh, "Penggunaan: kill [pid]"); return SHELL_ERR; }
+    uint32_t pid = 0;
+    if (!parse_uint_(argv[1], &pid)) { shell_writeln(sh, "kill: pid tidak valid"); return SHELL_ERR; }
+    if (sys_kill((int)pid) != 0) {
+        shell_writeln(sh, "kill: ditolak (bukan child / tak valid / sudah keluar)");
+        return SHELL_ERR;
+    }
+    shell_write(sh, "kill: PID "); shell_writenum(sh, pid); shell_writeln(sh, " dihentikan");
+    return SHELL_OK;
+}
+
+static int cmd_reap(shell_t* sh, int argc, char** argv) {
+    if (argc < 2) { shell_writeln(sh, "Penggunaan: reap [pid]"); return SHELL_ERR; }
+    uint32_t pid = 0;
+    if (!parse_uint_(argv[1], &pid)) { shell_writeln(sh, "reap: pid tidak valid"); return SHELL_ERR; }
+    int status = 0;
+    int got = sys_waitpid((int)pid, &status, 0);
+    if (got < 0) { shell_writeln(sh, "reap: bukan child / sudah di-reap"); return SHELL_ERR; }
+    shell_write(sh, "reap: pid "); shell_writenum(sh, (uint32_t)got);
+    shell_write(sh, " status ");
+    if (status < 0) { shell_write(sh, "-"); shell_writenum(sh, (uint32_t)(-(int64_t)status)); }
+    else shell_writenum(sh, (uint32_t)status);
+    if (status == PROC_KILL_EXIT_CODE) shell_write(sh, " (killed)");
+    shell_writeln(sh, "");
+    return SHELL_OK;
+}
+
 static const shell_cmd_entry_t g_builtins[] = {
     { "help",     cmd_help,     "Info ini",                    0 },
     { "clear",    cmd_clear,    "Bersihkan layar",             0 },
@@ -576,6 +662,9 @@ static const shell_cmd_entry_t g_builtins[] = {
     { "df",       cmd_df,       "Pemakaian disk",              0 },
     { "uname",    cmd_uname,    "Info sistem",                 0 },
     { "wait",     cmd_wait,     "Tunda N milidetik",           0 },
+    { "jobs",     cmd_jobs,     "Daftar child proses",         0 },
+    { "kill",     cmd_kill,     "Hentikan proses (hak kernel)", 0 },
+    { "reap",     cmd_reap,     "Tunggu+reap child (blokir)",  0 },
     { "cat",      cmd_baca,     "Alias baca",                  0 },
     { "rm",       cmd_hapus,    "Alias hapus",                 0 },
     { "date",     cmd_time,     "Alias time",                  0 },
@@ -587,6 +676,304 @@ static const shell_cmd_entry_t g_builtins[] = {
     { "restart",  cmd_restart,  "Restart OS",                  1 },
     { "reboot",   cmd_restart,  "Alias restart",               1 },
 };
+
+// ---------- P0 Phase 5: redirection + pipelines (app eksternal saja) ----------
+// Operator HARUS token terpisah ("a | b", "cmd > f"). Tanpa quoting:
+// "a>b" adalah satu kata (bukan operator). '<' hanya di stage pertama,
+// '>'/'>>' hanya di stage terakhir, stderr selalu console, maks 4 stage.
+// Builtin (echo/cat/start/...) jalan in-process via shell_io — tak bisa
+// di-fd-redirect — jadi tiap stage HARUS /apps/*.elf (child spawn_redir
+// + waitpid foreground). Tanpa '&', tanpa job control.
+#define SHELL_MAX_STAGES 4
+#define SHELL_MAX_WORDS  64
+
+static int op_is_pipe(const char* w) { return w[0] == '|' && w[1] == '\0'; }
+static int op_is_in(const char* w)   { return w[0] == '<' && w[1] == '\0'; }
+static int op_is_out(const char* w)  { return w[0] == '>' && w[1] == '\0'; }
+static int op_is_app(const char* w)  { return w[0] == '>' && w[1] == '>' && w[2] == '\0'; }
+static int op_is_any(const char* w)  { return op_is_pipe(w) || op_is_in(w) || op_is_out(w) || op_is_app(w); }
+
+// P0 Phase 6A: 1 bila frontend melaporkan Ctrl-C tertunda (dikonsumsi),
+// 0 bila tidak ada / poll tak didukung. Frontend yang memutuskan arti
+// "Ctrl-C tiba"; shell yang memutuskan artinya bagi foreground pipeline.
+int shell_poll_ctrlc(shell_t* sh) {
+    if (!sh || !sh->io || !sh->io->poll_input) return 0;
+    return sh->io->poll_input(sh->io->ctx) == 1;
+}
+
+static int join_stages(shell_t* sh, char* sargv[SHELL_MAX_STAGES][SHELL_MAX_ARGV],
+                       int pids[SHELL_MAX_STAGES], int nspawn);
+
+// Resolve stage -> /apps/<nama>.elf. External-only: app eksternal menang
+// atas builtin se-nama (mis. `echo` -> /apps/echo.elf agar bisa di-pipe;
+// builtin echo jalan in-process dan tak bisa di-fd-redirect). Nama yang
+// hanya builtin (help/start/...) ditolak; yang tak ada sama sekali ditolak.
+// Return 0 sukses, -1 app tak ada, -2 hanya-builtin.
+static int stage_resolve(shell_t* sh, const char* name, char app[40]) {
+    if (!name || !name[0]) return -1;
+    char elf[32]; int i = 0;
+    while (name[i] && i < 27) { elf[i] = name[i]; i++; }
+    elf[i] = '\0';
+    int has_ext = (i >= 4 && elf[i-4] == '.' && elf[i-3] == 'e' && elf[i-2] == 'l' && elf[i-1] == 'f');
+    if (!has_ext && i < 28) { elf[i++] = '.'; elf[i++] = 'e'; elf[i++] = 'l'; elf[i++] = 'f'; elf[i] = '\0'; }
+    build_app_path(app, 40, elf);
+    if (sys_file_exists(app)) return 0;
+    if (shell_has_command(sh, name)) return -2;
+    return -1;
+}
+
+// Tutup semua ujung parent (kunci disiplin EOF: pembaca hanya dapat EOF
+// bila TAK ADA lagi referensi ujung tulis, termasuk milik parent).
+static void close_parent_ends(int pipes[][2], int npipes, int fd_in, int fd_out) {
+    for (int i = 0; i < npipes; i++) {
+        if (pipes[i][0] >= 0) sys_close(pipes[i][0]);
+        if (pipes[i][1] >= 0) sys_close(pipes[i][1]);
+    }
+    if (fd_in >= 0) sys_close(fd_in);
+    if (fd_out >= 0) sys_close(fd_out);
+}
+
+// Fork-child half of a pipeline/redirection stage (P0 Phase 6C). Wires
+// stdin/stdout with dup2, closes every pipe end + redir file (the parent
+// keeps its own copies until all stages spawn — the close discipline
+// that delivers EOF), then execs. Returns only if setup/exec fails:
+// report on stderr (fd 2, always console) and exit 127. NEVER returns
+// to the shell loop (the child is a task clone, not a shell).
+static void stage_child(shell_t* sh, const char* name, const char* app,
+                        int argc, char** argv,
+                        int stdin_src, int stdout_dst,
+                        int pipes[][2], int npipes, int fd_in, int fd_out) {
+    if (stdin_src >= 0 && sys_dup2(stdin_src, 0) < 0) {
+        shell_write(sh, "exec: dup2 stdin gagal: "); shell_writeln(sh, name);
+        sys_exit_code(127);
+    }
+    if (stdout_dst >= 0 && sys_dup2(stdout_dst, 1) < 0) {
+        shell_write(sh, "exec: dup2 stdout gagal: "); shell_writeln(sh, name);
+        sys_exit_code(127);
+    }
+    close_parent_ends(pipes, npipes, fd_in, fd_out);
+    sys_execve((char*)app, argc, argv);
+    shell_write(sh, "exec: gagal: "); shell_writeln(sh, name);
+    sys_exit_code(127);
+}
+
+static int run_stages(shell_t* sh, char* sargv[SHELL_MAX_STAGES][SHELL_MAX_ARGV],
+                      int sargc[SHELL_MAX_STAGES], int nst,
+                      const char* fin, const char* fout, int append) {
+    char apps[SHELL_MAX_STAGES][40];
+    for (int i = 0; i < nst; i++) {
+        int r = stage_resolve(sh, sargv[i][0], apps[i]);
+        if (r == -2) { shell_write(sh, "pipe: butuh app eksternal: "); shell_writeln(sh, sargv[i][0]); return SHELL_ERR; }
+        if (r != 0)  { shell_write(sh, "pipe: app tidak ada: "); shell_writeln(sh, sargv[i][0]); return SHELL_ERR; }
+    }
+    int fd_in = -1, fd_out = -1;
+    if (fin) {
+        fd_in = sys_open(fin, O_RDONLY);
+        if (fd_in < 0) { shell_write(sh, "redir: gagal buka: "); shell_writeln(sh, fin); return SHELL_ERR; }
+    }
+    if (fout) {
+        fd_out = sys_open(fout, (uint32_t)(O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC)));
+        if (fd_out < 0) {
+            if (fd_in >= 0) sys_close(fd_in);
+            shell_write(sh, "redir: gagal buka: "); shell_writeln(sh, fout); return SHELL_ERR;
+        }
+    }
+    int pipes[SHELL_MAX_STAGES][2];
+    int npipes = 0;
+    for (int i = 0; i < nst - 1; i++) {
+        pipes[i][0] = pipes[i][1] = -1;
+        if (sys_pipe(pipes[i]) != 0) {
+            shell_writeln(sh, "pipe: gagal buat pipe");
+            close_parent_ends(pipes, npipes, fd_in, fd_out);
+            return SHELL_ERR;
+        }
+        npipes++;
+    }
+    int pids[SHELL_MAX_STAGES];
+    int nspawn = 0;
+    for (int i = 0; i < nst; i++) {
+        int stdin_src  = (i == 0) ? fd_in : pipes[i - 1][0];
+        int stdout_dst = (i == nst - 1) ? fd_out : pipes[i][1];
+        char* cargv[PROC_MAX_ARGC];
+        for (int k = 0; k < sargc[i]; k++) cargv[k] = sargv[i][k];
+        // P0 Phase 6C: fork-first. The child wires its own stdio and
+        // execs (never returns to the shell); the parent table is
+        // untouched. Kernel-context shells (console task 0: no user AS
+        // to clone) get fork==-1 and fall back to the legacy spawn_redir
+        // path with identical wiring — behavior preserved bit-for-bit.
+        int pid = sys_fork();
+        if (pid < 0) {
+            spawn_stdio_t spec;
+            spec.fd0 = (int32_t)stdin_src;
+            spec.fd1 = (int32_t)stdout_dst;
+            spec.fd2 = -1;   // stderr selalu console (2> tak didukung)
+            pid = sys_spawn_redir(apps[i], sargc[i], cargv, &spec);
+        } else if (pid == 0) {
+            stage_child(sh, sargv[i][0], apps[i], sargc[i], cargv,
+                        stdin_src, stdout_dst, pipes, npipes, fd_in, fd_out);
+            sys_exit_code(127);   // unreachable unless the kernel breaks noreturn
+        }
+        if (pid < 0) {
+            shell_write(sh, "pipe: gagal spawn: "); shell_writeln(sh, sargv[i][0]);
+            // Kill what we started (a lone producer would block forever on
+            // a pipe whose reader never spawned), close, then join remains.
+            for (int j = 0; j < nspawn; j++) sys_kill(pids[j]);
+            close_parent_ends(pipes, npipes, fd_in, fd_out);
+            for (int j = 0; j < nspawn; j++) { int st = 0; sys_waitpid(pids[j], &st, 0); }
+            return SHELL_ERR;
+        }
+        pids[nspawn++] = pid;
+    }
+    close_parent_ends(pipes, npipes, fd_in, fd_out);
+    return join_stages(sh, sargv, pids, nspawn);
+}
+
+// P0 Phase 6A foreground join: multiplex child completion with Ctrl-C.
+// Polls the process snapshot (children of task 0 auto-reap, so presence —
+// not zombie state — is the uniform completion signal for BOTH shells),
+// snapshots zombie exit codes, then reaps for authoritative statuses.
+// Ctrl-C (via frontend poll_input) kills every not-yet-requested fg pid
+// through sys_kill only — kernel stays authoritative; P0.3 idempotence
+// makes duplicate/exit-raced kills safe. Bounded: hung children fail the
+// pipeline after ~60 s, never the shell.
+static int join_stages(shell_t* sh, char* sargv[SHELL_MAX_STAGES][SHELL_MAX_ARGV],
+                       int pids[SHELL_MAX_STAGES], int nspawn) {
+    int requested[SHELL_MAX_STAGES]; int zcode[SHELL_MAX_STAGES]; int zseen[SHELL_MAX_STAGES];
+    for (int j = 0; j < nspawn; j++) { requested[j] = 0; zcode[j] = 0; zseen[j] = 0; }
+    int32_t me = sys_getpid();
+    int timed_out = 1;
+    for (int t = 0; t < 3000; t++) {
+        if (shell_poll_ctrlc(sh)) {
+            shell_write(sh, "^C\n");
+            for (int j = 0; j < nspawn; j++) {
+                if (!requested[j]) { sys_kill(pids[j]); requested[j] = 1; }
+            }
+        }
+        proc_info_t list[16];
+        int n = sys_proc_list(list, 16);
+        if (n < 0) n = 0;
+        int done = 1;
+        for (int j = 0; j < nspawn; j++) {
+            int terminal = 1;   // absent = gone (task-0 auto-reap)
+            for (int i = 0; i < n; i++) {
+                // ppid==me pins OUR child against PID-slot reuse.
+                if (list[i].pid == pids[j] && list[i].ppid == me) {
+                    if (list[i].state != 5) terminal = 0;   // 5 = ZOMBIE
+                    else { zseen[j] = 1; zcode[j] = list[i].exit_code; }
+                    break;
+                }
+            }
+            if (!terminal) { done = 0; break; }
+        }
+        if (done) { timed_out = 0; break; }
+        sys_sleep(20);
+    }
+    if (timed_out) {
+        shell_writeln(sh, "pipe: timeout menunggu child");
+        return SHELL_ERR;
+    }
+    int st = SHELL_OK;
+    for (int j = 0; j < nspawn; j++) {
+        int status = 0;
+        int got = sys_waitpid(pids[j], &status, 0);
+        if (got >= 0) {
+            if (status != 0) {
+                st = SHELL_ERR;
+                shell_write(sh, "pipe: exit tidak nol: "); shell_writeln(sh, sargv[j][0]);
+            }
+        } else if (zseen[j] && zcode[j] != 0) {
+            st = SHELL_ERR;
+            shell_write(sh, "pipe: exit tidak nol: "); shell_writeln(sh, sargv[j][0]);
+        }
+    }
+    return st;
+}
+
+// Jalur operator: dipanggil shell_execute bila baris mengandung |<>.
+// Tanpa operator persis -> delegasi ke dispatch biasa (mis. "a>b").
+static int shell_run_complex(shell_t* sh, char* buf);
+
+static int shell_run_simple(shell_t* sh, char* buf) {
+    char* argv[SHELL_MAX_ARGV];
+    int argc = 0;
+    char* p = buf;
+    while (*p && argc < SHELL_MAX_ARGV) {
+        while (*p == ' ') *p++ = '\0';
+        if (!*p) break;
+        argv[argc++] = p;
+        while (*p && *p != ' ') p++;
+    }
+    if (argc == 0) return SHELL_OK;
+
+    for (int c = 0; c < sh->n; c++) {
+        if (strcmp(sh->cmds[c].name, argv[0]) == 0) {
+            // Perintah sensitif: wajib lewat sudo (root sendiri boleh langsung).
+            if (sh->cmds[c].sudo && !sh->elevated && sys_get_uid() != 0) {
+                shell_error(sh, "sudo: perintah sensitif. Gunakan: sudo ");
+                shell_error(sh, argv[0]);
+                shell_error(sh, " ...\n");
+                return SHELL_ERR;
+            }
+            return sh->cmds[c].fn(sh, argc, argv);
+        }
+    }
+    shell_error(sh, "Perintah tidak dikenali: ");
+    shell_error(sh, argv[0]);
+    shell_error(sh, "\n");
+    return SHELL_ERR;
+}
+
+static int shell_run_complex(shell_t* sh, char* buf) {
+    char* w[SHELL_MAX_WORDS]; int nw = 0;
+    char* p = buf;
+    while (*p && nw < SHELL_MAX_WORDS) {
+        while (*p == ' ') *p++ = '\0';
+        if (!*p) break;
+        w[nw++] = p;
+        while (*p && *p != ' ') p++;
+    }
+    while (*p == ' ') p++;
+    if (*p) { shell_writeln(sh, "pipe: baris terlalu panjang"); return SHELL_ERR; }
+
+    int has_op = 0;
+    for (int i = 0; i < nw; i++) if (op_is_any(w[i])) { has_op = 1; break; }
+    if (!has_op) return shell_run_simple(sh, buf);
+
+    char* sargv[SHELL_MAX_STAGES][SHELL_MAX_ARGV];
+    int sargc[SHELL_MAX_STAGES]; int nst = 1; int stage = 0;
+    for (int i = 0; i < SHELL_MAX_STAGES; i++) sargc[i] = 0;
+    const char* fin = NULL; const char* fout = NULL; int append = 0;
+    int in_stage = -1, out_stage = -1;
+    for (int i = 0; i < nw; i++) {
+        if (op_is_pipe(w[i])) {
+            stage++;
+            if (stage >= SHELL_MAX_STAGES) { shell_writeln(sh, "pipe: kebanyakan stage (maks 4)"); return SHELL_ERR; }
+            nst = stage + 1;
+            continue;
+        }
+        if (op_is_in(w[i]) || op_is_out(w[i]) || op_is_app(w[i])) {
+            int is_in = op_is_in(w[i]);
+            if (i + 1 >= nw || op_is_any(w[i + 1])) { shell_writeln(sh, "pipe: operator tanpa file"); return SHELL_ERR; }
+            if (is_in) {
+                if (fin) { shell_writeln(sh, "pipe: input ganda"); return SHELL_ERR; }
+                fin = w[i + 1]; in_stage = stage;
+            } else {
+                if (fout) { shell_writeln(sh, "pipe: output ganda"); return SHELL_ERR; }
+                fout = w[i + 1]; append = op_is_app(w[i]); out_stage = stage;
+            }
+            i++;
+            continue;
+        }
+        if (sargc[stage] >= SHELL_MAX_ARGV) { shell_writeln(sh, "pipe: argumen berlebih"); return SHELL_ERR; }
+        sargv[stage][sargc[stage]++] = w[i];
+    }
+    for (int s = 0; s < nst; s++) {
+        if (sargc[s] == 0) { shell_writeln(sh, "pipe: perintah kosong"); return SHELL_ERR; }
+    }
+    if (fin && in_stage != 0) { shell_writeln(sh, "pipe: '<' hanya di perintah pertama"); return SHELL_ERR; }
+    if (fout && out_stage != nst - 1) { shell_writeln(sh, "pipe: '>' hanya di perintah terakhir"); return SHELL_ERR; }
+    return run_stages(sh, sargv, sargc, nst, fin, fout, append);
+}
 
 // ---------- engine ----------
 int shell_has_command(shell_t* sh, const char* name) {
@@ -618,31 +1005,11 @@ int shell_execute(shell_t* sh, const char* line) {
     while (n > 0 && buf[n-1] == ' ') buf[--n] = '\0'; // buang spasi belakang
     if (n == 0) return SHELL_OK;
 
-    char* argv[SHELL_MAX_ARGV];
-    int argc = 0;
-    char* p = buf;
-    while (*p && argc < SHELL_MAX_ARGV) {
-        while (*p == ' ') *p++ = '\0';
-        if (!*p) break;
-        argv[argc++] = p;
-        while (*p && *p != ' ') p++;
+    // P0 Phase 5: baris beroperator -> jalur pipeline/redirection
+    // (shell_run_complex mendelegasikan balik bila tak ada operator persis).
+    for (int t = 0; buf[t]; t++) {
+        if (buf[t] == '|' || buf[t] == '>' || buf[t] == '<')
+            return shell_run_complex(sh, buf);
     }
-    if (argc == 0) return SHELL_OK;
-
-    for (int c = 0; c < sh->n; c++) {
-        if (strcmp(sh->cmds[c].name, argv[0]) == 0) {
-            // Perintah sensitif: wajib lewat sudo (root sendiri boleh langsung).
-            if (sh->cmds[c].sudo && !sh->elevated && sys_get_uid() != 0) {
-                shell_error(sh, "sudo: perintah sensitif. Gunakan: sudo ");
-                shell_error(sh, argv[0]);
-                shell_error(sh, " ...\n");
-                return SHELL_ERR;
-            }
-            return sh->cmds[c].fn(sh, argc, argv);
-        }
-    }
-    shell_error(sh, "Perintah tidak dikenali: ");
-    shell_error(sh, argv[0]);
-    shell_error(sh, "\n");
-    return SHELL_ERR;
+    return shell_run_simple(sh, buf);
 }

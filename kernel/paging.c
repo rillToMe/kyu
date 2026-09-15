@@ -482,6 +482,80 @@ phys_addr_t vmm_create_address_space(void) {
 }
 
 // ============================================================
+// vmm_clone_user_as — Full-copy fork of a user address space (P0 Phase 6B).
+//
+// Strategy: FULL PHYSICAL COPY (not COW). COW was rejected: no page
+// refcounts exist, #PF always panics (no write-fault hook), and TLB
+// shootdown is local-only (vmm_tlb_shootdown) — remote COW invalidation
+// is unsolved debt. Full-copy needs none of that.
+//
+// Clones PML4[0..255] (user half) page by page: fresh PML4 via
+// vmm_create_address_space (kernel halves [256..511] shared by value,
+// never deep-copied), then for every present 4KB PTE: fresh frame +
+// 4KB memcpy via HHDM (supervisor mapping — no SMAP window needed) +
+// map with IDENTICAL flag bits. Huge/empty entries are skipped exactly
+// like vmm_destroy_address_space (no huge pages exist in user range:
+// ELF/uheap map 4KB only).
+//
+// Parent tables are only READ (never modified: no parent TLB work).
+// Child tables were never loaded: no invalidation needed.
+// The caller (parent itself, inside its fork syscall) owns its user
+// mappings exclusively — no other CPU touches them, no demand paging
+// exists — so the unlocked walk below cannot race.
+//
+// Failure: partial child AS destroyed via vmm_destroy_address_space
+// (frees child frames + tables walked so far), PHYS_NULL returned.
+// The parent is never modified on any path.
+// ============================================================
+phys_addr_t vmm_clone_user_as(phys_addr_t parent_pml4_phys) {
+    if (parent_pml4_phys == PHYS_NULL || !current_pml4) return PHYS_NULL;
+
+    phys_addr_t child_pml4_phys = vmm_create_address_space();
+    if (child_pml4_phys == PHYS_NULL) return PHYS_NULL;
+
+    uint64_t* ppml4 = (uint64_t*)PHYS_TO_VIRT(parent_pml4_phys);
+
+    for (uint64_t p4 = 0; p4 < 256; p4++) {
+        uint64_t e4 = ppml4[p4];
+        if (!(e4 & 1) || (e4 & (1ULL << 7))) continue;   // absent/huge: skip
+        uint64_t* ppdpt = (uint64_t*)PHYS_TO_VIRT(e4 & PAGE_MASK);
+
+        for (uint64_t p3 = 0; p3 < 512; p3++) {
+            uint64_t e3 = ppdpt[p3];
+            if (!(e3 & 1) || (e3 & (1ULL << 7))) continue;
+            uint64_t* ppd = (uint64_t*)PHYS_TO_VIRT(e3 & PAGE_MASK);
+
+            for (uint64_t p2 = 0; p2 < 512; p2++) {
+                uint64_t e2 = ppd[p2];
+                if (!(e2 & 1) || (e2 & (1ULL << 7))) continue;
+                uint64_t* ppt = (uint64_t*)PHYS_TO_VIRT(e2 & PAGE_MASK);
+
+                for (uint64_t p1 = 0; p1 < 512; p1++) {
+                    uint64_t e1 = ppt[p1];
+                    if (!(e1 & 1)) continue;
+                    uint64_t vaddr = (p4 << 39) | (p3 << 30) | (p2 << 21) | (p1 << 12);
+                    phys_addr_t src = (phys_addr_t)(e1 & PAGE_MASK);
+                    uint64_t flags = e1 & ~PAGE_MASK;   // all flag bits incl. NX
+
+                    phys_addr_t dst = pmm_alloc_page();
+                    if (dst == PHYS_NULL) goto oom;
+                    memcpy((void*)PHYS_TO_VIRT(dst), (const void*)PHYS_TO_VIRT(src), 4096);
+                    if (!vmm_map_page_into(vaddr, dst, flags, child_pml4_phys)) {
+                        pmm_free_page(dst);
+                        goto oom;
+                    }
+                }
+            }
+        }
+    }
+    return child_pml4_phys;
+
+oom:
+    vmm_destroy_address_space(child_pml4_phys, 1);
+    return PHYS_NULL;
+}
+
+// ============================================================
 // vmm_destroy_address_space — Free entire page table hierarchy
 //
 // Walks PML4 entries 0..255 (user range) and frees:

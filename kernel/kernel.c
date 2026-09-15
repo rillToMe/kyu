@@ -16,7 +16,7 @@
 #include "lapic.h"
 #include "smp.h"
 #include "gfx.h"
-#include "ghal.h"   // tipe ghal_* (dipakai GFX_SELFTEST)
+#include "ghal.h"   
 
 #ifdef STRESS_TEST
 #include "pmm_stress.h"
@@ -297,6 +297,7 @@ void kernel_main(void) {
     boot_state("  OK  ", "Filesystem", 0);
 
     vfs_init();
+    vfs_task_init(0);   // P0 Phase 2: task 0 stdio (fd 0/1/2 -> TTY)
     boot_state("  OK  ", "VFS", 0);
 
     // LAPIC BSP sudah aktif sejak lapic_init_bsp(); SMP membawa AP online.

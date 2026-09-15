@@ -56,6 +56,15 @@ void scheduler_dump(void) {
         kprint(task_state_name(task_snapshot[i].state));
         kprint("  prio=");
         kprint_num((uint64_t)task_snapshot[i].priority);
+        kprint("  ppid=");
+        if (task_snapshot[i].parent_id < 0) kprint("-");
+        else kprint_num((uint64_t)task_snapshot[i].parent_id);
+        kprint("  uid=");
+        kprint_num((uint64_t)task_snapshot[i].cred.uid);
+        if (task_snapshot[i].state == TASK_ZOMBIE) {
+            kprint("  exit=");
+            kprint_num((uint64_t)(int64_t)task_snapshot[i].exit_code);
+        }
         kprint("  ");
         kprint(task_snapshot[i].name);
         kprint("\n");

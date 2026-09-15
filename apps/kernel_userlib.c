@@ -46,7 +46,13 @@ extern uint32_t   kfs_get_used_space(void);
 extern uint64_t   pmm_get_total_ram(void);
 extern uint64_t   pmm_get_used_ram(void);
 
-extern int        current_uid;
+#include "task.h"
+#include "smp.h"
+#include "spinlock.h"
+#include "cred.h"
+#include "proc.h"
+#include "vfs.h"   // P0 Phase 5: Ring-0 fd shims call vfs_* directly
+extern spinlock_t scheduler_lock;
 
 // ============================================================
 
@@ -95,8 +101,12 @@ void sys_yield(void) {
 
 
 
-// --- Filesystem ---
-void     fs_format(void)                { kfs_format(); }
+// --- Filesystem (format = root only, mirror syscall 5) ---
+int      fs_format(void) {
+    if (!cred_current_is_root()) return -1;
+    kfs_format();
+    return 0;
+}
 void     fs_list(void)                  { kfs_list_files(); compositor_flush(); }
 void     fs_read(char* filename)        { kfs_read_file(filename); compositor_flush(); }
 void     fs_delete(char* filename)      { kfs_delete_file(filename); }
@@ -131,9 +141,20 @@ void sys_get_time(uint32_t* time_array) {
     rtc_read_time(time_array);
 }
 
-// --- Identitas User ---
-void     sys_set_uid(uint32_t uid) { current_uid = (int)uid; }
-uint32_t sys_get_uid(void)         { return (uint32_t)current_uid; }
+// --- Identitas User (P0 Phase 1: per-task cred, root-only transition) ---
+// Ring-0 contexts (console shell/login) share the same policy as syscall 27:
+// only a root task may change identity. Returns 0 / -1 like the syscall.
+int      sys_set_uid(uint32_t uid) {
+    int self = smp_current_task_id();
+    if (self < 0 || self >= task_count) return -1;
+    if (!cred_transition_allowed(cred_task_uid(&tasks[self]))) return -1;
+    uint64_t f = spinlock_lock_irqsave(&scheduler_lock);
+    tasks[self].cred.uid = uid;
+    tasks[self].cred.gid = uid;
+    spinlock_unlock_irqrestore(&scheduler_lock, f);
+    return 0;
+}
+uint32_t sys_get_uid(void) { return cred_current_uid(); }
 
 // --- ELF Loader ---
 uint64_t sys_load_elf(char* filename) {
@@ -161,6 +182,111 @@ int sys_spawn(char* filename) {
     int ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(57), "b"((uint64_t)filename));
     return ret;
+}
+
+// P0 Phase 2: spawn dengan argv (syscall 68). Ring 0 (console shell) lewat
+// jalur bypass boundary-copy seperti sys_spawn — pointer kernel sah.
+int sys_spawn_argv(char* filename, int argc, char** argv) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(68), "b"((uint64_t)filename), "c"((uint64_t)argc), "d"((uint64_t)argv));
+    return ret;
+}
+
+// P0 Phase 2: waitpid/getpid/getppid/proc_list (syscall 69-72). Sama seperti
+// sys_spawn: int 0x80 dari Ring 0, handler memakai jalur bypass.
+int sys_waitpid(int pid, int* status, int options) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(69), "b"((uint64_t)(int64_t)pid), "c"((uint64_t)status), "d"((uint64_t)(int64_t)options));
+    return ret;
+}
+int32_t sys_getpid(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(70));
+    return (int32_t)ret;
+}
+int32_t sys_getppid(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(71));
+    return (int32_t)ret;
+}
+// proc_info_t didefinisikan di proc.h (via include di atas); dipakai Task
+// Manager / shell. Ring 0 lewat int 0x80 seperti sys_spawn.
+int sys_proc_list(proc_info_t* buf, int max) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(72), "b"((uint64_t)buf), "c"((uint64_t)(int64_t)max));
+    return ret;
+}
+// P0 Phase 3: sys_kill (73). Ring 0 lewat int 0x80 seperti sys_spawn.
+int sys_kill(int pid) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(73), "b"((uint64_t)(int64_t)pid));
+    return ret;
+}
+
+// --- fd layer Ring-0 shims (P0 Phase 4/5) ---
+// Console shell (Ring 0) memakai tabel fd task-nya sendiri seperti app
+// Ring 3 — langsung ke vfs_* (tanpa int 0x80: tak ada pointer user yang
+// perlu boundary-copy). Dipakai redirection/pipeline shell.
+int sys_open(const char* path, uint32_t flags) {
+    extern int vfs_open(const char* path, uint32_t flags);
+    return vfs_open(path, flags);
+}
+int sys_read_fd(int fd, void* buf, uint32_t count) {
+    extern int vfs_read(int fd, void* buf, uint32_t count);
+    return vfs_read(fd, buf, count);
+}
+int sys_write_fd(int fd, const void* buf, uint32_t count) {
+    extern int vfs_write(int fd, const void* buf, uint32_t count);
+    return vfs_write(fd, buf, count);
+}
+int sys_lseek(int fd, int32_t offset, int whence) {
+    extern int vfs_lseek(int fd, int32_t offset, int whence);
+    return vfs_lseek(fd, offset, whence);
+}
+int sys_close(int fd) {
+    extern int vfs_close(int fd);
+    return vfs_close(fd);
+}
+int sys_dup(int oldfd) {
+    extern int vfs_dup(int oldfd);
+    return vfs_dup(oldfd);
+}
+int sys_dup2(int oldfd, int newfd) {
+    extern int vfs_dup2(int oldfd, int newfd);
+    return vfs_dup2(oldfd, newfd);
+}
+int sys_pipe(int fds[2]) {
+    extern int vfs_pipe(int out[2]);
+    return vfs_pipe(fds);
+}
+// P0 Phase 5: spawn + stdio inheritance. Lewat int 0x80 seperti
+// sys_spawn_argv (spawn_common di syscall.c, bukan API vfs).
+int sys_spawn_redir(char* filename, int argc, char** argv, spawn_stdio_t* spec) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(77), "b"((uint64_t)filename), "c"((uint64_t)argc), "d"((uint64_t)argv), "S"((uint64_t)spec));
+    return ret;
+}
+// P0 Phase 6B: fork dari Ring 0 selalu ditolak kernel (-1: CS bukan
+// ring 3 / tanpa user AS). Shim ada agar API generik shell lengkap.
+int sys_fork(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(78));
+    return (int)ret;
+}
+// P0 Phase 6C: execve dari Ring 0 selalu ditolak kernel (-1: bukan task
+// user ring 3). Shim ada agar API generik shell lengkap.
+int sys_execve(char* path, int argc, char** argv) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(79), "b"((uint64_t)path), "c"((uint64_t)argc), "d"((uint64_t)argv));
+    return (int)ret;
+}
+// P0 Phase 6C: fork/exec child-exit path. Ring-0 tasks never take the
+// fork-child branch (fork fails first), but shell_core references it —
+// route through the syscall like the other lifecycle shims.
+__attribute__((noreturn))
+void sys_exit_code(int code) {
+    __asm__ volatile("int $0x80" : : "a"(34), "b"((uint64_t)(int64_t)code));
+    __builtin_unreachable();
 }
 
 

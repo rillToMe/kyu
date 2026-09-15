@@ -79,13 +79,21 @@ WIDGET_ELF  = $(OUT_DIR)/widget_demo.elf
 DESKTOP_ELF  = $(OUT_DIR)/desktop.elf
 TERMINAL_ELF = $(OUT_DIR)/terminal.elf
 SETTINGS_ELF = $(OUT_DIR)/settings.elf
+PROCINFO_ELF = $(OUT_DIR)/procinfo.elf
+EXITTEST_ELF = $(OUT_DIR)/exit_test.elf
+KILLTEST_ELF = $(OUT_DIR)/kill_test.elf
+FDTEST_ELF   = $(OUT_DIR)/fd_test.elf
+ECHOTEST_ELF = $(OUT_DIR)/echo.elf
+CATTEST_ELF  = $(OUT_DIR)/cat.elf
+PIPETEST_ELF = $(OUT_DIR)/pipe_test.elf
+FORKTEST_ELF = $(OUT_DIR)/fork_test.elf
 
 # ==========================================================
 # TARGET UTAMA
 # ==========================================================
-.PHONY: all fileman viewer clock calc taskmgr notepad badptr widget_demo desktop terminal settings clean
+.PHONY: all fileman viewer clock calc taskmgr notepad badptr widget_demo desktop terminal settings procinfo exit_test kill_test fd_test echo cat pipe_test fork_test clean
 
-all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF) $(BADPTR_ELF) $(WIDGET_ELF) $(DESKTOP_ELF) $(TERMINAL_ELF) $(SETTINGS_ELF)
+all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF) $(BADPTR_ELF) $(WIDGET_ELF) $(DESKTOP_ELF) $(TERMINAL_ELF) $(SETTINGS_ELF) $(PROCINFO_ELF) $(EXITTEST_ELF) $(KILLTEST_ELF) $(FDTEST_ELF) $(ECHOTEST_ELF) $(CATTEST_ELF) $(PIPETEST_ELF) $(FORKTEST_ELF)
 	@echo ""
 	@echo "[USER APPS] Build selesai! Semua app di virtual 0x4000000"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
@@ -267,6 +275,116 @@ $(SETTINGS_ELF): settings.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
 settings: $(SETTINGS_ELF)
 
 # ==========================================================
+# PROCINFO — P0 Phase 2: PID/PPID/UID/GID/argv test app
+# ==========================================================
+procinfo.o: procinfo.c
+	@echo "[CC] Mengompilasi procinfo.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(PROCINFO_ELF): procinfo.o $(USERLIB_OBJ)
+	@echo "[LD] Linking procinfo.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) procinfo.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] procinfo.elf siap!"
+
+procinfo: $(PROCINFO_ELF)
+
+# ==========================================================
+# EXIT_TEST — P0 Phase 2: exit(code) test app for waitpid
+# ==========================================================
+exit_test.o: exit_test.c
+	@echo "[CC] Mengompilasi exit_test.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(EXITTEST_ELF): exit_test.o $(USERLIB_OBJ)
+	@echo "[LD] Linking exit_test.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) exit_test.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] exit_test.elf siap!"
+
+exit_test: $(EXITTEST_ELF)
+
+# ==========================================================
+# KILL_TEST — P0 Phase 3: parent kills blocked child, waitpid
+# ==========================================================
+kill_test.o: kill_test.c
+	@echo "[CC] Mengompilasi kill_test.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(KILLTEST_ELF): kill_test.o $(USERLIB_OBJ)
+	@echo "[LD] Linking kill_test.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) kill_test.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] kill_test.elf siap!"
+
+kill_test: $(KILLTEST_ELF)
+
+# ==========================================================
+# FD_TEST — P0 Phase 4: dup/dup2 + shared-offset test app
+# ==========================================================
+fd_test.o: fd_test.c
+	@echo "[CC] Mengompilasi fd_test.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(FDTEST_ELF): fd_test.o $(USERLIB_OBJ)
+	@echo "[LD] Linking fd_test.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) fd_test.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] fd_test.elf siap!"
+
+fd_test: $(FDTEST_ELF)
+
+# ==========================================================
+# ECHO / CAT — external CLI utils for pipelines/redirection
+# (P0 Phase 5; builtins can't do fd I/O, these write fd 1 / read fd 0)
+# ==========================================================
+echo.o: echo.c
+	@echo "[CC] Mengompilasi echo.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(ECHOTEST_ELF): echo.o $(USERLIB_OBJ)
+	@echo "[LD] Linking echo.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) echo.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] echo.elf siap!"
+
+echo: $(ECHOTEST_ELF)
+
+cat.o: cat.c
+	@echo "[CC] Mengompilasi cat.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(CATTEST_ELF): cat.o $(USERLIB_OBJ)
+	@echo "[LD] Linking cat.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) cat.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] cat.elf siap!"
+
+cat: $(CATTEST_ELF)
+
+# ==========================================================
+# PIPE_TEST — P0 Phase 5: kernel pipe + dup + EOF + SMP test app
+# ==========================================================
+pipe_test.o: pipe_test.c
+	@echo "[CC] Mengompilasi pipe_test.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(PIPETEST_ELF): pipe_test.o $(USERLIB_OBJ)
+	@echo "[LD] Linking pipe_test.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) pipe_test.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] pipe_test.elf siap!"
+
+pipe_test: $(PIPETEST_ELF)
+
+# ==========================================================
+# FORK_TEST — P0 Phase 6B: fork return/PID/memory/FD/pipe/kill
+# ==========================================================
+fork_test.o: fork_test.c
+	@echo "[CC] Mengompilasi fork_test.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(FORKTEST_ELF): fork_test.o $(USERLIB_OBJ)
+	@echo "[LD] Linking fork_test.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) fork_test.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] fork_test.elf siap!"
+
+fork_test: $(FORKTEST_ELF)
+
+# ==========================================================
 # BADPTR — Uji boundary copy syscall (FIX_005 Tahap 2)
 # ==========================================================
 badptr.o: badptr.c
@@ -304,5 +422,5 @@ clean:
 	@echo "[CLEAN] Selesai."
 
 # --- Semua objek + header deps (harus sebelum -include) ---
-APP_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o desktop.o terminal.o settings.o
+APP_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o desktop.o terminal.o settings.o procinfo.o exit_test.o kill_test.o fd_test.o echo.o cat.o pipe_test.o fork_test.o
 -include $(APP_OBJS:.o=.d)

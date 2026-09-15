@@ -44,4 +44,11 @@ uint64_t uheap_realloc(task_t* t, uint64_t uaddr, uint64_t new_size);
 // Bebaskan semua node metadata + brk kembali ke UHEAP_BASE.
 void uheap_reset(task_t* t);
 
+// Deep-copy heap metadata for fork() (P0 Phase 6B): duplicates the region
+// node list into kernel-heap nodes owned by dst and copies brk. The region
+// PAGES need no work — they live at the same user vaddrs, already cloned
+// by vmm_clone_user_as. Returns 0 ok, -1 on node OOM (partial nodes freed
+// via uheap_reset; caller destroys the child AS for the pages).
+int uheap_clone(task_t* dst, const task_t* src);
+
 #endif

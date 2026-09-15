@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>   // size_t
+#include "proc.h"     // P0 Phase 2: PROC_* bounds, proc_info_t, wait/exit ABI
 
 // --- STRUKTUR PESAN EVENT (GUI) ---
 #define EVENT_NONE          0
@@ -41,7 +42,7 @@ uint32_t read_keyboard(char* buffer, uint32_t size);
 void sys_yield(void);
 void sys_sleep(uint32_t ms);   // Non-busy sleep (Syscall 46)
 
-void fs_format(void);
+int fs_format(void);   // 0 sukses, -1 ditolak (butuh root). Mirror syscall 5.
 void fs_list(void);
 void fs_read(char* filename);
 void fs_delete(char* filename);
@@ -116,14 +117,37 @@ void sys_exec(char* filename);
 // sys_spawn (Phase 5A): jalankan ELF sebagai task ring-3 BARU yang konkuren —
 // caller TETAP jalan (beda dengan sys_exec yang menggantikan caller).
 // Return: task id (>= 0), atau -1 jika gagal (file tak ada, OOM, slot penuh).
+// P0 Phase 2: argc=1, argv[0]=basename(path). Full argv via sys_spawn_argv.
 int sys_spawn(char* filename);
 
+// sys_spawn_argv (P0 Phase 2): seperti sys_spawn tapi dengan argv.
+// argv[0] = nama app, argv[1..] = argumen; argc = 1..PROC_MAX_ARGC, tiap
+// string NUL-terminated <= PROC_MAX_ARG_LEN, total <= PROC_ARG_TOTAL_MAX.
+// Return: child pid (>= 0) atau -1 (file tak ada / argumen tak valid / OOM).
+int sys_spawn_argv(char* filename, int argc, char** argv);
+
 // sys_exit: App selesai, kembali ke shell. TIDAK PERNAH kembali ke caller.
+// P0 Phase 2: exit(0). Status eksplisit via sys_exit_code.
 void sys_exit(void);
+// sys_exit_code: seperti sys_exit tapi merekam status untuk waitpid parent.
+void sys_exit_code(int code) __attribute__((noreturn));
+
+// P0 Phase 2 — process identity/wait (syscall 69-72). waitpid memblokir
+// (tanpa polling) sampai child keluar; hanya boleh menunggu child sendiri.
+int sys_waitpid(int pid, int* status, int options);  // -> child pid / -1
+int32_t sys_getpid(void);    // -> task id (-1 jika idle)
+int32_t sys_getppid(void);   // -> parent id (PROC_NO_PARENT jika tak ada)
+// Snapshot proses hidup untuk Task Manager (read-only). -> jumlah / -1.
+int sys_proc_list(proc_info_t* buf, int max);
+// P0 Phase 3 — sys_kill (syscall 73): minta terminasi pid. -> 0 sukses,
+// -1 ditolak (bukan child / bukan root / PID tak valid / sudah keluar /
+// task kernel). Child yang di-kill dilaporkan waitpid dengan
+// PROC_KILL_EXIT_CODE / PROC_EXIT_KILLED.
+int sys_kill(int pid);
 void sys_draw_string(const char* str, int x, int y, uint32_t color);
 
-void sys_set_uid(uint32_t uid);
-uint32_t sys_get_uid();
+int sys_set_uid(uint32_t uid);   // 0 sukses, -1 ditolak (butuh root). Tak ada setuid.
+uint32_t sys_get_uid();          // UID task pemanggil (per-task cred).
 
 // Identitas bersama (apps/userutil.c): isi `out` dengan username akun yang
 // UID-nya == sys_get_uid(), dibaca dari users.sys ("username:password:uid").
@@ -236,6 +260,26 @@ int sys_read_fd(int fd, void* buf, uint32_t count);     // -> bytes read
 int sys_write_fd(int fd, const void* buf, uint32_t count); // -> bytes written
 int sys_lseek(int fd, int32_t offset, int whence);      // -> new position
 int sys_close(int fd);                                  // -> 0 or -1
+// P0 Phase 4: dup shares the open description (one offset, one buffer).
+// sys_dup (74): oldfd -> lowest free fd. sys_dup2 (75): oldfd -> newfd
+// (no-op if equal, closes newfd first). -> newfd or -1.
+int sys_dup(int oldfd);
+int sys_dup2(int oldfd, int newfd);
+// P0 Phase 5: pipe (76): fds[0]=read, fds[1]=write, both in caller table.
+// -> 0 ok / -1 fail (both-or-neither, no half-created pipe).
+int sys_pipe(int fds[2]);
+// P0 Phase 5: spawn with explicit stdio inheritance (77): like
+// sys_spawn_argv, plus spec naming the caller's fds for the child's
+// 0/1/2 (NULL or {-1,-1,-1} = fresh console TTY). -> child pid / -1.
+int sys_spawn_redir(char* filename, int argc, char** argv, spawn_stdio_t* spec);
+// P0 Phase 6B: fork (78): duplicate the caller. Parent gets child pid,
+// child resumes after this call with 0, -1 on failure (no user AS / OOM /
+// no slot). Ring-3 only; kernel contexts are rejected by the kernel.
+int sys_fork(void);
+// P0 Phase 6C: execve (79): atomically replace the CALLER's image with
+// path+argv. Same pid/ppid/creds/fds; new stack/entry/argv. Returns only
+// on failure (-1, old image untouched). Ring-3 user tasks only.
+int sys_execve(char* path, int argc, char** argv);
 
 // TCP client sockets (Fase 6). ip_be = IPv4 in network byte order.
 int sys_socket(void);                                   // -> sockfd or -1

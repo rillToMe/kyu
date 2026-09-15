@@ -3,9 +3,13 @@
 #include "zen.h"
 #include "timer.h"   // timer_get_refresh_rate / timer_set_refresh_rate / sleep
 #include "task.h"
+#include "fs.h"      // P0 Phase 6A: fs_node_t/read_fs untuk poll non-blocking
 
 #include <stddef.h>
 #include <stdint.h>
+
+extern fs_node_t tty_node;
+extern uint32_t read_fs(fs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buffer);
 
 // Phase 2C §9.6 — statistik GPU (graphics/ghal.c)
 extern void ghal_stats_dump(void);
@@ -59,6 +63,19 @@ int sys_sock_close(int s) {
 // ---------- output adapter: shell → TTY ----------
 static void tty_out(void* ctx, const char* text) { (void)ctx; print((char*)text); }
 static void tty_clear(void* ctx) { (void)ctx; clear_screen(); }
+
+// P0 Phase 6A poll: non-blocking TTY drain untuk join foreground.
+// 0x03 (Ctrl-C masakan driver) dikonsumsi -> 1; ketikan susulan lain
+// dibuang (terdokumentasi: tanpa type-ahead selama pipeline jalan).
+// read_fs langsung (bukan read_keyboard — itu blocking hlt-loop).
+static int console_poll_input(void* ctx) {
+    (void)ctx;
+    for (;;) {
+        char c = 0;
+        if (read_fs(&tty_node, 0, 1, (uint8_t*)&c) == 0) return 0;
+        if (c == 0x03) return 1;
+    }
+}
 
 static int parse_uint(const char* str, uint32_t* out) {
     if (str == NULL || out == NULL) return 0;
@@ -123,6 +140,11 @@ static int cmd_sleep(shell_t* sh, int argc, char** argv) {
 // sebagai /apps/<nama>.elf (perilaku lama "ketik nama app"). Return 1 bila
 // sudah ditangani (termasuk pesan gagal-muat), 0 bila bukan app.
 static int try_implicit_exec(shell_t* sh, const char* line) {
+    // P0 Phase 5: baris beroperator milik shell_execute (pipeline/redirection)
+    // — jangan exec-replace shell dengan kata pertamanya.
+    for (const char* q = line; *q; q++) {
+        if (*q == '|' || *q == '>' || *q == '<') return 0;
+    }
     char first[32]; int fi = 0;
     while (line[fi] && line[fi] != ' ' && fi < 31) { first[fi] = line[fi]; fi++; }
     first[fi] = '\0';
@@ -170,6 +192,7 @@ void user_shell(void) {
 
     shell_io_t io;
     io.out = tty_out; io.err = tty_out; io.clear = tty_clear; io.ctx = NULL;
+    io.poll_input = console_poll_input;
     shell_t* sh = shell_init(&io);
 
     // Perintah yang mutlak butuh Ring 0 / TUI kernel.
@@ -188,7 +211,15 @@ void user_shell(void) {
         uint32_t bytes_read = read_keyboard(key_buffer, 1);
         if (bytes_read > 0) {
             char c = key_buffer[0];
-            if (c == '\n') {
+            if (c == 0x03) {
+                // P0 Phase 6A: Ctrl-C tanpa foreground — bukan kill (tak ada
+                // yang dibunuh), hanya baris baru + prompt segar. (Saat
+                // pipeline jalan, loop ini tak berjalan; 0x03 dimakan poll
+                // join sebagai interupsi foreground.)
+                print("^C\n");
+                cmd_index = 0;
+                print(prompt);
+            } else if (c == '\n') {
                 print("\n");
                 cmd_buffer[cmd_index] = '\0';
                 if (cmd_index > 0) {

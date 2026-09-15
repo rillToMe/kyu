@@ -24,10 +24,14 @@ typedef int (*shell_cmd_fn)(shell_t* sh, int argc, char** argv);
 
 // Kanal output frontend. `err` boleh NULL (fallback ke `out`); `clear` boleh
 // NULL (perintah `clear` jadi no-op). ctx diteruskan apa adanya.
+// `poll_input` (boleh NULL = tak didukung): dipanggil shell saat menunggu
+// foreground pipeline; kembalikan 1 bila Ctrl-C tiba (frontend mengonsumsi
+// eventnya), 0 bila tidak ada. Hanya untuk interupsi — bukan kanal data.
 typedef struct {
     void (*out)(void* ctx, const char* text);
     void (*err)(void* ctx, const char* text);
     void (*clear)(void* ctx);
+    int (*poll_input)(void* ctx);
     void* ctx;
 } shell_io_t;
 
@@ -70,6 +74,10 @@ int shell_execute(shell_t* sh, const char* line);
 // 1 jika `name` adalah perintah terdaftar (dipakai frontend console untuk
 // fallback "implicit exec" <nama>.elf pada perintah tak dikenal).
 int shell_has_command(shell_t* sh, const char* name);
+
+// P0 Phase 6A: 1 bila frontend melaporkan Ctrl-C tertunda (dikonsumsi),
+// 0 bila tidak ada / poll tak didukung. Dipakai join foreground pipeline.
+int shell_poll_ctrlc(shell_t* sh);
 
 // --- Output helpers (dipakai command handler) ---
 void shell_write(shell_t* sh, const char* text);

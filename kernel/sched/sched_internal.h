@@ -21,6 +21,7 @@ extern int cpu_current_task[SMP_MAX_CPUS];
 // Lock order: scheduler_lock (bila dipegang) SELALU sebelum rq->lock.
 int      runq_push(uint32_t cpu_id, int task_id);
 int      runq_pop(uint32_t cpu_id);
+int      runq_remove(uint32_t cpu_id, int task_id);  // P0 Phase 3: kill purge
 uint32_t pick_target_cpu(void);
 int      steal_task(uint32_t self_cpu);
 uint32_t runq_len(uint32_t cpu_id);

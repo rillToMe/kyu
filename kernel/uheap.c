@@ -121,3 +121,22 @@ void uheap_reset(task_t* t) {
     t->uheap_regions = NULL;
     t->uheap_brk = UHEAP_BASE;
 }
+
+int uheap_clone(task_t* dst, const task_t* src) {
+    if (!dst || !src) return -1;
+    dst->uheap_brk = src->uheap_brk;
+    dst->uheap_regions = NULL;
+    uheap_region_t** link = (uheap_region_t**)&dst->uheap_regions;
+    for (const uheap_region_t* n = (const uheap_region_t*)src->uheap_regions;
+         n; n = n->next) {
+        uheap_region_t* c = (uheap_region_t*)kmalloc(sizeof(uheap_region_t));
+        if (!c) { uheap_reset(dst); return -1; }
+        c->base  = n->base;
+        c->size  = n->size;
+        c->pages = n->pages;
+        c->next  = NULL;
+        *link = c;
+        link = &c->next;
+    }
+    return 0;
+}

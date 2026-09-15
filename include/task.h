@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "pmm.h"
+#include "cred.h"
 
 // ============================================================
 // CPU CONTEXT — Full ISR Frame
@@ -52,6 +53,7 @@ typedef struct registers {
 #define TASK_SLEEPING 2   // Timed block: waiting for wake_at_ms (sleep queue)
 #define TASK_DEAD     3
 #define TASK_BLOCKED  4   // Untimed block: waiting on an object (wait queue / sync)
+#define TASK_ZOMBIE   5   // P0 Phase 2: exited, exit_code valid, awaiting parent waitpid
 
 // Phase 10: 16 (dari 8) — desktop + shell + ≥6 app GUI konkuren.
 #define MAX_TASKS       16
@@ -79,6 +81,13 @@ typedef struct task {
     uint64_t uheap_brk;       // vaddr bebas berikutnya (0 = belum pernah alloc)
     void*    uheap_regions;   // linked list uheap_region_t (node di heap kernel)
     uint8_t  kind;            // TASK_KIND_* — asal-usul task (semantik sys_exit)
+    cred_t   cred;            // P0 Phase 1: kernel-owned identity; inherit on create
+    int32_t  parent_id;       // P0 Phase 2: creator task id, PROC_NO_PARENT (-1) if none
+    int32_t  exit_code;       // P0 Phase 2: valid iff state == TASK_ZOMBIE
+    int32_t  argc;            // P0 Phase 2: user argv count (debug/proc_info; 0 = kernel/none)
+    uint8_t  exit_reason;     // P0 Phase 3: PROC_EXIT_* (valid iff ZOMBIE)
+    volatile uint8_t kill_pending; // P0 Phase 3: async kill requested (BLOCKED/
+                             // SLEEPING/RUNNING target observes, then proc_exit_kill)
 } task_t;
 
 // task_t.kind — Phase 5A: pembeda semantik sys_exit (34).
@@ -106,9 +115,22 @@ void task_exit(void) __attribute__((noreturn));
 // ber-CS=0x1B/SS=0x23 (iretq langsung ke entry ELF), AS per-proses terpasang
 // sebelum task terlihat scheduler (tidak ada race CR3). Semua field di-set
 // di dalam scheduler_lock sebelum state=READY.
+// P0 Phase 2: argc/argv_uaddr dimuat ke RDI/RSI (SysV); argv array + strings
+// sudah di user stack milik AS target. argc>=1 (argv[0]=nama app).
+// P0 Phase 5: inherit_fds names the CALLER's fds for the child's 0/1/2
+// (NULL = fresh TTY everywhere); installed before the child is runnable.
 // Return: task id (>= 0), atau -1 jika gagal (OOM stack / slot penuh / runq penuh).
 int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
-                     phys_addr_t pml4_phys, uint32_t cookie, const char* name);
+                     phys_addr_t pml4_phys, uint32_t cookie, const char* name,
+                     uint64_t argc, uint64_t argv_uaddr,
+                     const int inherit_fds[3]);
+
+// P0 Phase 6B: duplicate a RUNNING user task (fork). Clones the address
+// space (full copy), forges a syscall-return trap frame (child resumes
+// after the fork trap with rax=0), shares the fd table, clones heap
+// metadata + credentials. All-or-nothing: returns child slot id or -1
+// with nothing published. parent_rf is the parent's live trap frame.
+int task_fork(int parent_id, registers_t* parent_rf);
 void scheduler_dump(void);
 void scheduler_idle_loop(void) __attribute__((noreturn));
 
@@ -175,6 +197,51 @@ void sleepq_check_wakeups(uint64_t now_ms);
 
 // Per-CPU current task ID (SMP-safe). Returns -1 if idle.
 int smp_current_task_id(void);
+
+// P0 Phase 1 — kernel credential accessors (see cred.h for policy).
+// Read identity from the task, never from a global. Cheap (one array
+// index); safe for future filesystem/syscall authorization paths.
+// No-task context (idle/early boot) is treated as kernel/root and is
+// documented at the definition site, not silently granted per-task.
+uint32_t cred_current_uid(void);
+uint32_t cred_current_gid(void);
+int      cred_current_is_root(void);
+uint32_t cred_task_uid(const task_t* t);
+uint32_t cred_task_gid(const task_t* t);
+
+// P0 Phase 2 — process lifecycle (see proc.h; defined in kernel/sched/lifecycle.c
+// + kernel/proc.c). Exit never returns. Wait blocks (no polling) via the
+// existing wait-queue/block primitives.
+void proc_exit(int code) __attribute__((noreturn));
+// Reap one exited child. pid==-1 (PROC_WAIT_ANY) = any child.
+// status_out: kernel pointer or NULL. Returns child pid, or -1 (no child /
+// not our child / bad options). options must be 0.
+int  proc_waitpid(int32_t pid, int32_t* status_out, int options);
+int32_t proc_getpid(void);    // task id, -1 if idle
+int32_t proc_getppid(void);   // parent id, PROC_NO_PARENT if none/idle
+// P0 Phase 3 — kill (see proc.h for policy). Requests termination of pid:
+// READY targets transition synchronously (never run again); BLOCKED/
+// SLEEPING/RUNNING targets are flagged (kill_pending) + woken/kicked and
+// converge on proc_exit_kill(). Returns 0 ok, -1 denied/invalid/exited.
+int  proc_kill(int32_t pid);
+// Kill observation path: same authoritative termination as proc_exit with
+// PROC_KILL_EXIT_CODE / PROC_EXIT_KILLED. Noreturn.
+void proc_exit_kill(void) __attribute__((noreturn));
+// P0-FINAL: preemption kill observation for CPU-bound tasks. Called at the
+// top of schedule_on_cpu (timer tick / LAPIC tick / reschedule IPI) — i.e.
+// in interrupt context on the preempted task's own kernel stack with no
+// locks held. If this CPU's current task is RUNNING user code (CPL3) with
+// termination outstanding, converge on proc_exit_kill instead of
+// scheduling it again. Noreturn when it fires, cheap no-op otherwise.
+// CPL3 matters: user mode holds no kernel locks, so the full exit (which
+// takes vfs/kfs/paging locks) cannot self-deadlock. Kernel-mode victims
+// keep flowing to the existing syscall-exit observation; BLOCKED/SLEEPING
+// victims belong to the unblock machinery and are never diverted here.
+void proc_observe_kill_sched(uint32_t cpu_id, registers_t* regs);
+// Purge a task id from every run queue (READY only; never touches a
+// RUNNING task on any CPU). Caller holds scheduler_lock (order:
+// scheduler_lock -> rq lock, same as schedule_on_cpu).
+void scheduler_remove_task(int task_id);
 
 extern int    task_count;
 extern int    current_task;    // DEPRECATED: only tracks CPU 0. Use smp_current_task_id().

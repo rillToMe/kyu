@@ -77,7 +77,12 @@ static int wait_remove(wait_queue_t *wq, int task_id) {
     return 0;
 }
 
-uint64_t wait_block_locked(wait_queue_t *wq, uint64_t wq_flags) {
+// Inti bersama wait_block_locked / wait_block_killable. killed == NULL berarti
+// perilaku lama (keluar noreturn saat observasi kill). killed != NULL berarti
+// laporkan kill: keluarkan diri dari antrian, kembalikan state ke RUNNING,
+// tulis *killed = 1, dan kembali dengan wq->lock DIPEGANG — pemanggil melepas
+// referensi ekstranya sendiri lalu memanggil proc_exit_kill().
+static uint64_t wait_block_impl(wait_queue_t *wq, uint64_t wq_flags, int *killed) {
     // Mark ourselves blocked BEFORE releasing wq->lock. block_prepare marks the
     // task non-runnable atomically; because we still hold wq->lock (and IRQs are
     // off from wait_queue_lock), no waker can observe-and-skip us — they serialize
@@ -96,6 +101,26 @@ uint64_t wait_block_locked(wait_queue_t *wq, uint64_t wq_flags) {
         return wq_flags;
     }
 
+    // P0 Phase 3: kill requested while/before we committed to this queue.
+    // Self-remove (lock held: no other waiter/waker can interleave) and
+    // converge on the authoritative exit. Checked BEFORE parking so a kill
+    // that lands between the killer's (no-op) unblock and our park cannot
+    // strand us: every later interleaving is covered by the killer's
+    // unblock flipping us back to RUNNING, which makes block_park return
+    // immediately to the post-park check below.
+    if (tasks[self].kill_pending) {
+        wait_remove(wq, self);
+        if (killed) {
+            // Masih di CPU ini (belum park): unblock mengembalikan BLOCKED
+            // ke RUNNING; lock tetap dipegang, pemanggil bersih-bersih.
+            unblock_task(self);
+            *killed = 1;
+            return wq_flags;
+        }
+        wait_queue_unlock(wq, wq_flags);
+        proc_exit_kill();   // noreturn
+    }
+
     // Release the object lock, THEN park. Releasing restores IRQ state (IF was
     // off since wait_queue_lock), so parking runs with interrupts enabled and the
     // self-IPI reschedule can fire. A waker that runs between unlock and park sets
@@ -107,7 +132,32 @@ uint64_t wait_block_locked(wait_queue_t *wq, uint64_t wq_flags) {
     // Re-acquire the lock before returning (monitor contract): the caller's
     // while-loop re-checks its condition under the lock, and the returned flags
     // must reflect the new critical section.
-    return wait_queue_lock(wq);
+    wq_flags = wait_queue_lock(wq);
+
+    // P0 Phase 3: kill observed on wake. A normal wake that won the race
+    // still lands here (condition re-check happens in the caller, which we
+    // never reach). Self-remove + authoritative exit: exactly one cleanup,
+    // no double wakeup, no stale queue entry pinning a reused slot.
+    if (tasks[self].kill_pending) {
+        wait_remove(wq, self);   // no-op bila sudah di-dequeue oleh waker
+        if (killed) {
+            *killed = 1;
+            return wq_flags;   // lock dipegang; pemanggil bersih-bersih
+        }
+        wait_queue_unlock(wq, wq_flags);
+        proc_exit_kill();   // noreturn
+    }
+    return wq_flags;
+}
+
+uint64_t wait_block_locked(wait_queue_t *wq, uint64_t wq_flags) {
+    return wait_block_impl(wq, wq_flags, NULL);
+}
+
+uint64_t wait_block_killable(wait_queue_t *wq, uint64_t wq_flags, int *killed) {
+    if (!killed) return wait_block_impl(wq, wq_flags, NULL);
+    *killed = 0;
+    return wait_block_impl(wq, wq_flags, killed);
 }
 
 // Caller MUST hold wq->lock (monitor pattern: same lock that guards the

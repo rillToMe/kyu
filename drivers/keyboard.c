@@ -171,6 +171,19 @@ void keyboard_handler() {
                     kbd_head = next_head;
                 }
                 spinlock_unlock(&kbd_lock);
+            } else if (!released && key_id == 0x2E && (kbd_mods & KEY_MOD_CTRL) &&
+                       !(kbd_mods & KEY_MOD_ALT)) {
+                // P0 Phase 6A: Ctrl+C dimasak jadi ETX (0x03) untuk TTY —
+                // satu-satunya kombo Ctrl yang masuk buffer (scancode 0x2E =
+                // tombol C fisik, kiri/kanan Ctrl sama; Caps tak relevan).
+                // GUI tidak lewat sini (dapat event + mods via antrian KWM).
+                spinlock_lock(&kbd_lock);
+                uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
+                if (next_head != kbd_tail) {
+                    kbd_buffer[kbd_head] = 0x03;
+                    kbd_head = next_head;
+                }
+                spinlock_unlock(&kbd_lock);
             }
         }
     }

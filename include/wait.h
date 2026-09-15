@@ -57,6 +57,16 @@ void     wait_queue_unlock(wait_queue_t* wq, uint64_t flags);
 // flags baru untuk dipakai wait_queue_unlock() berikutnya.
 uint64_t wait_block_locked(wait_queue_t* wq, uint64_t flags);
 
+// Varian wait_block_locked untuk pemanggil yang memegang referensi ekstra yang
+// harus dilepas sebelum terminasi (mis. referensi open-description pipe yang
+// menahan objek tetap hidup selama block). Sama persis kecuali observasi kill:
+// alih-alih keluar noreturn, ia mengeluarkan diri dari antrian, mengembalikan
+// state ke RUNNING, menyimpan 1 ke *killed, dan kembali dengan wq->lock
+// DIPEGANG (kontrak sama seperti wake normal) agar pemanggil bisa bersih-bersih
+// lalu konvergen ke proc_exit_kill() sendiri. *killed = 0 pada wake normal.
+// killed tidak boleh NULL.
+uint64_t wait_block_killable(wait_queue_t* wq, uint64_t flags, int* killed);
+
 // Harus dipanggil sambil memegang wait_queue_lock(). Bangunkan satu / semua
 // waiter (FIFO). No-op jika antrian kosong.
 void wait_wake_one(wait_queue_t* wq);

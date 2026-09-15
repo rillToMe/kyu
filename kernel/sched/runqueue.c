@@ -105,6 +105,28 @@ int runq_pop(uint32_t cpu_id) {
     return task_id;
 }
 
+// Remove every occurrence of task_id from one CPU's queue. Returns 1 if
+// anything was removed. P0 Phase 3: kill purge of READY tasks. Locking:
+// takes only rq->lock; the caller must hold scheduler_lock (order
+// scheduler_lock -> rq->lock, same as schedule_on_cpu).
+int runq_remove(uint32_t cpu_id, int task_id) {
+    if (cpu_id >= SMP_MAX_CPUS || task_id < 0) return 0;
+    run_queue_t *rq = &cpu_runqueues[cpu_id];
+    uint64_t flags = spinlock_lock_irqsave(&rq->lock);
+    int removed = 0;
+    for (uint32_t i = 0; i < rq->count;) {
+        if (rq->entries[i] == task_id) {
+            rq->entries[i] = rq->entries[--rq->count];
+            removed = 1;
+            // do not advance: the swapped-in last entry needs checking too
+        } else {
+            i++;
+        }
+    }
+    spinlock_unlock_irqrestore(&rq->lock, flags);
+    return removed;
+}
+
 // Pick the least-loaded online CPU for a newly-ready task. Load = queued tasks
 // plus one if the CPU is currently running something. A fully idle CPU wins
 // immediately so fresh work lands where it can start without waiting a quantum.

@@ -44,6 +44,7 @@ const char* task_state_name(uint8_t state) {
         case TASK_SLEEPING: return "SLEEPING";
         case TASK_DEAD: return "DEAD";
         case TASK_BLOCKED: return "BLOCKED";
+        case TASK_ZOMBIE: return "ZOMBIE";
         default: return "UNKNOWN";
     }
 }
@@ -86,6 +87,10 @@ void scheduler_idle_loop(void) {
 
 registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
     if (cpu_id >= SMP_MAX_CPUS || current_regs == NULL) return current_regs;
+
+    // P0-FINAL: CPU-bound kill observation (noreturn when it fires).
+    // Must precede ALL locking — proc_exit_kill takes the exit locks itself.
+    proc_observe_kill_sched(cpu_id, current_regs);
 
     smp_note_scheduler_tick(cpu_id);
     smp_clear_reschedule(cpu_id);
@@ -207,6 +212,22 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
 
 registers_t* schedule(registers_t* current_regs) {
     return schedule_on_cpu(0, current_regs);
+}
+
+// scheduler_remove_task — P0 Phase 3: purge a task id from every run queue.
+//
+// READY-only: a READY task lives in exactly one queue and on no CPU, so
+// removing it guarantees it can never be scheduled again. RUNNING tasks
+// (tracked by cpu_current_task, in no queue) are deliberately untouched —
+// a remote CPU may be executing that stack right now; the runner observes
+// kill_pending at a safe boundary instead. BLOCKED/SLEEPING tasks are in
+// no queue either (unblock_task requeues them on wake, where the kill
+// observation fires first). Caller must hold scheduler_lock.
+void scheduler_remove_task(int task_id) {
+    if (task_id < 0 || task_id >= MAX_TASKS) return;
+    for (uint32_t c = 0; c < SMP_MAX_CPUS; c++) {
+        runq_remove(c, task_id);
+    }
 }
 
 

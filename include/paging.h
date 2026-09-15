@@ -34,6 +34,13 @@ int  paging_is_mapped(uint64_t vaddr);
 // Returns physical address of new PML4, or PHYS_NULL on failure.
 phys_addr_t vmm_create_address_space(void);
 
+// Full-copy clone of a user address space for fork() (P0 Phase 6B):
+// fresh PML4 (kernel halves shared by value, never deep-copied) +
+// every present 4KB user page duplicated (fresh frame, contents copied,
+// identical flags). Parent tables are only read. OOM mid-clone destroys
+// the partial child AS and returns PHYS_NULL; the parent is untouched.
+phys_addr_t vmm_clone_user_as(phys_addr_t parent_pml4_phys);
+
 // Destroy an entire address space:
 //   - Frees all user-range pages (PML4 indices 0..255)
 //   - Frees PT, PD, PDPT hierarchy pages

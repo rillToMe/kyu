@@ -100,10 +100,11 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 #   apps/libgui.c   → GUI framework (mendefinisikan font8x16, dll)
 # Juga exlude test host-side (punya main()/assert.h/stdio.h) yang dijalankan di
 # host, bukan sebagai task QEMU — dikompilasi freestanding akan fatal (assert.h
-# tidak ada). aa_math_test / desktop_manifest_test / kyuzenfs_dir_test ada di
-# test/ yang ikut SRC_DIRS saat `make conc`/`make heap-stress`.
+# tidak ada). aa_math_test / desktop_manifest_test / kyuzenfs_dir_test /
+# virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
+# `make conc`/`make heap-stress`.
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
-                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c,\
+                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c,\
                         $(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
@@ -197,6 +198,72 @@ test/virtqueue_test: test/virtqueue_test.c \
 	    drivers/graphics/hw/virtqueue.c \
 	    -Idrivers/graphics/hw -Igraphics/memory
 
+# --- Host-side unit test (P0 Phase 1): credential policy ---
+# Pure policy in include/cred.h, no scheduler needed. Run: make test-cred.
+.PHONY: test-cred
+test-cred: test/cred_test
+	./test/cred_test
+
+test/cred_test: test/cred_test.c include/cred.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/cred_test.c -Iinclude
+
+# --- Host-side unit test (P0 Phase 2): process policy ---
+# Pure policy in include/proc.h (+cred/task constants), no scheduler/SMP.
+# Run: make test-proc.
+.PHONY: test-proc
+test-proc: test/proc_test
+	./test/proc_test
+
+test/proc_test: test/proc_test.c include/proc.h include/cred.h include/task.h include/vfs.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/proc_test.c -Iinclude
+
+# --- Host-side unit test (P0 Phase 3): kill policy + lifecycle ---
+# Pure policy in include/proc.h (proc_can_kill, kill codes/reasons) plus a
+# mock of the proc_kill/observe/reap decision table. No scheduler/SMP.
+# Run: make test-kill.
+.PHONY: test-kill
+test-kill: test/kill_test
+	./test/kill_test
+
+test/kill_test: test/kill_test.c include/proc.h include/cred.h include/task.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/kill_test.c -Iinclude
+
+# --- Host-side unit test (P0 Phase 4): fd / open-description model ---
+# Mock of kernel/vfs_fd.c semantics (per-task entries, shared refcounted
+# descriptions, dup/dup2 sharing, close/close_all release, invalid-fd
+# rejection, leak accounting). No scheduler/SMP/KyuzenFS.
+# Run: make test-fd.
+.PHONY: test-fd
+test-fd: test/fd_test
+	./test/fd_test
+
+test/fd_test: test/fd_test.c include/vfs.h include/proc.h include/cred.h include/task.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/fd_test.c -Iinclude
+
+# --- Host-side unit test (P0 Phase 5): pipe logic + shell pipelines ---
+# Kernel pipe decision table (mock) + the REAL apps/shell_core.c against
+# stub syscalls (operator scan, stage split, spawn_redir specs, parent
+# close discipline, reaping). No scheduler/SMP/KyuzenFS.
+# Run: make test-pipe.
+.PHONY: test-pipe
+test-pipe: test/pipe_test
+	./test/pipe_test
+
+test/pipe_test: test/pipe_test.c apps/shell_core.c include/shell.h include/userlib.h include/proc.h include/cred.h include/task.h include/vfs.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/pipe_test.c apps/shell_core.c -Iinclude
+
+# --- Host-side unit test (P0 Phase 6B): fork algorithm mock ---
+# AS-clone table (fresh frames, content copy, verbatim flags, huge skip,
+# OOM-injection rollback sweep) + fd sharing + slot publish rules.
+# No scheduler/SMP/paging hardware.
+# Run: make test-fork.
+.PHONY: test-fork
+test-fork: test/fork_test
+	./test/fork_test
+
+test/fork_test: test/fork_test.c include/proc.h include/cred.h include/task.h include/vfs.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/fork_test.c -Iinclude
+
 # --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
 # Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer
 .PHONY: apps
@@ -238,6 +305,24 @@ calc.elf:
 taskmgr.elf:
 	$(MAKE) -C user_apps taskmgr
 
+kill_test.elf:
+	$(MAKE) -C user_apps kill_test
+
+fd_test.elf:
+	$(MAKE) -C user_apps fd_test
+
+echo.elf:
+	$(MAKE) -C user_apps echo
+
+cat.elf:
+	$(MAKE) -C user_apps cat
+
+pipe_test.elf:
+	$(MAKE) -C user_apps pipe_test
+
+fork_test.elf:
+	$(MAKE) -C user_apps fork_test
+
 notepad.elf:
 	$(MAKE) -C user_apps notepad
 
@@ -261,7 +346,7 @@ boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png logo.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf hello-slint.elf control-center.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf procinfo.elf exit_test.elf kill_test.elf fd_test.elf echo.elf cat.elf pipe_test.elf fork_test.elf hello-slint.elf control-center.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	# Manifest launcher (name=/color=/hidden=), dibaca desktop.elf saat scan
 	# app. Setiap file baru di manifests/ HARUS ditambah juga ke limine.conf.
 	cp manifests/*.app iso_root/
@@ -276,7 +361,7 @@ boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png logo.png
 # Tahap 4: Boot up QEMU (Dengan Fitur Debugging 64-bit)
 run: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
-		-smp 4 \
+		-smp 8 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
 		-drive file=boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
