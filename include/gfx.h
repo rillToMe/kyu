@@ -6,13 +6,12 @@
 
 // --- Framebuffer global (didefinisikan di kernel/gfx/fb.c) ---
 extern uint32_t* fb_ptr;
-extern uint32_t fb_width;
-extern uint32_t fb_height;
-extern uint32_t fb_pitch;
 
-// Buffer resolusi maksimal 1920x1080 — cukup untuk semua konfigurasi QEMU/HW
-extern uint32_t backbuffer[1920 * 1080];
-extern uint32_t base_canvas[1920 * 1080];
+// Screen buffer mode-sized (dialokasikan display_alloc_buffers(); NULL sebelum
+// itu). Stride kedua buffer == pitch_bytes/4 (kontrak lama, mempertahankan
+// indeks compositor/TTY). Bukan lagi array statis 1920x1080.
+extern uint32_t* backbuffer;
+extern uint32_t* base_canvas;
 
 // --- DisplayBuffer layar (Phase 3A adopsi, kernel/gfx/fb.c) ---
 // Wrapper statis di atas base_canvas/backbuffer/fb_ptr. NULL sebelum

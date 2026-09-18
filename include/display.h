@@ -23,6 +23,59 @@
 //   caller-owned memory — destroy() never frees it. Window Manager (Phase 5) uses
 //   create() to request one owned buffer per window.
 
+// ============================================================
+// Display Mode — authoritative screen geometry (single source of truth)
+//
+// Semua konsumen kernel (compositor, KWM, mouse, TTY, panic, syscall 63)
+// membaca mode dari sini, BUKAN dari global fb_* terpisah. Backend GHAL
+// melaporkan mode-nya lewat mode_get/mode_enumerate; Display menyinkronkan
+// mode aktif dari backend saat boot. Runtime set-mode adalah kapabilitas
+// backend (software/Limine = boot-fixed → unsupported).
+// ============================================================
+typedef enum {
+    DISPLAY_FMT_XRGB8888 = 0   // 32bpp, memori little-endian 0x00RRGGBB
+} display_format_t;
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch_bytes;   // byte per baris (>= width * bpp / 8)
+    uint32_t bpp;
+    uint32_t format;        // display_format_t
+} display_mode_t;
+
+// Deskripsi format framebuffer mentah (dari Limine) untuk validasi boot.
+typedef struct {
+    uint32_t bpp;
+    uint32_t memory_model;   // LIMINE_FRAMEBUFFER_RGB = 1
+    uint32_t red_size,   red_shift;
+    uint32_t green_size, green_shift;
+    uint32_t blue_size,  blue_shift;
+} display_format_desc_t;
+
+// Mode aktif (NULL sebelum display_boot_init). Pointer statis — aman dibaca
+// dari konteks IRQ, tidak pernah di-free.
+const display_mode_t* display_get_mode(void);
+
+// Enumerasi mode yang didukung backend aktif. Return jumlah (>0) atau <0.
+int display_get_modes(display_mode_t* out, uint32_t max);
+
+// Minta ganti mode runtime. Task context saja. Return 0 sukses, <0 ditolak
+// (backend boot-fixed / tanpa kapabilitas GHAL_CAP_MODE_SET).
+int display_set_mode(const display_mode_t* mode);
+
+// --- Framebuffer/buffer lifecycle (kernel/gfx/fb.c) ---
+// Tangkap + validasi framebuffer Limine. Tidak mengalokasi (heap belum siap).
+int display_boot_init(uint32_t* fb, uint32_t width, uint32_t height,
+                      uint32_t pitch_bytes, const display_format_desc_t* fmt);
+
+// Sinkronkan mode aktif dari backend GHAL aktif (virtio pmodes[0] dsb).
+int display_sync_from_backend(void);
+
+// Alokasikan base_canvas/backbuffer seukuran mode (pitch-aware, overflow-safe).
+// Wajib task context (kmalloc). Idempotent.
+int display_alloc_buffers(void);
+
 typedef uint32_t Color;
 
 typedef enum {

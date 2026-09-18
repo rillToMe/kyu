@@ -189,13 +189,34 @@ void kernel_main(void) {
 
     int ghal_ok = 0;   // hasil ghal_init(), dilaporkan di boot console
 
-    // 1. TANGKAP LAYAR DARI LIMINE
+    // 1. TANGKAP LAYAR DARI LIMINE + VALIDASI FORMAT (bukan asumsi XRGB8888)
     if (framebuffer_request.response != NULL && framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
-        fb_ptr = (uint32_t *)fb->address;
-        fb_width = fb->width;
-        fb_height = fb->height;
-        fb_pitch = fb->pitch;
+        display_format_desc_t fdesc = {
+            .bpp = fb->bpp,
+            .memory_model = fb->memory_model,
+            .red_size = fb->red_mask_size, .red_shift = fb->red_mask_shift,
+            .green_size = fb->green_mask_size, .green_shift = fb->green_mask_shift,
+            .blue_size = fb->blue_mask_size, .blue_shift = fb->blue_mask_shift,
+        };
+        // Serial dini: kegagalan validasi harus terlihat di host, bukan halt bisu.
+        extern void serial_init(void);
+        serial_init();
+        serial_print("[DISPLAY] limine fb ");
+        serial_num(fb->width); serial_print("x"); serial_num(fb->height);
+        serial_print(" bpp="); serial_num(fb->bpp);
+        serial_print(" model="); serial_num(fb->memory_model);
+        serial_print(" masks=");
+        serial_num(fb->red_mask_size);   serial_print("."); serial_num(fb->red_mask_shift);   serial_print(",");
+        serial_num(fb->green_mask_size); serial_print("."); serial_num(fb->green_mask_shift); serial_print(",");
+        serial_num(fb->blue_mask_size);  serial_print("."); serial_num(fb->blue_mask_shift);
+        serial_print("\n");
+
+        if (display_boot_init((uint32_t *)fb->address, fb->width, fb->height,
+                              fb->pitch, &fdesc) != 0) {
+            serial_print("[DISPLAY] FATAL: framebuffer format tidak didukung\n");
+            while(1) { __asm__ volatile("hlt"); }
+        }
     } else {
         while(1) { __asm__ volatile("hlt"); }
     }
@@ -244,14 +265,24 @@ void kernel_main(void) {
     {
         extern void ghal_set_framebuffer(uint32_t*, uint32_t, uint32_t, uint32_t);
         extern void compositor_ghal_init(void);
-        ghal_set_framebuffer(fb_ptr, fb_width, fb_height, fb_pitch);
+        const display_mode_t* dm = display_get_mode();
+        ghal_set_framebuffer(fb_ptr, dm->width, dm->height, dm->pitch_bytes);
         ghal_ok = (ghal_init() == 0);
         if (ghal_ok) {
-            compositor_ghal_init();
+            // Mode authoritative dari backend aktif (software == Limine;
+            // virtio-gpu == pmodes[0]). Gagal → mode boot tetap dipakai.
+            display_sync_from_backend();
         } else {
             // Fallback: compositor langsung (jalur software). Diagnostik → serial.
             serial_print("[GHAL] init failed — compositor fallback ke jalur langsung\n");
         }
+        // Buffer layar seukuran mode. Task context (kmalloc) — wajib sebelum
+        // compositor/TTY menggambar. Gagal = fatal (tidak ada jalur render).
+        if (display_alloc_buffers() != 0) {
+            serial_print("[DISPLAY] FATAL: alokasi buffer layar gagal\n");
+            while(1) { __asm__ volatile("hlt"); }
+        }
+        if (ghal_ok) compositor_ghal_init();
     }
 
     timer_callbacks_init();    // Daftarkan subscriber default (visual, cursor, flush)

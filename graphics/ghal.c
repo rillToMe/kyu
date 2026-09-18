@@ -98,8 +98,6 @@ const char* ghal_last_error(void) {
 
 // --- framebuffer & scanout size ---
 extern void software_backend_set_fb(uint32_t* fb, uint32_t w, uint32_t h, uint32_t pitch_bytes);
-extern void software_backend_get_size(uint32_t* w, uint32_t* h);
-extern void virtio_backend_get_size(uint32_t* w, uint32_t* h);
 
 void ghal_set_framebuffer(uint32_t* fb, uint32_t width, uint32_t height,
                           uint32_t pitch_bytes) {
@@ -107,11 +105,37 @@ void ghal_set_framebuffer(uint32_t* fb, uint32_t width, uint32_t height,
 }
 
 void ghal_scanout_size(uint32_t* w, uint32_t* h) {
-    if (g_active == &virtio_gpu_backend_ops) {
-        virtio_backend_get_size(w, h);
-    } else {
-        software_backend_get_size(w, h);
+    // Satu jalur: mode aktif backend. Tidak lagi dispatch terpisah per backend.
+    display_mode_t m;
+    if (ghal_mode_get(&m) == 0) {
+        if (w) *w = m.width;
+        if (h) *h = m.height;
+        return;
     }
+    if (w) *w = 0;
+    if (h) *h = 0;
+}
+
+// --- Display mode API ---
+
+int ghal_mode_get(display_mode_t* out) {
+    if (!g_active || !out || !g_active->mode_get) return -1;
+    return g_active->mode_get(out);
+}
+
+int ghal_mode_enumerate(display_mode_t* out, uint32_t max) {
+    if (!g_active || !out || max == 0 || !g_active->mode_enumerate) return -1;
+    return g_active->mode_enumerate(out, max);
+}
+
+int ghal_mode_can_set(void) {
+    return (g_active && (g_active->capabilities & GHAL_CAP_MODE_SET) &&
+            g_active->mode_set) ? 1 : 0;
+}
+
+int ghal_mode_set(const display_mode_t* mode) {
+    if (!mode || !ghal_mode_can_set()) return -1;
+    return g_active->mode_set(mode);
 }
 
 // ------------------------------------------------------------

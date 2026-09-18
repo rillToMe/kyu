@@ -17,6 +17,7 @@
 // ============================================================
 
 #include <stdint.h>
+#include "display.h"   // display_mode_t — geometri output kanonik (satu sumber)
 
 // Format piksel. Backend WAJIB handle semua ini, atau menolak
 // surface_create dengan error eksplisit (tidak boleh silent fallback).
@@ -35,6 +36,7 @@ typedef struct {
 #define GHAL_CAP_HW_CURSOR      (1u << 0)   // hardware cursor plane
 #define GHAL_CAP_ASYNC_PRESENT  (1u << 1)   // present non-blocking (fence-based)
 #define GHAL_CAP_PARTIAL_FLUSH  (1u << 2)   // resource_flush per-rect
+#define GHAL_CAP_MODE_SET       (1u << 3)   // backend bisa ganti mode runtime
 
 // Statistik GPU (§9.6). Counter kumulatif sejak boot; konsumen menghitung
 // delta per-frame dari dua sampel. Layout ini juga mirror di include/userlib.h
@@ -98,6 +100,18 @@ typedef struct {
     // Statistik device (Phase 2C §9.6, opsional — NULL bila tidak ada).
     // Return 0 sukses; <0 bila backend tidak menyediakan.
     int (*gpu_stats)(ghal_gpu_stats_t* out);
+
+    // --- Display mode (satu sumber geometri output; tanpa bocor detail device) ---
+    // mode_get: mode aktif backend. 0 sukses / <0.
+    // mode_enumerate: isi `out` (maks `max`), return jumlah / <0.
+    // mode_set: minta ganti mode. Hanya backend dengan GHAL_CAP_MODE_SET + op
+    //   non-NULL yang dipanggil; lainnya -1 (boot-fixed, resource lama utuh).
+    // mode_changed: opsional, arah backend→kernel saat host mengubah mode
+    //   (mis. virtio-gpu scanout berubah). NULL = tidak dilaporkan.
+    int  (*mode_get)(display_mode_t* out);
+    int  (*mode_enumerate)(display_mode_t* out, uint32_t max);
+    int  (*mode_set)(const display_mode_t* mode);
+    void (*mode_changed)(void);
 } ghal_backend_ops_t;
 
 // --- API publik dipanggil compositor ---
@@ -158,6 +172,15 @@ const char* ghal_last_error(void);
 // memakai ukuran framebuffer Limine; virtio-gpu memakai pmodes[0]. Compositor
 // memakai ini untuk menentukan ukuran main surface.
 void ghal_scanout_size(uint32_t* w, uint32_t* h);
+
+// --- Display mode API (satu jalur, backend-agnostic) ---
+// Backend melaporkan geometri lewat display_mode_t; tidak ada detail device
+// yang bocor ke atas. display_get_mode()/get_modes()/set_mode() (include/
+// display.h) memakai ini di belakang layar.
+int ghal_mode_get(display_mode_t* out);                    // 0 / <0
+int ghal_mode_enumerate(display_mode_t* out, uint32_t max);// jumlah / <0
+int ghal_mode_set(const display_mode_t* mode);             // 0 / <0 unsupported
+int ghal_mode_can_set(void);                               // 1 bila backend bisa
 
 // Beri tahu HAL/backend software di mana framebuffer hardware berada.
 // WAJIB dipanggil sebelum ghal_init() supaya software backend bisa present.

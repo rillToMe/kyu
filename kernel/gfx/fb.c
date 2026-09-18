@@ -4,49 +4,155 @@
 #include "font8x16.h"
 #include "gfx.h"
 #include "display.h"
-
-// --- VARIABEL GLOBAL FRAMEBUFFER ---
-uint32_t* fb_ptr = NULL;
-uint32_t fb_width = 0;
-uint32_t fb_height = 0;
-uint32_t fb_pitch = 0;
-
-// Buffer resolusi maksimal 1920x1080 — cukup untuk semua konfigurasi QEMU/HW
-// Jika base_canvas terlalu kecil dari fb_width*fb_height, pixel wrap dan muncul dua kali
-uint32_t backbuffer[1920 * 1080];
-uint32_t base_canvas[1920 * 1080];
+#include "ghal.h"
+#include "heap.h"
+#include "string.h"
+#include "limine.h"
 
 // ============================================================
-// Phase 3A ADOPSI: base_canvas / backbuffer / framebuffer dibungkus sebagai
-// DisplayBuffer STATIS (borrow, tanpa kmalloc — heap belum hidup saat fb
-// ditangkap kernel_main). Semua primitive di bawah menggambar lewat
-// g_screen_db; compositor blit lewat accessor gfx_*_buffer().
+// Framebuffer + Display Mode (kernel/gfx/fb.c)
 //
-// g_screen_db.dirty sengaja NULL: marking layar lewat screen_mark_dirty
-// (jalur ber-lock compositor), bukan field dirty per-buffer.
+// Satu sumber kebenaran geometri layar: `g_mode`. Semua konsumen kernel
+// membaca display_get_mode(); tidak ada lagi global fb_width/fb_height/fb_pitch.
+// base_canvas/backbuffer dialokasikan seukuran mode (pitch-aware), bukan lagi
+// array statis 1920x1080 (bisa overflow pada mode besar / pitch berpadding).
 // ============================================================
+
+// Batas sane dimensi — seragam dengan GHAL_MAX_DIM (graphics/memory/gpu_alloc.h)
+// dan tidak melebihi KWM_MAX_DIMENSION per-window.
+#define DISPLAY_MAX_DIM 8192U
+
+// --- Framebuffer hardware (dialokasikan firmware; tidak pernah di-free) ---
+uint32_t* fb_ptr = NULL;
+
+// --- Screen buffers (dialokasikan display_alloc_buffers) ---
+uint32_t* backbuffer  = NULL;
+uint32_t* base_canvas = NULL;
+
+// --- Mode aktif (authoritative) ---
+static display_mode_t g_mode;
+static int g_mode_valid = 0;
+static int g_buffers_ready = 0;
+
+// DisplayBuffer statis yang membungkus base_canvas/backbuffer/fb_ptr (borrow).
 static DisplayBuffer g_screen_db;   // base_canvas
 static DisplayBuffer g_back_db;     // backbuffer
 static DisplayBuffer g_fb_db;       // framebuffer hardware
 
-static void wrap_static(DisplayBuffer* db, uint32_t* pixels) {
+static void wrap_db(DisplayBuffer* db, uint32_t* pixels) {
     db->pixels      = pixels;
-    db->width       = fb_width;
-    db->height      = fb_height;
-    db->stride      = fb_pitch / 4;
+    db->width       = g_mode.width;
+    db->height      = g_mode.height;
+    db->stride      = g_mode.pitch_bytes / 4;
     db->format      = COLOR_FORMAT_XRGB8888;
     db->owns_pixels = 0;
     db->dirty       = NULL;
 }
 
-static inline int gfx_buffers_ready(void) {
-    if (g_screen_db.pixels) return 1;
-    if (fb_width == 0 || fb_pitch == 0) return 0;
-    wrap_static(&g_screen_db, base_canvas);
-    wrap_static(&g_back_db, backbuffer);
-    wrap_static(&g_fb_db, fb_ptr);
-    return 1;
+// ------------------------------------------------------------
+// Mode API
+// ------------------------------------------------------------
+
+const display_mode_t* display_get_mode(void) {
+    return g_mode_valid ? &g_mode : NULL;
 }
+
+int display_get_modes(display_mode_t* out, uint32_t max) {
+    if (!out || max == 0) return -1;
+    int n = ghal_mode_enumerate(out, max);
+    if (n > 0) return n;
+    if (g_mode_valid) { out[0] = g_mode; return 1; }   // backend belum aktif
+    return -1;
+}
+
+int display_set_mode(const display_mode_t* mode) {
+    if (!mode || !g_mode_valid) return -1;
+    // Runtime switch = kapabilitas backend. Tidak ada teardown/realloc di sini:
+    // software/Limine boot-fixed → ghal_mode_set() menolak, state lama utuh.
+    // Backend yang benar-benar mendukung harus membangun resource baru lebih
+    // dulu (task context) sebelum resource lama dilepas.
+    return ghal_mode_set(mode);
+}
+
+// ------------------------------------------------------------
+// Boot: tangkap + validasi framebuffer Limine. Tidak mengalokasi (heap belum
+// siap) — hanya menetapkan mode. Halt-on-invalid ditangani pemanggil.
+// ------------------------------------------------------------
+int display_boot_init(uint32_t* fb, uint32_t width, uint32_t height,
+                      uint32_t pitch_bytes, const display_format_desc_t* fmt) {
+    if (!fb || !fmt) return -1;
+    if (width == 0 || height == 0) return -1;
+    if (width > DISPLAY_MAX_DIM || height > DISPLAY_MAX_DIM) return -1;
+
+    // pitch minimal width*4 dan tidak overflow.
+    uint64_t min_pitch = (uint64_t)width * 4ULL;
+    if (pitch_bytes == 0 || (uint64_t)pitch_bytes < min_pitch) return -1;
+    if ((uint64_t)pitch_bytes > (uint64_t)SIZE_MAX) return -1;
+
+    // Format: 32bpp RGB, mask 8/8/8, layout XRGB8888 (R di bit 16, B di bit 0).
+    // Bukan asumsi diam-diam lagi — mode/format lain ditolak eksplisit.
+    if (fmt->bpp != 32) return -1;
+    if (fmt->memory_model != LIMINE_FRAMEBUFFER_RGB) return -1;
+    if (fmt->red_size != 8 || fmt->green_size != 8 || fmt->blue_size != 8) return -1;
+    if (fmt->red_shift != 16 || fmt->green_shift != 8 || fmt->blue_shift != 0) return -1;
+
+    fb_ptr = fb;
+    g_mode.width       = width;
+    g_mode.height      = height;
+    g_mode.pitch_bytes = pitch_bytes;
+    g_mode.bpp         = fmt->bpp;
+    g_mode.format      = DISPLAY_FMT_XRGB8888;
+    g_mode_valid       = 1;
+    return 0;
+}
+
+// Sinkronkan mode aktif dari backend GHAL (mis. pmodes[0] virtio-gpu).
+// Software backend mengembalikan ukuran framebuffer Limine yang sama.
+int display_sync_from_backend(void) {
+    display_mode_t m;
+    if (ghal_mode_get(&m) != 0) return -1;
+    if (m.width == 0 || m.height == 0) return -1;
+    if (m.width > DISPLAY_MAX_DIM || m.height > DISPLAY_MAX_DIM) return -1;
+    if (m.pitch_bytes == 0 ||
+        (uint64_t)m.pitch_bytes < (uint64_t)m.width * 4ULL) return -1;
+
+    g_mode = m;
+    g_mode_valid = 1;
+    return 0;
+}
+
+// ------------------------------------------------------------
+// Alokasi buffer layar seukuran mode. Task context (kmalloc). Idempotent.
+// Ukuran = pitch_bytes * height (BUKAN width*height) — pitch berpadding aman.
+// ------------------------------------------------------------
+int display_alloc_buffers(void) {
+    if (g_buffers_ready) return 0;
+    if (!g_mode_valid) return -1;
+
+    uint64_t stride_bytes = g_mode.pitch_bytes;
+    uint64_t bytes = stride_bytes * (uint64_t)g_mode.height;
+    if (stride_bytes == 0 || bytes / stride_bytes != (uint64_t)g_mode.height)
+        return -1;   // overflow
+    if (bytes > (uint64_t)SIZE_MAX) return -1;
+
+    base_canvas = (uint32_t*)kmalloc((size_t)bytes);
+    backbuffer  = (uint32_t*)kmalloc((size_t)bytes);
+    if (!base_canvas || !backbuffer) {
+        if (base_canvas) { kfree(base_canvas); base_canvas = NULL; }
+        if (backbuffer)  { kfree(backbuffer);  backbuffer  = NULL; }
+        return -1;
+    }
+    memset(base_canvas, 0, (size_t)bytes);
+    memset(backbuffer,  0, (size_t)bytes);
+
+    wrap_db(&g_screen_db, base_canvas);
+    wrap_db(&g_back_db,   backbuffer);
+    wrap_db(&g_fb_db,     fb_ptr);
+    g_buffers_ready = 1;
+    return 0;
+}
+
+static inline int gfx_buffers_ready(void) { return g_buffers_ready; }
 
 DisplayBuffer* gfx_screen_buffer(void) { return gfx_buffers_ready() ? &g_screen_db : NULL; }
 DisplayBuffer* gfx_back_buffer(void)   { return gfx_buffers_ready() ? &g_back_db   : NULL; }

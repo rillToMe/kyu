@@ -33,6 +33,12 @@ struct ghal_surface {
 
 static int g_virtio_active = 0;
 
+// Mode yang diiklankan device (GET_DISPLAY_INFO pmodes[]). pmodes[0] yang
+// enabled = scanout aktif. Resource virtio linear → pitch = width*4.
+#define VGPU_MAX_PMODES 16
+static display_mode_t g_pmodes[VGPU_MAX_PMODES];
+static uint32_t       g_pmode_count = 0;
+
 // --- helper: kirim command & periksa response OK_NODATA ---
 static int vgpu_send_ok(const void* cmd, uint32_t cmd_len) {
     uint32_t resp[8] = {0};   // ctrl_hdr response
@@ -52,20 +58,30 @@ static int virtio_init(void) {
     memset(&resp, 0, sizeof(resp));
     if (virtio_gpu_dev_command(&cmd, sizeof(cmd), &resp, sizeof(resp)) != 0) return -1;
     if (resp.hdr.type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO) return -1;
-    if (resp.pmodes[0].enabled == 0) return -1;
-    g_vgpu.scanout_width  = resp.pmodes[0].rect.width;
-    g_vgpu.scanout_height = resp.pmodes[0].rect.height;
+
+    // Enumerasi pmodes enabled → daftar mode kanonik. pmodes[0] enabled =
+    // scanout aktif (dipakai compositor untuk ukuran main surface).
+    g_pmode_count = 0;
+    for (int i = 0; i < VGPU_MAX_PMODES; i++) {
+        if (!resp.pmodes[i].enabled) continue;
+        uint32_t w = resp.pmodes[i].rect.width;
+        uint32_t h = resp.pmodes[i].rect.height;
+        if (w == 0 || h == 0 || w > GHAL_MAX_DIM || h > GHAL_MAX_DIM) continue;
+        display_mode_t* m = &g_pmodes[g_pmode_count++];
+        m->width = w; m->height = h;
+        m->pitch_bytes = (uint32_t)((uint64_t)w * 4ULL);
+        m->bpp = 32;
+        m->format = DISPLAY_FMT_XRGB8888;
+    }
+    if (g_pmode_count == 0) return -1;
+    g_vgpu.scanout_width  = g_pmodes[0].width;
+    g_vgpu.scanout_height = g_pmodes[0].height;
 
     g_virtio_active = 1;
     return 0;
 }
 
 static void virtio_shutdown(void) { g_virtio_active = 0; }
-
-void virtio_backend_get_size(uint32_t* w, uint32_t* h) {
-    if (w) *w = g_vgpu.scanout_width;
-    if (h) *h = g_vgpu.scanout_height;
-}
 
 // --- surface_create: buat resource + attach backing ---
 static ghal_surface_t* virtio_surface_create(uint32_t w, uint32_t h, ghal_format_t fmt) {
@@ -307,6 +323,28 @@ static int virtio_gpu_stats(ghal_gpu_stats_t* out) {
     return 0;
 }
 
+// --- Display mode (host-controlled; guest tidak punya mode-set di v1) ---
+static int virtio_mode_get(display_mode_t* out) {
+    if (!out || g_vgpu.scanout_width == 0 || g_vgpu.scanout_height == 0) return -1;
+    out->width       = g_vgpu.scanout_width;
+    out->height      = g_vgpu.scanout_height;
+    out->pitch_bytes = g_vgpu.scanout_width * 4;
+    out->bpp         = 32;
+    out->format      = DISPLAY_FMT_XRGB8888;
+    return 0;
+}
+
+static int virtio_mode_enumerate(display_mode_t* out, uint32_t max) {
+    if (!out || max == 0 || g_pmode_count == 0) return -1;
+    uint32_t n = g_pmode_count < max ? g_pmode_count : max;
+    for (uint32_t i = 0; i < n; i++) out[i] = g_pmodes[i];
+    return (int)n;
+}
+
+// VirtIO-GPU v1 tidak punya command guest mode-set; resolusi ditentukan host.
+// Ditambah GHAL_CAP_MODE_SET bila kelak ada jalur resize yang aman.
+static int virtio_mode_set(const display_mode_t* mode) { (void)mode; return -1; }
+
 const ghal_backend_ops_t virtio_gpu_backend_ops = {
     .name           = "virtio-gpu",
     .capabilities   = GHAL_CAP_PARTIAL_FLUSH | GHAL_CAP_ASYNC_PRESENT |
@@ -326,4 +364,8 @@ const ghal_backend_ops_t virtio_gpu_backend_ops = {
     .cursor_update  = virtio_cursor_update,
     .cursor_move    = virtio_cursor_move,
     .gpu_stats      = virtio_gpu_stats,
+    .mode_get       = virtio_mode_get,
+    .mode_enumerate = virtio_mode_enumerate,
+    .mode_set       = virtio_mode_set,
+    .mode_changed   = NULL,   // host resize belum dilaporkan (lihat dokumentasi)
 };

@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "task.h"
 #include "serial.h"
+#include "display.h"
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -22,9 +23,6 @@ static void ser_dec(uint64_t v) {
 }
 
 extern uint32_t* fb_ptr;
-extern uint32_t fb_width;
-extern uint32_t fb_height;
-extern uint32_t fb_pitch;
 extern const unsigned char font8x16[256][16];
 
 // Impor fungsi cek rute fisik (dari paging.c)
@@ -54,8 +52,9 @@ static void panic_reset_cursor(void) {
 }
 
 void panic_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
-    if (!fb_ptr || x >= fb_width || y >= fb_height) return;
-    fb_ptr[(y * (fb_pitch / 4)) + x] = color;
+    const display_mode_t* m = display_get_mode();
+    if (!fb_ptr || !m || x >= m->width || y >= m->height) return;
+    fb_ptr[(y * (m->pitch_bytes / 4)) + x] = color;
 }
 
 void panic_draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
@@ -126,8 +125,10 @@ static void p_dec(const char* label, uint64_t val, uint32_t fg, uint32_t bg) {
 }
 
 static void fill_screen(uint32_t color) {
-    for (uint32_t y = 0; y < fb_height; y++)
-        for (uint32_t x = 0; x < fb_width; x++)
+    const display_mode_t* m = display_get_mode();
+    if (!m) return;
+    for (uint32_t y = 0; y < m->height; y++)
+        for (uint32_t x = 0; x < m->width; x++)
             panic_draw_pixel(x, y, color);
 }
 

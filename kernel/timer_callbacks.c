@@ -14,9 +14,9 @@
 
 #include <stdint.h>
 #include "timer.h"
+#include "display.h"
 
 // --- Dependencies dari subsistem lain ---
-extern uint32_t fb_width;
 extern void draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
 extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
@@ -43,7 +43,8 @@ static uint64_t next_uptime_update  = 0;  // ms target: kapan uptime di-refresh
 
 static void cb_visual(uint32_t tick) {
     (void)tick; // Tidak pakai raw tick — pakai ms timestamp
-    if (fb_width == 0) return;
+    const display_mode_t* m = display_get_mode();
+    if (!m || m->width == 0) return;
 
     uint64_t now = timer_get_ms();
 
@@ -56,8 +57,8 @@ static void cb_visual(uint32_t tick) {
         const char frames[] = {'|', '/', '-', '\\'};
         spin_frame = (spin_frame + 1) % 4;
 
-        draw_rect(fb_width - 18, 3, 10, 16, 0x1E1E1E);
-        draw_char(frames[spin_frame], fb_width - 18, 3, 0xFFFF00);
+        draw_rect(m->width - 18, 3, 10, 16, 0x1E1E1E);
+        draw_char(frames[spin_frame], m->width - 18, 3, 0xFFFF00);
     }
 
     // --- Uptime: update setiap 1000ms (1 detik tepat) ---
@@ -79,8 +80,8 @@ static void cb_visual(uint32_t tick) {
         buf[15] = (sec  % 10) + '0';
 
         // 16 char × 8px/char = 128px + 8px margin = 136px wide
-        draw_rect(fb_width - 155, 3, 136, 16, 0x1E1E1E);
-        draw_string(buf, fb_width - 155, 3, 0x00FF00);
+        draw_rect(m->width - 155, 3, 136, 16, 0x1E1E1E);
+        draw_string(buf, m->width - 155, 3, 0x00FF00);
     }
 }
 

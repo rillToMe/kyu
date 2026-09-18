@@ -29,10 +29,11 @@ bin/
 out/
 /graphify-out
 
+
+#file
 run.md
 iso_root
 CLAUDE.md
-
 implementasi_step.md
 .qoder
 roadmap
@@ -40,4 +41,5 @@ roadmap
 .serena
 Analisa.md
 STRUKTURE_FILE.md
+p6-run.ps1
 # Resolve Build

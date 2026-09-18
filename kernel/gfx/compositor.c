@@ -647,22 +647,24 @@ static uint64_t g_present_fence = 0;
 // Dipanggil dari kernel_main SETELAH ghal_init(), sebelum timer_callbacks_init.
 void compositor_ghal_init(void) {
     if (g_main_surface != NULL) return;
-    if (fb_width == 0) return;
+    const display_mode_t* m = display_get_mode();
+    if (!m) return;
     // Scanout surface: backend software MEMBUNGKUS framebuffer HW (zero-copy —
     // upload menulis langsung ke layar, present no-op). Backend virtio membuat
     // resource + backing seperti biasa.
-    g_main_surface = ghal_surface_create_scanout(fb_width, fb_height, GHAL_FMT_XRGB8888);
+    g_main_surface = ghal_surface_create_scanout(m->width, m->height, GHAL_FMT_XRGB8888);
     // Phase 2C §9.4 — hardware cursor bila backend mendukung (fallback aman).
     compositor_hw_cursor_init();
 }
 
 void compositor_flush() {
-    if (fb_width == 0) return;
+    const display_mode_t* mode = display_get_mode();
+    if (!mode) return;
     DisplayBuffer* screen_db = gfx_screen_buffer();  // base_canvas
     DisplayBuffer* back_db   = gfx_back_buffer();
     if (!screen_db || !back_db) return;
-    const int pitch4 = (int)(fb_pitch / 4);
-    Rect screen = { 0, 0, fb_width, fb_height };
+    const int pitch4 = (int)(mode->pitch_bytes / 4);
+    Rect screen = { 0, 0, mode->width, mode->height };
 
     uint64_t flags = spinlock_lock_irqsave(&g_dirty_lock);
     DirtyRegionList dirty = g_screen_dirty;
@@ -719,7 +721,7 @@ void compositor_flush() {
                 // Bug 5.5: cek batas BAWAH juga — koordinat negatif membuat offset
                 // bernilai negatif → write sebelum backbuffer.
                 if (cy + y < 0 || cx + x < 0 ||
-                    cy + y >= (int32_t)fb_height || cx + x >= (int32_t)fb_width) continue;
+                    cy + y >= (int32_t)mode->height || cx + x >= (int32_t)mode->width) continue;
                 uint32_t offset = ((cy + y) * pitch4) + (cx + x);
                 if (cbm[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
                 else if (cbm[y][x] == 2) backbuffer[offset] = 0x000000;

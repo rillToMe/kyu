@@ -64,7 +64,7 @@ static uint64_t heap_watch_walk_pte(uint64_t va, uint64_t cr3_phys) {
 // Dipanggil dari exception_handler untuk vector #DB, lalu RETURN (eksekusi
 // dilanjutkan via iretq di isr1_stub). Data breakpoint adalah trap: RIP di
 // frame menunjuk instruksi SETELAH store yang memicu — store penulis ada
-// tepat sebelum RIP ini (cari via objdump -d myos.bin).
+// tepat sebelum RIP ini (cari via objdump -d build/myos.bin).
 //
 // Yang menulis nilai != HEAP_MAGIC ke field magic adalah kandidat corruptor;
 // tulisan == HEAP_MAGIC adalah header split/expand yang sah dari allocator.

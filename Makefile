@@ -3,8 +3,8 @@
 # ==========================================
 #
 # Target penting:
-#   make          → Compile kernel (myos.bin)
-#   make apps     → Compile user_apps (fileman.elf, viewer.elf)
+#   make          → Compile kernel (build/myos.bin)
+#   make apps     → Compile user_apps (build/*.elf)
 #   make boot_image.iso → Build kernel + apps + ISO
 #   make run      → Build + Boot di QEMU
 #   make clean    → Bersihkan kernel objects
@@ -70,6 +70,11 @@ LWIP_OBJS      = $(LWIP_SRCS:.c=.o) $(E1000_OBJS)
 # 4. -mcmodel=kernel: wajib untuk higher-half kernel — mencegah R_X86_64_32
 #    relocation error saat simbol berada di atas 4GB (0xFFFFFFFF80000000)
 INCLUDE_DIR = include
+
+# Folder output build — semua artefak final (myos.bin, *.elf, ISO, iso_root)
+# dikumpulkan di build/ supaya project root tetap bersih saat development.
+BUILD_DIR = build
+$(shell mkdir -p $(BUILD_DIR))
 # -MMD -MP: tulis file .d (dependensi header) di samping tiap .o — perubahan
 # header (mis. task.h) memicu rebuild semua .c yang meng-includenya. Tanpa
 # ini, object basi membaca struct dengan layout lama (pernah menggigit:
@@ -121,7 +126,7 @@ OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
 -include $(OBJS:.o=.d) $(LWIP_OBJS:.o=.d)
 
 # File output
-TARGET = myos.bin
+TARGET = $(BUILD_DIR)/myos.bin
 
 # Default target
 all: $(TARGET)
@@ -282,8 +287,8 @@ RUST_OUT  = $(RUST_DIR)/target/$(RUST_TRIP)/release
 .PHONY: rust-apps
 rust-apps:
 	cd $(RUST_DIR) && RUSTFLAGS="-C relocation-model=static -C link-arg=-T../user_apps/app.ld" cargo build --release
-	cp $(RUST_OUT)/hello-slint hello-slint.elf
-	cp $(RUST_OUT)/control-center control-center.elf
+	cp $(RUST_OUT)/hello-slint $(BUILD_DIR)/hello-slint.elf
+	cp $(RUST_OUT)/control-center $(BUILD_DIR)/control-center.elf
 
 .PHONY: rust-clean
 rust-clean:
@@ -338,32 +343,33 @@ clean-apps:
 
 # ISO: tergantung pada kernel + ELF apps (auto-rebuild jika source berubah)
 # Tahap 3: Pembuatan ISO Hybrid (BIOS + UEFI 64-bit)
-boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png logo.png
-	rm -rf iso_root
-	mkdir -p iso_root
-	# Buat folder EFI untuk standar boot UEFI 64-bit
-	mkdir -p iso_root/EFI/BOOT
-	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
+.PHONY: boot_image.iso
+boot_image.iso: $(BUILD_DIR)/boot_image.iso
+
+$(BUILD_DIR)/boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png logo.png
+	rm -rf $(BUILD_DIR)/iso_root
+	mkdir -p $(BUILD_DIR)/iso_root/EFI/BOOT
+	cp limine/BOOTX64.EFI $(BUILD_DIR)/iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf procinfo.elf exit_test.elf kill_test.elf fd_test.elf echo.elf cat.elf pipe_test.elf fork_test.elf hello-slint.elf control-center.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf kyuzen.png logo.png $(BUILD_DIR)/fileman.elf $(BUILD_DIR)/viewer.elf $(BUILD_DIR)/clock.elf $(BUILD_DIR)/calc.elf $(BUILD_DIR)/taskmgr.elf $(BUILD_DIR)/notepad.elf $(BUILD_DIR)/badptr.elf $(BUILD_DIR)/widget_demo.elf $(BUILD_DIR)/desktop.elf $(BUILD_DIR)/terminal.elf $(BUILD_DIR)/settings.elf $(BUILD_DIR)/procinfo.elf $(BUILD_DIR)/exit_test.elf $(BUILD_DIR)/kill_test.elf $(BUILD_DIR)/fd_test.elf $(BUILD_DIR)/echo.elf $(BUILD_DIR)/cat.elf $(BUILD_DIR)/pipe_test.elf $(BUILD_DIR)/fork_test.elf $(BUILD_DIR)/hello-slint.elf $(BUILD_DIR)/control-center.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin $(BUILD_DIR)/iso_root/
 	# Manifest launcher (name=/color=/hidden=), dibaca desktop.elf saat scan
 	# app. Setiap file baru di manifests/ HARUS ditambah juga ke limine.conf.
-	cp manifests/*.app iso_root/
+	cp manifests/*.app $(BUILD_DIR)/iso_root/
 	
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
 		--efi-boot limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label \
-		iso_root -o boot_image.iso
+		$(BUILD_DIR)/iso_root -o $(BUILD_DIR)/boot_image.iso
 		
-	./limine/limine.exe bios-install boot_image.iso
+	./limine/limine.exe bios-install $(BUILD_DIR)/boot_image.iso
 
 # Tahap 4: Boot up QEMU (Dengan Fitur Debugging 64-bit)
 run: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
 		-smp 8 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
 # run + serial stdio: tangkap panic dump ke terminal (bukan cuma framebuffer BSOD)
@@ -372,7 +378,7 @@ run-serial: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000 \
 		-serial stdio
 
@@ -383,7 +389,7 @@ run-wd: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000 \
 		-serial file:serial.log
 
@@ -395,7 +401,7 @@ stress:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
 # Concurrency test: sleep/mutex/semaphore/condvar (Fase 1-3) + test/ sources
@@ -406,7 +412,7 @@ conc:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
 # Heap stress test: overflow guard + canary corruption detection (test/ sources)
@@ -418,7 +424,7 @@ heap-stress:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
 .PHONY: heap-watch
@@ -428,16 +434,18 @@ heap-watch:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000 \
 		-serial stdio
 
 # Bersihkan file hasil build (kernel + lwIP objects)
 clean:
 	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o test/conc_test.o test/heap_stress_test.o
+	rm -rf $(BUILD_DIR)/iso_root
+	rm -f $(BUILD_DIR)/*.elf
 
 # run: boot_image.iso
 # 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 # 		-drive file=disk.img,format=raw,index=0,media=disk \
-# 		-drive file=boot_image.iso,media=cdrom,index=2 \
+# 		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
 # 		-no-reboot -no-shutdown

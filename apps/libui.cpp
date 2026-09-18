@@ -515,13 +515,35 @@ public:
     ui_click_cb enter_cb;   // terminal: Enter diserahkan ke app (tanpa sisip '\n')
     void* enter_data;
 
+    // Terminal: prefix prompt berwarna (gaya shell Linux). Baris yang DIAWALI
+    // `ps1` digambar dengan `ps1_len` karakter pertama memakai `ps1_color`,
+    // sisanya theme.fg. ps1_len == 0 = fitur mati (notepad & co).
+    char ps1[32];
+    int ps1_len;
+    uint32_t ps1_color;
     TextEdit(int width, int height) : len(0), cur(0), scroll_top(0),
-                                      readonly(false), enter_cb(0), enter_data(0) {
+                                      readonly(false), enter_cb(0), enter_data(0),
+                                      ps1_len(0), ps1_color(0xFF7CC7FF) {
         w = width; h = height;
         text[0] = '\0';
         cursor_kind = UI_CURSOR_IBEAM;
     }
     void set_enter(ui_click_cb cb, void* u) { enter_cb = cb; enter_data = u; }
+    void set_prompt_style(const char* prefix, uint32_t color) {
+        ps1_len = 0;
+        if (!prefix) { mark_dirty(); return; }
+        for (; ps1_len < (int)sizeof(ps1) - 1 && prefix[ps1_len]; ps1_len++)
+            ps1[ps1_len] = prefix[ps1_len];
+        ps1[ps1_len] = '\0';
+        ps1_color = color;
+        mark_dirty();
+    }
+    // Baris idx (offset mulai baris) diawali prefix prompt berwarna?
+    bool line_has_ps1(int idx) const {
+        if (ps1_len == 0 || len - idx < ps1_len) return false;
+        for (int i = 0; i < ps1_len; i++) if (text[idx + i] != ps1[i]) return false;
+        return true;
+    }
     // Readonly (output terminal) tak boleh mencuri fokus dari input.
     virtual bool focusable() override { return !readonly; }
 
@@ -678,9 +700,11 @@ public:
         int vy = y;
         while (vy < y + h && idx < len) {
             int cx = x + 4;
+            bool ps1_here = line_has_ps1(idx);   // prompt di baris ini → prefix berwarna
             for (int c = 0; c < colw && idx < len && text[idx] != '\n'; c++, idx++) {
                 char t[2] = { text[idx], '\0' };
-                p.text(t, cx, vy + 1, p.theme.fg);
+                uint32_t col = (ps1_here && c < ps1_len) ? ps1_color : p.theme.fg;
+                p.text(t, cx, vy + 1, col);
                 cx += CHAR_W;
             }
             if (idx < len && text[idx] == '\n') idx++;
@@ -2357,6 +2381,10 @@ void ui_textedit_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata) 
 
 void ui_textedit_append(ui_widget_t* widget, const char* text) {
     reinterpret_cast<ui::TextEdit*>(widget)->append(text);
+}
+
+void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, uint32_t color) {
+    reinterpret_cast<ui::TextEdit*>(widget)->set_prompt_style(prefix, color);
 }
 
 void ui_textedit_clear(ui_widget_t* widget) {

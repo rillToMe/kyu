@@ -124,9 +124,9 @@ Typing any app name (`clock`, `calc`, `fileman`…) execs it in place;
 
 ### Build & Run
 ```bash
-make                # 1. compile kernel → myos.bin
-make apps           # 2. compile user apps → *.elf
-make boot_image.iso # 3. package hybrid BIOS+UEFI ISO
+make                # 1. compile kernel → build/myos.bin
+make apps           # 2. compile user apps → build/*.elf
+make boot_image.iso # 3. package hybrid BIOS+UEFI ISO → build/boot_image.iso
 make run            # 4. boot in QEMU (-cpu max -m 1G -smp 4)
 ```
 
@@ -135,9 +135,9 @@ make run            # 4. boot in QEMU (-cpu max -m 1G -smp 4)
 
 | Target | Purpose |
 | --- | --- |
-| `make` / `make all` | Compile kernel (`myos.bin`) |
-| `make apps` | Compile all user apps (`user_apps/*.elf`) |
-| `make boot_image.iso` | Kernel + apps + Limine → bootable ISO |
+| `make` / `make all` | Compile kernel (`build/myos.bin`) |
+| `make apps` | Compile all user apps (`build/*.elf`) |
+| `make boot_image.iso` | Kernel + apps + Limine → bootable ISO (`build/boot_image.iso`) |
 | `make run` | Build & boot QEMU with a virtual disk |
 | `make stress` | PMM stress test build + run |
 | `make conc` | Concurrency test build + run (mutex/sem/condvar) |
@@ -178,6 +178,7 @@ On a fresh disk, Kyuzen runs a one-time setup asking you to **create the root pa
 | `third_party/net/lwip/` | lwIP TCP/IP stack (vendored) |
 | `DOCUMENTATION/` | Design docs, troubleshooting post-mortems, screenshots |
 | `limine/` | Pre-built bootloader binaries |
+| `build/` | Build output (gitignored): `myos.bin`, `*.elf` apps, ISO, `iso_root/` staging |
 
 ## 📚 Documentation
 

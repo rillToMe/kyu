@@ -33,7 +33,8 @@ LD    = ld.lld
 ROOT_DIR  = ..
 APPS_DIR  = $(ROOT_DIR)/apps
 INC_DIR   = $(ROOT_DIR)/include
-OUT_DIR   = $(ROOT_DIR)
+OUT_DIR   = $(ROOT_DIR)/build
+$(shell mkdir -p $(OUT_DIR))
 
 # --- Flags Compiler 64-bit ---
 # -MMD -MP: header dependency tracking (pola Makefile top-level) — perubahan

@@ -1,13 +1,9 @@
 #include "tty.h"
+#include "display.h"
 #include <stddef.h>
 #include <stdint.h>
 
 // 1. Impor variabel dan fungsi GUI dari kernel.c
-extern uint32_t* fb_ptr;
-extern uint32_t fb_width;
-extern uint32_t fb_height;
-extern uint32_t fb_pitch;
-
 extern void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color);
 extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
 
@@ -22,8 +18,7 @@ extern void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t hei
 // di layar tertutup jendela desktop/compositor.
 extern void serial_putc(char c);
 
-// tty_scroll harus scroll base_canvas (bukan backbuffer yang di-overwrite compositor tiap frame!)
-extern uint32_t base_canvas[1920 * 1080];
+extern uint32_t* base_canvas;
 
 // 2. Konstanta Terminal GUI
 #define FONT_WIDTH 8
@@ -54,8 +49,14 @@ int cursor_state = 1; // 1 = Menyala, 0 = Mati
 static uint32_t tty_fg = FG_COLOR;
 void tty_set_fg(uint32_t color) { tty_fg = color; }
 
-static uint32_t tty_cols(void) { return fb_width / FONT_WIDTH; }
-static uint32_t tty_rows(void) { return fb_height / FONT_HEIGHT; }
+static uint32_t tty_cols(void) {
+    const display_mode_t* m = display_get_mode();
+    return m ? m->width / FONT_WIDTH : 0;
+}
+static uint32_t tty_rows(void) {
+    const display_mode_t* m = display_get_mode();
+    return m ? m->height / FONT_HEIGHT : 0;
+}
 
 static char* tty_hist_line(uint32_t logical) {
     return tty_history[logical % TTY_HISTORY_LINES];
@@ -85,29 +86,33 @@ void tty_erase_cursor() {
 
 // --- FITUR SCROLLING LAYAR GUI ---
 void tty_scroll() {
-    uint32_t copy_height = fb_height - FONT_HEIGHT;
-    uint32_t stride = fb_pitch / 4; // pixels per row
+    const display_mode_t* m = display_get_mode();
+    if (!m || !base_canvas) return;
+    uint32_t copy_height = m->height - FONT_HEIGHT;
+    uint32_t stride = m->pitch_bytes / 4; // pixels per row
     for (uint32_t y = 0; y < copy_height; y++) {
-        for (uint32_t x = 0; x < fb_width; x++) {
+        for (uint32_t x = 0; x < m->width; x++) {
             // Scroll base_canvas, bukan backbuffer!
             // compositor_flush() copy base_canvas -> backbuffer setiap frame,
             // jadi scroll di backbuffer langsung hilang.
             base_canvas[(y * stride) + x] = base_canvas[((y + FONT_HEIGHT) * stride) + x];
         }
     }
-    draw_rect(0, fb_height - FONT_HEIGHT, fb_width, FONT_HEIGHT, BG_COLOR);
-    screen_mark_dirty(0, 0, fb_width, fb_height);
+    draw_rect(0, m->height - FONT_HEIGHT, m->width, FONT_HEIGHT, BG_COLOR);
+    screen_mark_dirty(0, 0, m->width, m->height);
     terminal_row--;
 }
 
 // Repaint seluruh layar dari ring sesuai view offset. Baris logis teratas yang
 // terlihat = line_count - terminal_row - view_offset.
 static void tty_render_view(void) {
+    const display_mode_t* m = display_get_mode();
+    if (!m) return;
     uint32_t rows = tty_rows();
     int32_t first = (int32_t)tty_line_count - (int32_t)terminal_row - tty_view_offset;
 
     for (uint32_t sr = 0; sr < rows; sr++) {
-        draw_rect(0, sr * FONT_HEIGHT, fb_width, FONT_HEIGHT, BG_COLOR);
+        draw_rect(0, sr * FONT_HEIGHT, m->width, FONT_HEIGHT, BG_COLOR);
         int32_t logical = first + (int32_t)sr;
         if (logical < 0 || (uint32_t)logical > tty_line_count) continue;
         if (tty_line_count >= TTY_HISTORY_LINES &&
@@ -191,7 +196,8 @@ void terminal_putchar(char c) {
 }
 
 void tty_clear(void) {
-    draw_rect(0, 0, fb_width, fb_height, BG_COLOR);
+    const display_mode_t* m = display_get_mode();
+    if (m) draw_rect(0, 0, m->width, m->height, BG_COLOR);
     terminal_row = 0;
     terminal_column = 0;
     tty_line_count = 0;

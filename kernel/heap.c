@@ -88,7 +88,7 @@ static void dump_corruption(heap_block_t* bad) {
         serial_print("\n");
     }
     serial_print("=== Cari entri ptr+size PALING DEKAT ke 'block' di atas = buffer overflow. ");
-    serial_print("ra0/ra1/ra2 lewat: nm myos.bin | sort ===\n\n");
+    serial_print("ra0/ra1/ra2 lewat: nm build/myos.bin | sort ===\n\n");
 
     // Walk list to find the block physically before `bad` (prev in address order).
     // Guard every pointer before dereferencing — next-pointers may be garbage.

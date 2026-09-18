@@ -62,9 +62,7 @@ extern int kwm_create_desktop(void);
 extern int kwm_set_title(int win_id, const char* title);
 extern int kwm_get_windows(kwm_window_info_t*, int);
 extern int kwm_activate_window(int win_id);
-// Phase 10 — sys_get_screen_size (syscall 63); didefinisikan di kernel/gfx/fb.c
-extern uint32_t fb_width;
-extern uint32_t fb_height;
+// Phase 10 — sys_get_screen_size (syscall 63); sumber: display_get_mode()
 
 #include "timer.h"  // timer_get_ticks(), timer_get_cpu_usage()
 
@@ -1166,9 +1164,15 @@ void syscall_handler(registers_t *r) {
         // Menulis 8 byte ke rbx dulu menimpa 4 byte SETELAH variabel w milik
         // app (di settings.c itu variabel lain di stack → pointer widget
         // rusak → #PF). copy_to_user memvalidasi range sendiri.
-        uint32_t w = fb_width, h = fb_height;
-        ret_val = (copy_to_user(&uc, r->rbx, &w, 4) == 0 &&
-                   copy_to_user(&uc, r->rcx, &h, 4) == 0) ? 0 : (uint64_t)-1;
+        // Sumber: mode display authoritative (bukan global fb_*).
+        const display_mode_t* m = display_get_mode();
+        if (!m) {
+            ret_val = (uint64_t)-1;
+        } else {
+            uint32_t w = m->width, h = m->height;
+            ret_val = (copy_to_user(&uc, r->rbx, &w, 4) == 0 &&
+                       copy_to_user(&uc, r->rcx, &h, 4) == 0) ? 0 : (uint64_t)-1;
+        }
     }
     else if (syscall_num == 64) { // sys_mkdir(path) — buat folder KyuzenFS
         char kf[UC_MAX_FNAME];

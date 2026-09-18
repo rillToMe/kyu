@@ -216,9 +216,9 @@ Semua artefak ada di [`Resolve/26-07-26/`](../../Resolve/26-07-26/). Untuk masal
    (nilai == `HEAP_MAGIC`) dan corruptor langsung terpisah di log.
 5. **Page-table walk di handler**: cetak `pte` + `pa` target. Inilah yang
    membuktikan halaman ROM — tanpa ini kita masih menebak-nebak "penulis".
-6. **Resolve RIP → fungsi**: `llvm-nm myos.bin | sort` (myos.bin adalah ELF64)
+6. **Resolve RIP → fungsi**: `llvm-nm build/myos.bin | sort` (myos.bin adalah ELF64)
    lalu cari simbol terdekat ≤ RIP. Disassembly: `llvm-objdump -d
-   --start-address=... --stop-address=... myos.bin`.
+   --start-address=... --stop-address=... build/myos.bin`.
 7. **Matriks eliminasi**: `-smp 1` vs `-smp 4` (race SMP?), tanpa `-nic`
    (DMA?), dua build berbeda (garbage identik → data tetap → curigai ROM/mapping
    ketimbang penulis).

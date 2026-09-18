@@ -235,22 +235,23 @@ int kwm_create_desktop(void) {
             spinlock_unlock_irqrestore(&kwm_lock, flags);
             return -1;   // desktop sudah ada
         }
-    if (fb_width == 0 || fb_height == 0) {
+    const display_mode_t* mode = display_get_mode();
+    if (!mode || mode->width == 0 || mode->height == 0) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
         return -1;
     }
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!kwm_windows[i].active) {
             DisplayBuffer* canvas =
-                display_buffer_create(fb_width, fb_height, COLOR_FORMAT_XRGB8888);
+                display_buffer_create(mode->width, mode->height, COLOR_FORMAT_XRGB8888);
             if (!canvas) {
                 spinlock_unlock_irqrestore(&kwm_lock, flags);
                 return -1;
             }
             kwm_windows[i].x = 0;
             kwm_windows[i].y = 0;
-            kwm_windows[i].width = fb_width;
-            kwm_windows[i].height = fb_height;
+            kwm_windows[i].width = mode->width;
+            kwm_windows[i].height = mode->height;
             kwm_windows[i].canvas = canvas;
             kwm_windows[i].owner_task = smp_current_task_id();
             kwm_windows[i].z_index = 0;          // selalu paling bawah
@@ -259,7 +260,7 @@ int kwm_create_desktop(void) {
             kwm_windows[i].title[0] = '\0';
             kwm_windows[i].active = 1;
             spinlock_unlock_irqrestore(&kwm_lock, flags);
-            screen_mark_dirty(0, 0, fb_width, fb_height);
+            screen_mark_dirty(0, 0, mode->width, mode->height);
             return i;
         }
     }
@@ -666,16 +667,17 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         int32_t new_x = mouse_px - drag_offset_x;
         int32_t new_y = mouse_py - drag_offset_y;
 
-        // Phase 5C: clamp terhadap FRAME (konten + titlebar).
+        // Phase 5C: clamp terhadap FRAME (konten + titlebar) dan mode aktif.
+        const display_mode_t* mode = display_get_mode();
         uint32_t fw = kwm_windows[drag_win].width;
         uint32_t fh = kwm_windows[drag_win].height + KWM_TITLEBAR_H;
 
         if (new_x < 0) new_x = 0;
         if (new_y < 0) new_y = 0;
-        if (new_x + (int32_t)fw > (int32_t)fb_width)
-            new_x = (int32_t)fb_width  - (int32_t)fw;
-        if (new_y + (int32_t)fh > (int32_t)fb_height)
-            new_y = (int32_t)fb_height - (int32_t)fh;
+        if (mode && new_x + (int32_t)fw > (int32_t)mode->width)
+            new_x = (int32_t)mode->width  - (int32_t)fw;
+        if (mode && new_y + (int32_t)fh > (int32_t)mode->height)
+            new_y = (int32_t)mode->height - (int32_t)fh;
 
         int32_t old_x = kwm_windows[drag_win].x;
         int32_t old_y = kwm_windows[drag_win].y;

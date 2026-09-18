@@ -4,10 +4,7 @@
 #include <stdint.h>
 
 // Impor kanvas dan resolusi dari kernel.c
-extern uint32_t* fb_ptr;
-extern uint32_t fb_width;
-extern uint32_t fb_height;
-extern uint32_t fb_pitch;
+#include "display.h"
 // Posisi awal kursor (Tengah layar)
 int32_t mouse_x = 512; 
 int32_t mouse_y = 384;
@@ -119,8 +116,11 @@ void mouse_handler() {
 
             if (mouse_x < 0) mouse_x = 0;
             if (mouse_y < 0) mouse_y = 0;
-            if (mouse_x > (int32_t)(fb_width - 12))  mouse_x = fb_width - 12;
-            if (mouse_y > (int32_t)(fb_height - 16)) mouse_y = fb_height - 16;
+            const display_mode_t* m = display_get_mode();
+            if (m) {
+                if (mouse_x > (int32_t)(m->width - 12))  mouse_x = m->width - 12;
+                if (mouse_y > (int32_t)(m->height - 16)) mouse_y = m->height - 16;
+            }
 
             // --- DETEKSI KLIK (edge detect) ---
             uint8_t left_click  = mouse_byte[0] & 0x01;

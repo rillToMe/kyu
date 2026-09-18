@@ -156,6 +156,9 @@ void main(void) {
     io.poll_input = term_poll_input;
     g_sh = shell_init(&io);
     shell_build_prompt(g_prompt, sizeof(g_prompt), "@kyuzen:~$ ");
+    // Prompt berwarna (gaya shell Linux): "user@kyuzen:~$ " biru muda,
+    // kontras terhadap output putih di baris yang sama.
+    ui_textedit_set_prompt_style(out, g_prompt, 0x7CC7FF);
 
     term_show("KyuzenOS Terminal\n");
     term_show("Type 'help' for available commands.\n\n");

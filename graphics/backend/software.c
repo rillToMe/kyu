@@ -31,11 +31,6 @@ void software_backend_set_fb(uint32_t* fb, uint32_t w, uint32_t h, uint32_t pitc
     g_fb = fb; g_fb_w = w; g_fb_h = h; g_fb_pitch4 = pitch_bytes / 4;
 }
 
-void software_backend_get_size(uint32_t* w, uint32_t* h) {
-    if (w) *w = g_fb_w;
-    if (h) *h = g_fb_h;
-}
-
 static struct ghal_surface* sw_surface_create(uint32_t w, uint32_t h, ghal_format_t fmt) {
     if (w == 0 || h == 0) return NULL;
     // Cek overflow width*height*4 (pola audit 5.6).
@@ -175,6 +170,27 @@ static void sw_present(ghal_surface_t* s, const ghal_rect_t* rect) {
 static int software_init(void) { return 0; }
 static void software_shutdown(void) {}
 
+// --- Display mode (boot-fixed: framebuffer Limine adalah scanout fisik) ---
+// Software backend tidak bisa mengubah mode hardware; mode_set selalu ditolak
+// (tanpa GHAL_CAP_MODE_SET). State lama selalu utuh.
+static int software_mode_get(display_mode_t* out) {
+    if (!out || g_fb_w == 0 || g_fb_h == 0) return -1;
+    out->width       = g_fb_w;
+    out->height      = g_fb_h;
+    out->pitch_bytes = g_fb_pitch4 * 4;
+    out->bpp         = 32;
+    out->format      = DISPLAY_FMT_XRGB8888;
+    return 0;
+}
+
+static int software_mode_enumerate(display_mode_t* out, uint32_t max) {
+    if (!out || max == 0) return -1;
+    if (software_mode_get(&out[0]) != 0) return -1;
+    return 1;   // satu mode: mode framebuffer yang dinegosiasikan Limine
+}
+
+static int software_mode_set(const display_mode_t* mode) { (void)mode; return -1; }
+
 const ghal_backend_ops_t software_backend_ops = {
     .name           = "software",
     .capabilities   = GHAL_CAP_PARTIAL_FLUSH,
@@ -189,4 +205,8 @@ const ghal_backend_ops_t software_backend_ops = {
     .present        = sw_present,
     .cursor_update  = NULL,
     .cursor_move    = NULL,
+    .mode_get       = software_mode_get,
+    .mode_enumerate = software_mode_enumerate,
+    .mode_set       = software_mode_set,
+    .mode_changed   = NULL,
 };

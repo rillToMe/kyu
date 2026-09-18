@@ -133,6 +133,11 @@ void ui_textedit_clear(ui_widget_t* widget);
 // Terminal shell: Enter memanggil cb (submit) alih-alih menyisip newline; kursor
 // terkunci di baris perintah terakhir sehingga output lama tidak bisa diedit.
 void ui_textedit_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+// Terminal: baris yang DIAWALI `prefix` digambar dengan `prefix` berwarna
+// `color` (gaya prompt shell Linux), sisanya tetap theme.fg. prefix dicopy
+// oleh toolkit; 0/"" mematikan highlight. Dipakai terminal.c agar prompt
+// "user@kyuzen:~$ " kontras terhadap output.
+void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, uint32_t color);
 
 // --- Layout ---
 // VBox: susun anaknya vertikal (masing-masing setinggi ukurannya,
