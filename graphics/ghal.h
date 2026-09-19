@@ -14,6 +14,16 @@
 //   - compositor tidak pernah memanggil backend secara langsung.
 //   - ghal_surface_t adalah OPAQUE: tiap backend mendefinisikan
 //     struct konkretnya sendiri di file .c-nya.
+//
+// API FREEZE (2D project Phase 24) — kontrak stabil, bukan sketsa:
+//   - ghal_surface_t = buffer + surface digabung (arsitektur pra-ada,
+//     dipertahankan per Rule 3; bukan split gpu_buffer/gpu_surface).
+//   - fence = present_fence/fence_pending/fence_wait (HAL) dengan
+//     backing internal per-backend (intel_fence_t seqno).
+//   - Aturan ubah: append-only (tambah op di akhir struct + NULL-check
+//     di dispatch), tanpa reorder field, tanpa bocor tipe Intel ke sini,
+//     mirror userlib.h (gpu_stats_t) wajib sinkron — dikunci oleh
+//     _Static_assert di kernel/syscall.c.
 // ============================================================
 
 #include <stdint.h>
@@ -52,7 +62,7 @@ typedef struct {
 } ghal_gpu_stats_t;
 
 typedef struct {
-    const char* name;                        // "software" / "virtio-gpu"
+    const char* name;                        // "software" / "virtio-gpu" / "intel"
     uint32_t    capabilities;                // bitmask GHAL_CAP_*
 
     int  (*init)(void);                      // 0 sukses, <0 gagal
@@ -112,6 +122,14 @@ typedef struct {
     int  (*mode_enumerate)(display_mode_t* out, uint32_t max);
     int  (*mode_set)(const display_mode_t* mode);
     void (*mode_changed)(void);
+
+    // --- Acceleration info (2D project Phase 15, opsional) ---
+    // acceleration_enabled: 1 = fill/blit jalan di HW engine.
+    //   NULL = tidak (software / engine tak tersedia / fallback).
+    // engine_name: "BCS" / ... NULL = "none".
+    // Pola sama seperti cursor/gpu_stats ops: NULL = tidak ada.
+    int         (*acceleration_enabled)(void);
+    const char* (*engine_name)(void);
 } ghal_backend_ops_t;
 
 // --- API publik dipanggil compositor ---
@@ -167,6 +185,13 @@ void ghal_stats_dump(void);
 
 // Diagnostics: pesan error statis dari operasi terakhir yang gagal.
 const char* ghal_last_error(void);
+
+// --- Acceleration info (2D project Phase 15) ---
+// Backend-agnostic: compositor tak perlu tahu backend aktif.
+int         ghal_acceleration_enabled(void);  // 1 bila fill/blit HW aktif
+const char* ghal_engine_name(void);           // "BCS" / ... / "none"
+// Diagnostik format roadmap (TTY + serial). Aman kapan pun setelah init.
+void        ghal_diag_dump(void);
 
 // Ukuran scanout yang dipilih backend aktif (resolusi output). Software backend
 // memakai ukuran framebuffer Limine; virtio-gpu memakai pmodes[0]. Compositor

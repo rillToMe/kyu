@@ -13,6 +13,8 @@
 // ============================================================
 
 #include "ghal.h"
+#include "backend/intel_bench.h"
+#include "backend/intel_robust.h"
 #include "spinlock.h"
 #include <stddef.h>   // NULL
 
@@ -23,10 +25,11 @@ static const ghal_backend_ops_t* g_active;
 static spinlock_t g_lock = SPINLOCK_INIT;
 static const char* g_last_error = "";
 
-// Didefinisikan di graphics/select.c (backend software) dan
-// graphics/backend/virtio_gpu.c (Phase 2A). software tidak pernah gagal.
+// Didefinisikan di graphics/backend/software.c, virtio_gpu.c, intel_init.c.
+// software tidak pernah gagal.
 extern const ghal_backend_ops_t software_backend_ops;
 extern const ghal_backend_ops_t virtio_gpu_backend_ops;
+extern const ghal_backend_ops_t intel_backend_ops;
 
 int ghal_register_backend(const ghal_backend_ops_t* ops) {
     if (ops == NULL || ops->init == NULL || ops->surface_create == NULL ||
@@ -55,10 +58,11 @@ int ghal_init(void) {
         return 0;
     }
 
-    // Urutan tetap (roadmap §6.1/§6.10): virtio-gpu dulu, software fallback.
+    // Urutan tetap: virtio-gpu → intel → software fallback.
     const ghal_backend_ops_t* order[GHAL_MAX_BACKENDS];
     int n = 0;
     order[n++] = &virtio_gpu_backend_ops;   // coba dulu
+    order[n++] = &intel_backend_ops;         // Intel iGPU via PCI
     order[n++] = &software_backend_ops;     // fallback tak pernah gagal
 
     for (int i = 0; i < n; i++) {
@@ -67,6 +71,9 @@ int ghal_init(void) {
             g_active = ops;
             g_last_error = "";
             spinlock_unlock_irqrestore(&g_lock, flags);
+            ghal_diag_dump();   // Phase 15: roadmap-format GPU report
+            intel_bench_run();  // Phase 20: always-on benchmark
+            intel_robust_selftest(); // Phase 22: failure-path guards
             return 0;
         }
     }
@@ -96,12 +103,48 @@ const char* ghal_last_error(void) {
     return g_last_error;
 }
 
+// --- Acceleration info (Phase 15). NULL-safe, backend-agnostic. ---
+
+int ghal_acceleration_enabled(void) {
+    if (!g_active || !g_active->acceleration_enabled) return 0;
+    return g_active->acceleration_enabled() ? 1 : 0;
+}
+
+const char* ghal_engine_name(void) {
+    if (!g_active || !g_active->engine_name) return "none";
+    const char* e = g_active->engine_name();
+    return e ? e : "none";
+}
+
+// Diagnostik format roadmap §Phase 15 (TTY + serial).
+void ghal_diag_dump(void) {
+    extern void kprint(const char* s);
+    extern void serial_print(const char* s);
+    const char* be = ghal_active_backend_name();
+    int acc = ghal_acceleration_enabled();
+    const char* eng = ghal_engine_name();
+    kprint("GPU:\n  backend: ");
+    kprint(be);
+    kprint(acc ? "\n  acceleration: enabled\n  engine: "
+               : "\n  acceleration: disabled\n  engine: ");
+    kprint(eng);
+    kprint("\n");
+    serial_print("GPU:\n  backend: ");
+    serial_print(be);
+    serial_print(acc ? "\n  acceleration: enabled\n  engine: "
+                     : "\n  acceleration: disabled\n  engine: ");
+    serial_print(eng);
+    serial_print("\n");
+}
+
 // --- framebuffer & scanout size ---
 extern void software_backend_set_fb(uint32_t* fb, uint32_t w, uint32_t h, uint32_t pitch_bytes);
+extern void intel_backend_set_fb(uint32_t* fb, uint32_t w, uint32_t h, uint32_t pitch_bytes);
 
 void ghal_set_framebuffer(uint32_t* fb, uint32_t width, uint32_t height,
                           uint32_t pitch_bytes) {
     software_backend_set_fb(fb, width, height, pitch_bytes);
+    intel_backend_set_fb(fb, width, height, pitch_bytes);
 }
 
 void ghal_scanout_size(uint32_t* w, uint32_t* h) {
