@@ -25,6 +25,20 @@ static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile ( "outw %0, %1" : : "a"(val), "Nd"(port) );
 }
 
+// Baca `count` word (16-bit) dari port ke buffer memori memakai SATU instruksi
+// string I/O (`rep insw`). Dipakai jalur baca ATA batch di drivers/ata.c.
+//
+// WAJIB `cld` di depan: arah string I/O ditentukan flag DF — kalau DF=1, data
+// ditulis MUNDUR dari buffer (korupsi memori senyap). ABI x86_64 mensyaratkan
+// DF=0, tapi instruksi ini tidak boleh mengasumsikannya (mis. dipanggil dari
+// konteks ISR yang belum menormalkan flag).
+static inline void insw_rep(uint16_t port, void* buf, uint32_t count) {
+    __asm__ volatile ( "cld; rep insw"
+                       : "+D"(buf), "+c"(count)
+                       : "d"(port)
+                       : "memory" );
+}
+
 // INI YANG BARU UNTUK PCI (32-Bit / Long)
 static inline void outl(uint16_t port, uint32_t val) {
     __asm__ volatile ( "outl %0, %1" : : "a"(val), "Nd"(port) );

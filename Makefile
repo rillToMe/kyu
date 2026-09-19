@@ -79,7 +79,13 @@ $(shell mkdir -p $(BUILD_DIR))
 # header (mis. task.h) memicu rebuild semua .c yang meng-includenya. Tanpa
 # ini, object basi membaca struct dengan layout lama (pernah menggigit:
 # task_t tambah field, scheduler membaca tasks[] dengan stride basi).
-CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw -Ilibs/color/include
+# Jalur baca ATA (Stage 1): 0 = LEGACY (default, apa adanya), 1 = BATCH.
+# Implementasi: drivers/ata.c + include/ata.h. Desain: DOCUMENTATION/design/
+# ata-driver-redesign-proposal.md. Dua jalur selalu dikompilasi; yang ini
+# hanya memilih default saat boot — jalur lama tetap ada sebagai fallback.
+# Contoh pakai: make ATA_READ_PATH_DEFAULT=1 boot_image.iso
+ATA_READ_PATH_DEFAULT ?= 0
+CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw -Ilibs/color/include -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT)
 
 # Flags compiler untuk unit lwIP:
 #   - Mewarisi semua flag kernel (freestanding, mcmodel, mno-red-zone, dll.)
@@ -109,7 +115,7 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
-                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c,\
+                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c test/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
@@ -313,7 +319,7 @@ mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 	$(HOSTCC) -O2 -Wall -Wextra -iquote include -o $@ tools/mkfs.kyuzenfs.c
 
 clean-tool:
-	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
+	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test test/ata_devmodel_test \
 	      test/panic_test.exe test/color_test test/color_test.exe test/color_utils_host.o \
 	      test/textedit_test test/textedit_test.exe \
 	      test/libui_theme_test test/libui_theme_test.exe testimg.img
@@ -338,6 +344,34 @@ test/kyuzenfs_xcheck: test/kyuzenfs_xcheck.c $(KFS4_HDRS) $(KFS4_SRCS)
 .PHONY: test-panic
 test-panic: test/panic_test
 	./test/panic_test
+
+# Test ekuivalensi jalur baca ATA (Stage 1): model device ATA di host,
+# jalur LEGACY vs BATCH (byte-identik + urutan sektor + hitung perintah +
+# error/timeout/out-of-range). Image disk.img dipakai READ-ONLY kalau ada.
+# Jalankan: make test-ata
+# Ubah ATA_READ_PATH_DEFAULT WAJIB mengompilasi ulang driver ATA (make hanya
+# melihat timestamp file, bukan isi variabel — tanpa ini `make
+# ATA_READ_PATH_DEFAULT=1` tidak mengompilasi apa pun). Stamp ini jadi
+# prerequisite drivers/ata.o dan hanya ditulis ulang saat nilainya berubah.
+ATA_FLAG_STAMP = $(BUILD_DIR)/ata_read_path_default.stamp
+FORCE:
+
+$(ATA_FLAG_STAMP): FORCE
+	@mkdir -p $(BUILD_DIR)
+	@printf '%s' "$(ATA_READ_PATH_DEFAULT)" | cmp -s - $@ || printf '%s' "$(ATA_READ_PATH_DEFAULT)" > $@
+
+drivers/ata.o: $(ATA_FLAG_STAMP)
+test/ata_devmodel_test: $(ATA_FLAG_STAMP)
+
+.PHONY: test-ata
+test-ata: test/ata_devmodel_test
+	./test/ata_devmodel_test
+	@if [ -f disk.img ]; then ./test/ata_devmodel_test disk.img; fi
+
+test/ata_devmodel_test: test/ata_devmodel_test.c test/atamock/io.h \
+                         drivers/ata.c include/ata.h include/io.h
+	$(HOSTCC) -O1 -Wall -Wextra -iquote test/atamock -iquote test -iquote include \
+	         -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT) -o $@ test/ata_devmodel_test.c
 
 test/panic_test: test/panic_test.c kernel/panic.c kernel/panic_log.c kernel/crashdump.c drivers/acpi.c \
                  include/panic.h include/crashdump.h include/acpi.h include/display.h include/task.h include/timer.h
