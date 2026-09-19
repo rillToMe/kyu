@@ -109,7 +109,7 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
-                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c,\
+                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c,\
                         $(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
@@ -295,7 +295,8 @@ mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 	$(HOSTCC) -O2 -Wall -Wextra -iquote include -o $@ tools/mkfs.kyuzenfs.c
 
 clean-tool:
-	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck testimg.img
+	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
+	      test/panic_test.exe testimg.img
 
 # --- Cross-check: image buatan mkfs host harus termount oleh parser kernel ---
 # Target memformat testimg.img via ./mkfs.kyuzenfs lalu menjalankan test host
@@ -309,6 +310,17 @@ test-kyuzenfs-xcheck: test/kyuzenfs_xcheck mkfs.kyuzenfs
 
 test/kyuzenfs_xcheck: test/kyuzenfs_xcheck.c $(KFS4_HDRS) $(KFS4_SRCS)
 	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_xcheck.c
+
+# --- Host test panic handler (BSOD): diagnostik, lockdown, auto-reboot ---
+# panic.c di-include dengan -DPANIC_HOST_TEST (instruksi privileged → stub),
+# jadi alur countdown → flush FS → reboot bisa diverifikasi tanpa QEMU.
+# Jalankan: make test-panic
+.PHONY: test-panic
+test-panic: test/panic_test
+	./test/panic_test
+
+test/panic_test: test/panic_test.c kernel/panic.c include/panic.h include/display.h include/task.h include/timer.h
+	$(HOSTCC) -DPANIC_HOST_TEST -O1 -Wall -iquote test -iquote include -o $@ test/panic_test.c
 
 # --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
 # Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer

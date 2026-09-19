@@ -32,6 +32,7 @@ void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
 // --- Compositor dirty-region (kernel/gfx/compositor.c) ---
 void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height);
 void compositor_flush(void);
+void compositor_panic_cursor_off(void);   // sembunyikan kursor hw saat panic
 
 // Phase 9 — bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
 // Dipanggil dari syscall 58; validator range di sini (syscall.c juga).

@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include "timer.h"
 #include "display.h"
+#include "panic.h"
 
 // --- Dependencies dari subsistem lain ---
 extern void draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
@@ -22,6 +23,7 @@ extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
 extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
 extern void tty_blink_cursor(void);
 extern void compositor_flush(void);
+extern void compositor_panic_cursor_off(void);
 
 // --- Network stack dependencies ---
 // e1000_poll() dipanggil setiap tick untuk memproses paket masuk dari NIC.
@@ -44,6 +46,7 @@ static uint64_t next_uptime_update  = 0;  // ms target: kapan uptime di-refresh
 
 static void cb_visual(uint32_t tick) {
     (void)tick; // Tidak pakai raw tick — pakai ms timestamp
+    if (panic_is_locked()) return;   // BSOD: jangan gambar HUD di atasnya
     const display_mode_t* m = display_get_mode();
     if (!m || m->width == 0) return;
 
@@ -94,6 +97,7 @@ static uint64_t next_cursor_blink = 0;
 
 static void cb_cursor(uint32_t tick) {
     (void)tick;
+    if (panic_is_locked()) return;   // BSOD: jangan blink kursor TTY
     uint64_t now = timer_get_ms();
 
     if (now >= next_cursor_blink) {
@@ -108,6 +112,12 @@ static void cb_cursor(uint32_t tick) {
 // ============================================================
 static void cb_flush(uint32_t tick) {
     (void)tick;
+    if (panic_is_locked()) {
+        // BSOD: layar panic tidak boleh ditimpa — tapi kursor hardware tetap
+        // harus dipindah keluar layar (plane device, bukan framebuffer).
+        compositor_panic_cursor_off();
+        return;
+    }
     compositor_flush();
 }
 

@@ -5,6 +5,7 @@
 
 // Impor kanvas dan resolusi dari kernel.c
 #include "display.h"
+#include "panic.h"    // lockdown: BSOD tidak boleh terganggu gerakan mouse
 // Posisi awal kursor (Tengah layar)
 int32_t mouse_x = 512; 
 int32_t mouse_y = 384;
@@ -94,6 +95,11 @@ static uint8_t last_right_click = 0;
 static spinlock_t mouse_state_lock = SPINLOCK_INIT;
 
 void mouse_handler() {
+    // PANIC LOCKDOWN: saat BSOD aktif, jangan update posisi kursor atau
+    // mengirim event ke app — kalau tidak, redraw desktop menimpa layar
+    // panic dan gejalanya tampak seperti "glitch lalu hilang".
+    if (panic_is_locked()) return;
+
     uint8_t status = inb(0x64);
     uint8_t packet_size = mouse_has_wheel ? 4 : 3;
     int8_t wheel_z = 0;

@@ -7,6 +7,7 @@
 #include "aa_math.h"
 #include "heap.h"     // kmalloc/kfree — buffer image kursor HW (§9.4)
 #include "ghal.h"     // Phase 2B: present lewat Graphics HAL
+#include "panic.h"    // lockdown: hentikan present saat BSOD aktif
 
 extern int32_t mouse_x;
 extern int32_t mouse_y;
@@ -551,6 +552,7 @@ static ghal_surface_t* g_hw_cursor_surface;   // resource kursor (owner composit
 static uint32_t*       g_cursor_img_buf;      // 64x64 ARGB scratch
 static int             g_hw_cursor_active = 0;
 static int             g_hw_cursor_kind = -1;
+static int             g_panic_cursor_hidden = 0;   // kursor hw sudah di-off saat panic
 
 static void hw_cursor_fill(int kind) {
     const uint8_t (*bm)[12] = kind == 0 ? cursor_bitmap
@@ -657,7 +659,26 @@ void compositor_ghal_init(void) {
     compositor_hw_cursor_init();
 }
 
+// Sembunyikan plane kursor hardware SEKALI saat panic lockdown.
+// Dipanggil dari cb_flush (timer IRQ) — bukan dari compositor_flush, karena
+// compositor_flush sudah tidak pernah dipanggil lagi setelah panic. Tanpa ini
+// kursor hw tetap mengapung beku di atas BSOD (framebuffer software tidak bisa
+// menghapusnya; plane device yang harus dipindah).
+void compositor_panic_cursor_off(void) {
+    if (g_panic_cursor_hidden) return;
+    g_panic_cursor_hidden = 1;
+    if (g_hw_cursor_active) ghal_cursor_move(-64, -64);
+}
+
 void compositor_flush() {
+    // PANIC LOCKDOWN: BSOD digambar langsung ke framebuffer. Jangan
+    // recomposite / gerakkan kursor — kalau tidak, desktop menimpa layar
+    // panic tiap kali mouse bergerak.
+    if (panic_is_locked()) {
+        compositor_panic_cursor_off();
+        return;
+    }
+
     const display_mode_t* mode = display_get_mode();
     if (!mode) return;
     DisplayBuffer* screen_db = gfx_screen_buffer();  // base_canvas
