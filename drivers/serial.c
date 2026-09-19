@@ -56,6 +56,15 @@ void serial_print(const char* s) {
     while (*s) serial_putc(*s++);
 }
 
+// Cetak hex 64-bit lebar-penuh "0x..." (dipakai diagnostik PCI/GPU di semua
+// build; dulu hanya ada di heap_watch.c di bawah HEAP_WATCH_DEBUG).
+void serial_print_hex(uint64_t v) {
+    const char* d = "0123456789ABCDEF";
+    char buf[19] = "0x0000000000000000";
+    for (int i = 17; i >= 2; i--) { buf[i] = d[v & 0xF]; v >>= 4; }
+    serial_print(buf);
+}
+
 // Cetak bilangan desimal tak bertanda (lintas modul: kernel.c punya versi
 // static-nya sendiri yang lebih tua; yang ini dipakai modul baru seperti
 // kernel/crash_archive.c).

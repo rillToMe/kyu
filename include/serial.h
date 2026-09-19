@@ -6,6 +6,7 @@
 void serial_init(void);
 void serial_putc(char c);
 void serial_print(const char* s);
+void serial_print_hex(uint64_t v);   // cetak hex 64-bit "0x..." lebar-penuh
 void serial_dec(uint64_t v);   // cetak bilangan desimal tak bertanda
 
 // Batasi total waktu menunggu UART siap (dipakai jalur panic).

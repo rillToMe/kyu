@@ -236,3 +236,13 @@ void intel_gtt_flush(void) {
 uint64_t intel_gtt_base_phys(void) {
     return g_gtt_table_phys;
 }
+
+int intel_gtt_is_active(void) { return g_gtt_active; }
+
+// AL-9: read-only snapshot of one PTE (both DWORDs). 0 when down/OOB.
+uint64_t intel_gtt_pte_raw(uint32_t idx) {
+    if (!g_gtt_active || idx >= g_gtt_entries) return 0;
+    uint64_t lo = g_gtt_table[idx * 2];
+    uint64_t hi = g_gtt_table[idx * 2 + 1];
+    return (hi << 32) | lo;
+}

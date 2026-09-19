@@ -31,4 +31,10 @@ void intel_gtt_flush(void);
 // Get GTT base physical address (for MMIO programming).
 uint64_t intel_gtt_base_phys(void);
 
+// 1 if GTT is programmed and usable, 0 otherwise (AL-4 VM gate).
+int intel_gtt_is_active(void);
+
+// Raw 64-bit PTE for entry idx (AL-9 PPGTT mirror; read-only, additive).
+uint64_t intel_gtt_pte_raw(uint32_t idx);
+
 #endif // INTEL_GTT_H

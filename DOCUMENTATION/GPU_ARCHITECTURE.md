@@ -239,3 +239,66 @@ Add `graphics/backend` to `SRC_DIRS` (already there) — new `.c` files in that 
 - [x] Driver interface planned
 - [x] PCI GPU detection works (Phase 3)
 - [x] MMIO access verified (Phase 4)
+
+---
+
+## 9. Gen12 Alder Lake extension (AL-1–AL-20)
+
+Target HW: `VEN_8086 DEV_468B REV_0C` (Alder Lake-S UHD GT1, Gen12 —
+confirmed via LKDDb `i915_pci.c` match + host WMI; BAR0 addr/size
+printable only on a physical boot, still pending).
+
+### Dispatch (frozen GHAL API, `ghal.*` zero-diff)
+
+```
+Intel Gen8–11 → legacy BCS ring path (frozen)
+Intel Gen12   → Gen12 execlist path (intel_gen12_*, new files only)
+otherwise     → software backend
+```
+
+GHAL fill/blit try Gen12 only when the boot STORE proved the engine
+live (`gen12_is_live`); any submit/wait failure clears live
+(fail-fast, no per-frame stalls). Legacy `intel_gtt_map_pages()`
+is byte-identical to frozen — Gen12 separation is by new files,
+never by editing legacy.
+
+### New modules (`graphics/backend/intel_gen12_*`)
+
+`engine` (BCS0 discovery from i915 tables) → `vm` (GGTT-only minimum,
+window validator) → `ctx` (4-page LRC, gen12_xcs image) → `batch`
+(verified XY builders) → `fence` (own status page + seqno) →
+`ppgtt` (PD/PT alias of GGTT) → `submit` (single owner: FW + ELSP) →
+`test_copy/fill/blit` (5 cases each) → `bench` → `ghal` (GHAL-level
+check, public API only) → `robust`/`fault` (AL-16/17 suites).
+
+### GGTT reservation map (2MB window)
+
+```
+0x00000 legacy BCS ring (32KB) | 0x10000 legacy status
+0x20000 gen12 context (16KB)    | 0x24000 gen12 status
+0x25000 gen12 ring (16KB)       | 0x100000+ buffer bump area
+```
+
+### Status: implemented / verified / SKIP / BLOCKED
+
+| Item | Status |
+|---|---|
+| AL-1 discovery, AL-2 MMIO+BAR, AL-3 engine table | implemented, build-verified |
+| AL-4 GGTT-only determination (i915 `intel_lrc.c`) | implemented |
+| AL-5 LRC image (gen12_xcs + CTX slots, pure-CPU validated) | implemented |
+| AL-6 XY layouts (IGT + i915 proven, NOT Phase-8 reuse) | implemented, struct-tested |
+| AL-7 fence, AL-12 bench, AL-13 dispatch, AL-14 GHAL check | implemented |
+| AL-15 single-owner commit + ordering proof | implemented (code); -smp 8 run BLOCKED (no QEMU in env) |
+| AL-16/17 robust + fault suites | implemented, run every boot |
+| AL-18 final diag (`submission: gen12`, enabled iff live) | implemented |
+| HW PASS (STORE/COPY/FILL/BLIT/fence/SMP/bench numbers) | BLOCKED — needs physical Alder Lake boot |
+| QEMU verification | SKIP — no iGPU, no qemu/cargo in this env |
+
+### Known legacy findings (reported, NOT silently fixed)
+
+1. Legacy ring regs (`0x12040/60/64/68`) ≠ i915
+   `RING_xxx(BLT_RING_BASE)` (`0x12038/30/34/3c`) — Gen8–11 path
+   likely never drove HW (fail-closed via CTL-reject).
+2. Phase-8 XY builders (12/8 DW, depth 2) ≠ HW-proven layouts
+   (10/7 DW, depth 3, coords-first) — Gen12 uses corrected copies.
+Both need Gen8–11 HW to validate any fix; frozen until then.

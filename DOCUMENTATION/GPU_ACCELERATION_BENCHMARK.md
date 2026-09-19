@@ -86,3 +86,20 @@ all waits are bounded, and a graphics failure can never take down the OS
 (software fallback needs no GPU state at all). GPU reset is N/A — the
 legacy BCS ring exposes no reset mechanism.
 
+## AL-12 — Gen12 workloads (numbers pending HW)
+
+Harness `graphics/backend/intel_gen12_bench.c`, same `[bench]` min/avg
+TSC discipline, probe-gated (dead engine costs one timeout):
+
+| Workload | Meaning | Status |
+|---|---|---|
+| `gen12_submit_sync` (N=10) | STORE-only round trip: submission overhead + fence floor | pending HW |
+| `gen12_fill_64` (N=10) | fill 64 + submit + exec + sync | pending HW |
+| `gen12_copy_64` (N=10) | copy 64 + submit + exec + sync | pending HW |
+| `gen12_blit_64` (N=10) | blit 64 + submit + exec + sync | pending HW |
+| `gen12_cmd_gen` (N=200) | batch-build CPU cost only | runs anywhere Intel init runs |
+| `gen12 damage_*` | GPU damage upload | pending AL-14 (no GHAL damage path yet) |
+
+No acceleration claims until these rows have numbers from the physical
+Alder Lake boot. The CPU table above is the baseline to beat.
+

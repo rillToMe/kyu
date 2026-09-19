@@ -16,12 +16,7 @@ uint64_t heap_watch_target_addr = 0xFFFF9000002B3A50ULL;
 static volatile uint64_t heap_watch_hits = 0;
 static volatile uint32_t heap_watch_muted = 0;
 
-void serial_print_hex(uint64_t v) {
-    const char* d = "0123456789ABCDEF";
-    char buf[19] = "0x0000000000000000";
-    for (int i = 17; i >= 2; i--) { buf[i] = d[v & 0xF]; v >>= 4; }
-    serial_print(buf);
-}
+// serial_print_hex() kini di drivers/serial.c (semua build).
 
 void heap_watch_set(uint64_t addr, int len_bytes) {
     int len_enc = (len_bytes == 8) ? 2 : (len_bytes == 4) ? 3 : (len_bytes == 2) ? 1 : 0;

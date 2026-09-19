@@ -15,6 +15,7 @@
 #include "ghal.h"
 #include "backend/intel_bench.h"
 #include "backend/intel_robust.h"
+#include "backend/intel_gen12_ghal.h"
 #include "spinlock.h"
 #include <stddef.h>   // NULL
 
@@ -74,6 +75,7 @@ int ghal_init(void) {
             ghal_diag_dump();   // Phase 15: roadmap-format GPU report
             intel_bench_run();  // Phase 20: always-on benchmark
             intel_robust_selftest(); // Phase 22: failure-path guards
+            gen12_ghal_check(); // AL-14: GHAL-level dispatch check
             return 0;
         }
     }
