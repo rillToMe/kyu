@@ -151,6 +151,7 @@ void png_free(uint32_t* b) { free(b); }
 #include "primitives/slider.hpp"      // ui::Slider
 #include "containers/scrollview.hpp"  // ui::ScrollView
 #include "containers/listview.hpp"    // ui::ListView
+#include "dialog/promptdialog.hpp"    // ui::PromptDialog
 #include "window/window.hpp"          // ui::Window (composition root)
 
 // ------------------------------------------------------------
@@ -411,6 +412,26 @@ int main(void) {
         int hi2 = s.val;
         check(lo == 0 && hi == 100 && lo2 == 0 && hi2 == 100,
               "slider: jalur normal (kiri=min, kanan=max, luar widget di-clamp)");
+    }
+
+    // --- 7. PromptDialog: klik sejajar dengan offset teks di draw() -------
+    // draw() menggambar teks di x + 22 (caret di x + 22 + cur*8), tapi
+    // input_at() menghitung dari x + 18 → klik/caret meleset 4px (setengah sel)
+    // dari teks yang terlihat. Keduanya sekarang pakai PromptDialog::INPUT_PAD_X.
+    {
+        ui::PromptDialog pd(w, "Simpan", "Nama berkas:", "abcdefghij", 0, 0);
+        int ok = 1;
+        for (int n = 0; n <= 10; n++) {
+            // Batas sel karakter ke-n tepat di bawah huruf yang digambar draw().
+            if (pd.input_at(pd.x + ui::PromptDialog::INPUT_PAD_X + n * 8) != n) ok = 0;
+        }
+        // Klik di paruh kiri sel membulat ke batas kirinya, paruh kanan ke kanan.
+        int half_l = pd.input_at(pd.x + ui::PromptDialog::INPUT_PAD_X + 3 * 8 + 3);
+        int half_r = pd.input_at(pd.x + ui::PromptDialog::INPUT_PAD_X + 3 * 8 + 4);
+        // Klik di luar kolom (kiri dialog) tetap di-clamp ke awal teks.
+        int before = pd.input_at(pd.x);
+        check(ok == 1 && half_l == 3 && half_r == 4 && before == 0,
+              "prompt: klik → indeks kursor sejajar offset teks draw() (x+22)");
     }
 
     printf("\n%d PASS, %d FAIL\n", PASS, FAIL);

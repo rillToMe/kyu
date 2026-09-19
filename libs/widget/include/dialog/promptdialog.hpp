@@ -20,7 +20,14 @@ class Window;   // fwd: PromptDialog pegang Window* — TIDAK include window.hpp
 // ------------------------------------------------------------
 class PromptDialog : public Dialog {
 public:
-    enum { MAX_INPUT = 255 };
+    enum {
+        MAX_INPUT = 255,
+        // Padding kiri teks input dari tepi dialog (px) — SATU sumber
+        // kebenaran: dipakai draw() untuk menggambar teks + caret DAN
+        // input_at() untuk memetakan klik ke indeks kursor. Kalau salah satu
+        // diubah tanpa yang lain, klik/caret meleset dari teks yang terlihat.
+        INPUT_PAD_X = 22
+    };
     char input[MAX_INPUT + 1];
     int cur;                    // posisi kursor (indeks karakter)
     ui_prompt_cb pcb;
@@ -49,7 +56,7 @@ public:
 
     // Indeks kursor dari posisi x klik di kolom input.
     int input_at(int mx) const {
-        int idx = (mx - (x + 18) + 4) / 8;
+        int idx = (mx - (x + INPUT_PAD_X) + 4) / 8;   // +4 = setengah sel 8px
         if (idx < 0) idx = 0;
         int len = input_len();
         if (idx > len) idx = len;
@@ -79,8 +86,8 @@ public:
         p.rect(x + 16, iy + 23, w - 32, 1, p.theme.mborder);
         p.rect(x + 16, iy, 1, 24, p.theme.mborder);
         p.rect(x + w - 17, iy, 1, 24, p.theme.mborder);
-        p.text(input, x + 22, iy + 4, p.theme.fg);
-        p.rect(x + 22 + cur * 8, iy + 4, 2, 16, p.theme.caret);   // caret cyan
+        p.text(input, x + INPUT_PAD_X, iy + 4, p.theme.fg);
+        p.rect(x + INPUT_PAD_X + cur * 8, iy + 4, 2, 16, p.theme.caret);   // caret cyan
     }
     // out-of-class: butuh Window lengkap (close_prompt / close_dialog)
     virtual void on_cancel() override;
