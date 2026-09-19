@@ -148,6 +148,7 @@ void png_free(uint32_t* b) { free(b); }
 #include "core/widget.hpp"            // ui::Widget
 #include "primitives/button.hpp"      // ui::Button
 #include "primitives/image.hpp"       // ui::Image
+#include "primitives/slider.hpp"      // ui::Slider
 #include "containers/scrollview.hpp"  // ui::ScrollView
 #include "containers/listview.hpp"    // ui::ListView
 #include "window/window.hpp"          // ui::Window (composition root)
@@ -374,6 +375,43 @@ int main(void) {
     check(lvm->scroll > 0, "viewer: baris terpilih digulirkan ke dalam view");
     ui_listview_set_selected(lv, 99);
     check(ui_listview_selected(lv) == 4, "viewer: index di luar rentang diabaikan");
+
+    // --- 6. Slider: lebar <= lebar handle aman dari divide-by-zero -------
+    // Dulu clamp_to() menghitung nw = w - 8 lalu membaginya. Widget selebar
+    // handle (atau lebih kecil) → nw = 0 → pembagian nol. Di bare-metal tanpa
+    // exception itu crash/UB diam-diam, bukan sekadar nilai salah tampil.
+    {
+        const int widths[4] = { 0, 1, 7, ui::Slider::HANDLE_W };
+        const int probes[7] = { -1000, -1, 0, 3, 7, 160, 100000 };
+        int ok = 1;
+        for (int k = 0; k < 4; k++) {
+            ui::Slider s(10, 90);
+            s.w = widths[k];
+            s.set_value(50);     // nilai awal BUKAN min: biar gerakan palsu terlihat
+            for (int j = 0; j < 7; j++) {
+                s.clamp_to(probes[j]);
+                if (s.val != 50) ok = 0;                      // tak ada ruang gerak → tetap
+                if (s.val < s.min || s.val > s.max) ok = 0;    // dan tetap di rentang valid
+            }
+        }
+        check(ok == 1, "slider: lebar <= handle → clamp_to() aman (tanpa divide-by-zero), nilai tetap");
+
+        // Jalur normal tidak ikut berubah: ujung kiri = min, ujung kanan = max,
+        // dan klik di luar widget tetap di-clamp (bukan melompat).
+        ui::Slider s(0, 100);
+        s.x = 40;
+        s.w = 160;
+        s.clamp_to(s.x);                                // paling kiri
+        int lo = s.val;
+        s.clamp_to(s.x + s.w - ui::Slider::HANDLE_W);   // paling kanan
+        int hi = s.val;
+        s.clamp_to(s.x - 500);                          // jauh di kiri
+        int lo2 = s.val;
+        s.clamp_to(s.x + 5000);                         // jauh di kanan
+        int hi2 = s.val;
+        check(lo == 0 && hi == 100 && lo2 == 0 && hi2 == 100,
+              "slider: jalur normal (kiri=min, kanan=max, luar widget di-clamp)");
+    }
 
     printf("\n%d PASS, %d FAIL\n", PASS, FAIL);
     return FAIL == 0 ? 0 : 1;
