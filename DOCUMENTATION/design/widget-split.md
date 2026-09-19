@@ -171,22 +171,37 @@ tersentuh.
 4. **22 `.cpp` hanya berisi `#include`.** Karena seluruh body method tetap inline
    di header (dipindah apa adanya), file-file itu tidak punya definisi
    out-of-class. Memindahkan body ke out-of-line adalah fase 2 terpisah.
-5. `libs/widged/` (folder kosong, salah ketik, sudah ada sebelum pemecahan)
-   dibiarkan apa adanya.
+5. `libs/widged/` (folder kosong, salah ketik, sudah ada sebelum pemecahan) sudah
+   dihapus — tidak ada Makefile/script yang mereferensikannya.
 
-## Kejanggalan kode lama yang TIDAK diperbaiki
+## Kejanggalan kode lama
 
-Sesuai aturan "jangan ubah logika", temuan ini dicatat tapi tidak disentuh:
+Sesuai aturan "jangan ubah logika", temuan ini dicatat dulu tanpa disentuh.
+Empat di antaranya dijadikan ticket terpisah dan sudah diperbaiki, masing-masing
+satu commit supaya bisa di-revert sendiri-sendiri:
 
-- `Slider::clamp_to()` membagi dengan `w - 8`; slider dengan `w == 8` → division
-  by zero (lebar minimum tidak pernah dipaksa).
-- `Table::clear()` membebaskan sel tapi tidak mereset `selected`/`hover_row` →
-  indeks baris basi bertahan setelah refresh. `TreeView` tidak punya `clear()`.
-- `PromptDialog::input_at()` memetakan klik pakai `x + 18`, sedangkan `draw()`
-  menggambar kolom input di `x + 22` → caret meleset ~setengah karakter.
+| Temuan | Status |
+|---|---|
+| `Slider::clamp_to()` membagi dengan `w - 8`; slider dengan `w == 8` → division by zero (SIGFPE, atau nilai garbage / UB) | **fixed** `0654b73` — konstanta `Slider::HANDLE_W` dipakai `draw()`+`clamp_to()`, dan `clamp_to()` keluar lebih awal saat tak ada ruang gerak (nilai dibiarkan tetap, `w` caller tidak dipaksa) |
+| `Table::clear()` membebaskan sel tapi tidak mereset `selected`/`hover_row` → indeks baris basi bertahan setelah refresh | **fixed** `cb3cc46` — reset ke `-1` (konvensi constructor), tanpa memanggil `change_cb` karena `clear()` bukan aksi user. `TreeView::clear()` sengaja **tidak** ditambahkan: belum ada pemanggil yang butuh |
+| `PromptDialog::input_at()` memetakan klik pakai `x + 18` sedangkan `draw()` menggambar kolom input di `x + 22` → caret meleset ~setengah karakter | **fixed** `1a4122f` — satu konstanta `PromptDialog::INPUT_PAD_X` dipakai `draw()` (teks + caret) dan `input_at()` |
+| `Menu::relayout()` mengubah `w`/`h` tanpa menandai bounds lama **dan** baru sebagai dirty → ghosting saat menu mengecil | **fixed** `bc8112b` — `mark_area()` untuk bounds lama sebelum ubah ukuran + bounds baru sesudahnya (`mark_area()` sudah meng-union rect) |
+
+Masih terbuka:
+
+- `PromptDialog::on_click()` membatasi area klik kolom input ke `x + 12 … x + w - 12`,
+  sedangkan kotak inputnya digambar di `x + 16 … x + w - 17` → klik di luar kotak
+  masih memindahkan kursor. Ketemu saat menggarap offset teks, tidak disentuh
+  karena di luar scope ticket itu.
 - `Dialog::draw()` memakai `const_cast<char*>(text)[i] = '\0'` padahal `text`
   sudah `char*` (const_cast tidak perlu), dan memutasi state saat menggambar.
-- `Menu::relayout()` mengubah `w`/`h` tanpa menandai bounds lama **dan** baru
-  sebagai dirty.
 - Komentar `// Out-of-class PromptDialog (butuh Window lengkap).` di file lama
   berada di atas `Widget::set_visible`, bukan di atas definisi `PromptDialog`.
+
+Regresi empat fix di atas dikunci di `test/libui_theme_test.cpp` (section 6–9).
+Tiap fix diverifikasi dengan menjalankan test yang sama terhadap kode LAMA
+(gagal / SIGFPE) dan kode baru (pass) — bukan cuma "test hijau".
+
+> Catatan build: rule `test-libui-theme` di Makefile hanya mendaftarkan file
+> `.cpp` sebagai dependency, jadi mengubah header saja **tidak** memicu rebuild
+> test — `touch test/libui_theme_test.cpp` dulu sebelum menyimpulkan hasilnya.
