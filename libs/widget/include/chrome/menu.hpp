@@ -58,8 +58,16 @@ public:
             if (items[i].acc) t += _ui_strlen(items[i].acc) * 8 + 24;
             if (t > need) need = t;
         }
+        // Menu bisa MENGCIL setelah relayout (w awal 150 → 130 untuk item
+        // pendek). Tandai dulu bounds LAMA, baru bounds BARU: tanpa itu area
+        // bekas menu yang lebih besar tak pernah diminta digambar ulang dan
+        // sisa render lama (ghosting) tetap kelihatan. mark_area() sendiri
+        // sudah meng-union rect yang di-mark (lihat Widget::mark_area), jadi
+        // dua panggilan ini menghasilkan union lama∪baru.
+        mark_area(x, y, w, h);
         h = hh;
         w = need;
+        mark_area(x, y, w, h);
     }
     void add_item_acc(const char* label, const char* acc, ui_click_cb cb, void* u) {
         if (n >= MAX_ITEMS) return;

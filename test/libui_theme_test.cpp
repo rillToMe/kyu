@@ -152,6 +152,7 @@ void png_free(uint32_t* b) { free(b); }
 #include "containers/scrollview.hpp"  // ui::ScrollView
 #include "containers/listview.hpp"    // ui::ListView
 #include "containers/table.hpp"       // ui::Table
+#include "chrome/menu.hpp"           // ui::Menu
 #include "dialog/promptdialog.hpp"    // ui::PromptDialog
 #include "window/window.hpp"          // ui::Window (composition root)
 
@@ -464,6 +465,25 @@ int main(void) {
               "table: setelah clear() + add_row, tak ada baris ter-highlight sendiri");
         t.on_content_click(0, t.y + ui::Table::HEADER_H + ui::Table::ROW_H + 2);
         check(t.selected == 1, "table: seleksi lewat klik tetap jalan setelah clear()");
+    }
+
+    // --- 9. Menu: relayout() menandai bounds lama DAN baru (anti-ghosting) -
+    // Menu lahir 150px; add_item() label pendek me-relayout jadi 130px, jadi
+    // menu MENGCIL. Dulu hanya bounds baru yang di-mark → 20px bekas menu di
+    // kanan tak pernah digambar ulang dan sisa render lama tertinggal.
+    {
+        ui::Menu m(w);
+        m.x = 10; m.y = 10;
+        int old_w = m.w, old_h = m.h;
+        m.add_item("OK", 0, 0);              // relayout: w 150 → 130
+        int ox = 0, oy = 0, ow = 0, oh = 0;
+        bool got = m.take_dirty(ox, oy, ow, oh);
+        check(got && m.w < old_w,
+              "menu: relayout mengecilkan w (150 → 130) — kasus ghosting");
+        check(got && ox <= m.x && oy <= m.y &&
+              ox + ow >= m.x + old_w && oy + oh >= m.y + old_h &&
+              ox + ow >= m.x + m.w && oy + oh >= m.y + m.h,
+              "menu: dirty rect mencakup bounds lama ∪ baru");
     }
 
     printf("\n%d PASS, %d FAIL\n", PASS, FAIL);
