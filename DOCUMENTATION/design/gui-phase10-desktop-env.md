@@ -52,7 +52,7 @@ Tiga lapisan baru di kernel/toolkit yang menjadi fondasi:
 | `include/gfx.h` | Deklarasi API KWM baru. |
 | `apps/userlib.c` + `include/userlib.h` | Wrapper syscall 59–63 + `kwm_window_info_t` (layout = kernel). |
 | `apps/libgui.c` + `include/libgui.h` | `gui_create_desktop()`, `gui_set_window_title()`. |
-| `apps/libui.cpp` + `include/libui.h` | **TextEdit widget**, `ui_window_set_title`, `ui_window_set_tick`, `ui_image_set_scale`, wrapper extern "C". |
+| `libs/widget/` + `include/libui.h` | **TextEdit widget**, `ui_window_set_title`, `ui_window_set_tick`, `ui_image_set_scale`, wrapper extern "C". |
 | `apps/login.c` | Setelah auth sukses → `sys_spawn("desktop.elf")` lalu `user_shell()`. |
 | `user_apps/desktop.c` (BARU, libgui) | Wallpaper + launcher ikon + taskbar. |
 | `user_apps/terminal.c` (BARU, libui) | Output TextEdit readonly + input TextBox + command loop. |
@@ -127,7 +127,7 @@ waktu yang sama di `gui_create_desktop` (yang lolos cuma karena kebetulan
 
 ## Toolkit — TextEdit + title + tick + image scale
 
-### TextEdit (apps/libui.cpp:336)
+### TextEdit (libs/widget/include/editor/textedit.hpp)
 
 Class `TextEdit : public Widget`. Buffer `char text[8192]` (MAX_TEXT),
 `int len, cur, scroll_top` (baris pertama tampak), `bool readonly`. Metrik:
@@ -260,7 +260,7 @@ terminal.elf, settings.elf masuk `cp` ke `iso_root`). Per-app:
 - `include/gfx.h`, `include/kwm.h` — deklarasi API KWM.
 - `apps/userlib.c`, `include/userlib.h` — wrapper + `kwm_window_info_t`.
 - `apps/libgui.c`, `include/libgui.h` — `gui_create_desktop`, `gui_set_window_title`.
-- `apps/libui.cpp`, `include/libui.h` — TextEdit, set_title, tick, image scale.
+- `libs/widget/`, `include/libui.h` — TextEdit, set_title, tick, image scale.
 - `apps/login.c` — spawn desktop setelah auth.
 - `user_apps/desktop.c`, `terminal.c`, `settings.c` (baru) + 6 port.
 - `include/task.h` — `MAX_TASKS` 16.

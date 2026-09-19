@@ -2,7 +2,7 @@
 
 > **Status**: SELESAI (2026-09-19) — library + wiring build + host test +
 > migrasi `kernel/gfx/compositor.c`, `apps/libgui.c` (ABI gambar),
-> konstanta dekorasi KWM (`kernel/gfx/kwm_internal.h`), `apps/libui.cpp`
+> konstanta dekorasi KWM (`kernel/gfx/kwm_internal.h`), toolkit `libs/widget/`
 > (`Theme`/`Painter`/`aa_shade`), ABI tema `ui_theme_t`, dan tema 4 app
 > userspace.
 > **Verifikasi**: `make test-color`, `make` (kernel), `make apps`, dan
@@ -41,7 +41,7 @@ Tidak ada `libs/color/Makefile` sendiri: sumber ikut build system yang ada
 | `FORMAT_ARGB` (default) = `0xAARRGGBB` | Sama dengan tipe warna compositor; RGBA/ABGR/BGRA untuk variasi framebuffer hardware |
 | `COLOR_RGB_INIT`/`*_INIT` = **constant expression**, bukan pemanggilan inline | Tema ditulis sebagai tabel `static const color_t`; `COLOR_RGB()`/`color_make()` adalah panggilan inline sehingga tidak sah sebagai initializer C (`initializer element is not a compile-time constant`). Nilainya identik dengan `COLOR_RGB(r, g, b)` (di-assert di `test/color_test.c`) |
 | HSL/HSV: hue 0..359 derajat, s/l/v 0..255 | Picker UI menampilkan derajat; hindari fixed-point yang membingungkan di API |
-| Header C/C++ compatible | `apps/libui.cpp` (C++17) memakai header yang sama; makro `COLOR_RGB`/`COLOR_RGBA` memanggil fungsi inline, bukan compound literal C |
+| Header C/C++ compatible | toolkit `libs/widget/` (C++17; dulu `apps/libui.cpp`) memakai header yang sama; makro `COLOR_RGB`/`COLOR_RGBA` memanggil fungsi inline, bukan compound literal C |
 | Palet `static const` di header | Tiap TU dapat salinan sendiri (tanpa storage global bersama), bebas warning di C & C++ |
 
 ## Kontrak blending
@@ -103,7 +103,7 @@ konversi hex di batas fungsi dan pemanggil menulis warna per komponen:
 - Canvas libgui selalu opaque (alpha dipaksa 255 seperti sebelumnya), jadi
   memakai `COLOR_RGBA(..., 0)` pun tetap menggambar. Mask transparansi window
   urusan compositor, bukan app.
-- Pemanggil yang ikut disesuaikan: `apps/libui.cpp` (helper `argb()` dihapus —
+- Pemanggil yang ikut disesuaikan: toolkit widget `libs/widget/` (dulu `apps/libui.cpp`; helper `argb()` dihapus —
   tidak perlu lagi membungkus pixel), `user_apps/desktop.c` (14 konstanta warna
   jadi `COLOR_RGB(...)`, `parse_color()` mengembalikan `color_t` opaque,
   checksum daftar app lewat helper `rgb24()`), dan stub libgui di
@@ -161,7 +161,7 @@ terlihat dari header, bukan hanya dari implementasi.
 > tetap dimuat lewat jalur lama, lalu ditulis ulang sebagai v1 saat `Simpan`
 > berikutnya — tidak ada langkah manual yang diperlukan.
 
-## Migrasi libui.cpp (Theme, Painter, `aa_shade`)
+## Migrasi toolkit widget (`libs/widget/`; dulu `libui.cpp`) — Theme, Painter, `aa_shade`
 
 - `Theme`: 6 warna ABI + 12 lapisan turunan jadi `color_t`. Warna ABI
   dinormalkan `color_opaque()` (XRGB → opaque) dan `to_abi()` mem-pack balik
@@ -193,7 +193,7 @@ bukan cuma di layar.
 | Kernel | `SRC_DIRS += libs/color/src`, `CFLAGS += -Ilibs/color/include` (top-level `Makefile`) |
 | User apps | `CFLAGS_COMMON += -I../libs/color/include`; objek `$(COLOR_OBJS)` + rule kompilasi di `user_apps/Makefile` — app yang memakai fungsi out-of-line menambahkan `$(COLOR_OBJS)` ke baris link-nya |
 | Host test warna | `make test-color` — mengompilasi sumber library asli di host dan mengecek header sebagai C++17 (`test/color_cxx_check.cpp`) |
-| Host test libui | `make test-libui-theme` — `apps/libui.cpp` di-*include* supaya Theme/Button bisa diperiksa; render sungguhan dicek piksel-per-piksel |
+| Host test libui | `make test-libui-theme` — sumber `libs/widget/` di-*link* (header per-layer di-*include*) supaya Theme/Button bisa diperiksa; render sungguhan dicek piksel-per-piksel |
 | Host test desktop | `make test-desktop` — `user_apps/desktop.c` di-*include*; kini memeriksa `parse_color()` mengembalikan `color_t` opaque |
 
 `test/color_test.c` dikecualikan dari `C_SOURCES` (host test, bukan task

@@ -268,7 +268,7 @@ covered by source inspection plus the kernel validation gate.
 ## Files Not Modified
 
 include/display.h, kernel/display.c (dirty regions), GHAL (graphics/ghal.c,
-graphics/backend/*), VirtIO-GPU driver, apps/libgui.c, apps/libui.cpp,
+graphics/backend/*), VirtIO-GPU driver, apps/libgui.c, libs/widget/ (dulu apps/libui.cpp),
 apps/png.c, Slint renderer internals, KWM event routing, scheduler, heap,
 syscall 31 and syscall 66, multi-region damage.
 

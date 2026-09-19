@@ -52,7 +52,7 @@ enum { VIEW_WRAP = 0 };
 // Tema Modern Dark (charcoal, BUKAN hitam murni):
 //   editor #1E1E1E → chrome #2D2D2D (menubar/status) → panel #252526 (modal)
 //   → tombol #3C3C3C, hover #4A4A4A. Toolkit menurunkan lapisan itu dari 6
-//   warna ABI ini (lihat Theme::derive di apps/libui.cpp).
+//   warna ABI ini (lihat Theme::derive di libs/widget/include/core/theme.hpp).
 static const ui_theme_t NOTEPAD_THEME = {
     COLOR_RGB_INIT(0x2D, 0x2D, 0x2D),   // bg          — dasar window (di balik margin)
     COLOR_RGB_INIT(0xD4, 0xD4, 0xD4),   // fg          — teks isi (off-white, bukan putih penuh)

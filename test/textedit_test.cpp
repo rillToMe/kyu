@@ -1,7 +1,7 @@
 // ============================================================
-// textedit_test.cpp — uji host untuk widget TextEdit (apps/libui.cpp).
+// textedit_test.cpp — uji host untuk widget TextEdit (libs/widget/).
 //
-// apps/libui.cpp dikompilasi apa adanya, lalu SEMUA simbol luar yang dipakai
+// libs/widget/**/*.cpp dikompilasi apa adanya, lalu SEMUA simbol luar yang dipakai
 // toolkit (syscalls + libgui + png, hanya 20 buah) di-stub di bawah. Jadi logika
 // editor yang berisiko (undo/redo, seleksi, clipboard, cari/ganti, aritmetika
 // word wrap) bisa diverifikasi di host, tanpa boot QEMU:
@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Sama seperti apps/libui.cpp: userlib.h/libgui.h TIDAK punya extern "C" guard,
+// Sama seperti libs/widget/include/runtime/platform.hpp: userlib.h/libgui.h TIDAK punya extern "C" guard,
 // jadi dibungkus di sini supaya nama symbol cocok dengan yang dipakai toolkit.
 extern "C" {
 #include "userlib.h"

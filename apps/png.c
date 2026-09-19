@@ -2,7 +2,7 @@
 //
 // Konfigurasi stb_image identik dengan user_apps/viewer.c (pola yang sudah
 // terbukti): STBI_ONLY_PNG, memori disambung ke sys_alloc/sys_free.
-// Dipisah ke file C sendiri (bukan di libui.cpp) agar 276KB kode C stb_image
+// Dipisah ke file C sendiri (bukan di toolkit libs/widget/) agar 276KB kode C stb_image
 // tidak ikut dikompilasi sebagai C++ (build libui tetap ramping).
 //
 // png_decode: baca file PNG dari KyuzenFS -> decode -> konversi RGBA bytes ke

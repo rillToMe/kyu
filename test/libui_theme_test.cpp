@@ -14,8 +14,9 @@
 //      dengan yang digambar jalur lama aa_shade()/aa_mix() → migrasi warna
 //      tidak mengubah satu piksel pun UI.
 //
-// apps/libui.cpp di-INCLUDE (bukan di-link) supaya tipe internal Window/Button
-// bisa diperiksa; pola yang sama dipakai test/kyuzenfs_v4_test.c.
+// Toolkit kini di libs/widget/ (dulu satu apps/libui.cpp yang di-INCLUDE di
+// sini). Tipe internal yang diperiksa tetap di-include per-layer, lalu object
+// toolkit-nya di-LINK oleh Makefile — pola yang sama dipakai test/kyuzenfs_v4_test.c.
 //
 //   make test-libui-theme
 // ============================================================
@@ -23,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Sama seperti apps/libui.cpp: userlib.h/libgui.h tanpa extern "C" guard.
+// Sama seperti libs/widget/include/runtime/platform.hpp: userlib.h/libgui.h tanpa extern "C" guard.
 extern "C" {
 #include "userlib.h"
 #include "libgui.h"
@@ -141,7 +142,15 @@ void png_free(uint32_t* b) { free(b); }
 }   // extern "C"
 
 #include "aa_math.h"
-#include "apps/libui.cpp"   // tipe internal: ui::Window, ui::Button
+// Tipe internal toolkit yang dipakai test ini (dulu semua lewat apps/libui.cpp).
+#include "core/theme.hpp"             // ui::Theme
+#include "core/painter.hpp"           // ui::Painter
+#include "core/widget.hpp"            // ui::Widget
+#include "primitives/button.hpp"      // ui::Button
+#include "primitives/image.hpp"       // ui::Image
+#include "containers/scrollview.hpp"  // ui::ScrollView
+#include "containers/listview.hpp"    // ui::ListView
+#include "window/window.hpp"          // ui::Window (composition root)
 
 // ------------------------------------------------------------
 static int PASS = 0, FAIL = 0;

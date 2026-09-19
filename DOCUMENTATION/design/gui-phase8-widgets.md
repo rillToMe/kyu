@@ -30,7 +30,7 @@ Tema tidak berubah. Tidak ada file sumber baru, tidak ada perubahan Makefile.
 | File | Perubahan |
 |---|---|
 | `include/libui.h` | ~30 deklarasi C ABI baru (ScrollView/ListView/Table/TreeView/Tab/MenuBar/Menu/Toolbar + `ui_window_add_bar`). |
-| `apps/libui.cpp` | `Painter::clip` + `text` per-sel; `Widget::on_scroll`/`track_hover`/`is_menu_bar`; base `Scrollable`; 8 class widget; `Window` popup + `add_bar` + EVENT_SCROLL + hover rework; wrapper extern "C". |
+| `libs/widget/` | `Painter::clip` + `text` per-sel; `Widget::on_scroll`/`track_hover`/`is_menu_bar`; base `Scrollable`; 8 class widget; `Window` popup + `add_bar` + EVENT_SCROLL + hover rework; wrapper extern "C". |
 | `user_apps/widget_demo.c` | `main` ditulis ulang jadi showcase tab: MenuBar + Toolbar + Tab 5 panel. |
 | `roadmap/GUI_ROADMAP.md` | Phase 8 → SELESAI. |
 | `DOCUMENTATION/design/gui-phase8-widgets.md` | **Baru** — dokumen ini. |
@@ -78,7 +78,7 @@ ui_widget_t* ui_toolbar_create(ui_window_t* win);
 void ui_toolbar_add_button(ui_widget_t* bar, const char* label, ui_click_cb cb, void* u);
 ```
 
-## Toolkit internal (apps/libui.cpp)
+## Toolkit internal (libs/widget/)
 
 ### 1. Painter::clip — scissor rect
 
@@ -239,7 +239,7 @@ Window ±360×400, tema sama, `add_bar` menubar + toolbar, lalu root VBox:
 ## File
 
 - `include/libui.h` — C ABI 8 widget baru + `ui_window_add_bar`.
-- `apps/libui.cpp` — toolkit C++: Painter::clip, Scrollable, 8 widget, Window popup/bar/scroll, wrapper extern "C".
+- `libs/widget/` — toolkit C++: Painter::clip, Scrollable, 8 widget, Window popup/bar/scroll, wrapper extern "C".
 - `user_apps/widget_demo.c` — demo showcase tab.
 - `roadmap/GUI_ROADMAP.md` — Phase 8 → SELESAI.
 

@@ -23,6 +23,7 @@ Linux), menggantikan satu file raksasa secara bertahap.
 | [`fs-phase1-3-directories.md`](design/fs-phase1-3-directories.md) | KyuzenFS 3 fase: folder sebagai entry biasa + path absolut, syscall path (`sys_get_file_list`/`sys_mkdir`), migrasi app ke `/apps/` |
 | [`color-library.md`](design/color-library.md) | Library warna modular `libs/color/`: `color_t` RGBA, blending integer, HSL/HSV, palet + utility UI; zero-alloc, kernel & user-space, verifikasi sweep 256³ warna |
 | [`gui-phase11-image-viewer.md`](design/gui-phase11-image-viewer.md) | Image Viewer: sidebar + auto-fit (tanpa geser manual) + statusbar; API libui baru `ui_image_set_fit`/`ui_image_natural_size`/`ui_scrollview_set_pan`/`ui_listview_set_selected` |
+| [`widget-split.md`](design/widget-split.md) | Pemecahan toolkit widget `apps/libui.cpp` (3.798 baris) jadi `libs/widget/` per-layer (`core`/`primitives`/`editor`/`layout`/`containers`/`chrome`/`dialog`/`window`/`services` + `abi`) — tanpa perubahan perilaku; aturan dependency antar layer, peta file lama→baru, wiring build, dan hasil verifikasi (ABI publik 115/115 identik) |
 
 ### troubleshooting/
 

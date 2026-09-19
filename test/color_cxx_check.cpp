@@ -1,5 +1,5 @@
 // Compile-only check: header libs/color harus valid di-include dari C++
-// (apps/libui.cpp adalah C++17; app userspace boleh memakai lib ini).
+// (libs/widget/ adalah C++17; app userspace boleh memakai lib ini).
 // Dijalankan oleh `make test-color` via clang++ -fsyntax-only.
 //
 // Catatan: makro COLOR_RGB/COLOR_RGBA sengaja memanggil fungsi inline, bukan

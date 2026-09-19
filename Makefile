@@ -343,7 +343,7 @@ test/panic_test: test/panic_test.c kernel/panic.c kernel/panic_log.c kernel/cras
                  include/panic.h include/crashdump.h include/acpi.h include/display.h include/task.h include/timer.h
 	$(HOSTCC) -DPANIC_HOST_TEST -O1 -Wall -iquote test -iquote include -o $@ test/panic_test.c
 
-# TextEdit host test: apps/libui.cpp di-link apa adanya, syscall+libgui di-stub
+# TextEdit host test: libs/widget/**/*.cpp di-link apa adanya, syscall+libgui di-stub
 # (20 symbol). Menguji logika editor yang dipakai notepad: undo/redo per operasi,
 # seleksi + clipboard, find/replace_all, dan aritmetika baris LAYAR word wrap.
 # Jalankan: make test-textedit
@@ -351,12 +351,12 @@ test/panic_test: test/panic_test.c kernel/panic.c kernel/panic_log.c kernel/cras
 test-textedit: test/textedit_test
 	./test/textedit_test
 
-test/textedit_test: test/textedit_test.cpp apps/libui.cpp include/libui.h include/libgui.h \
+test/textedit_test: test/textedit_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp include/libui.h include/libgui.h \
                     libs/color/src/color_utils.c libs/color/include/color_utils.h
 	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
-	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote include -Ilibs/color/include -o $@ test/textedit_test.cpp apps/libui.cpp test/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/textedit_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
 
-# Host test tema + render libui: apps/libui.cpp di-INCLUDE (bukan di-link)
+# Host test tema + render libui: libs/widget/**/*.cpp di-LINK (object toolkit)
 # supaya Window/Button/Painter bisa diperiksa, lalu render sungguhan dicek
 # piksel-per-piksel. Mengunci regresi "gradien tombol rata" yang muncul saat
 # warna tema ABI (XRGB, alpha 0) mulai dilewatkan color_blend_alpha.
@@ -365,11 +365,11 @@ test/textedit_test: test/textedit_test.cpp apps/libui.cpp include/libui.h includ
 test-libui-theme: test/libui_theme_test
 	./test/libui_theme_test
 
-test/libui_theme_test: test/libui_theme_test.cpp apps/libui.cpp include/libui.h \
+test/libui_theme_test: test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp include/libui.h \
                        include/libgui.h include/aa_math.h \
                        libs/color/src/color_utils.c libs/color/include/color_utils.h
 	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
-	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/color/include -o $@ test/libui_theme_test.cpp test/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
 
 # Desktop host test: desktop.c di-include langsung dengan syscall FS di-stub.\
 # Menguji discover_apps()/manifest DAN siklus notifikasi crash (kartu harus\

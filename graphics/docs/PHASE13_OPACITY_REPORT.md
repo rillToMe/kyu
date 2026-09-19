@@ -191,7 +191,7 @@ Defer these to Phase 15+.
 
 ## 14. Files Inspected
 
-`include/display.h`, `kernel/gfx/compositor.c`, `kernel/gfx/kwm.c`, `kernel/display.c`, `apps/libgui.c`, `apps/libui.cpp`, `apps/png.c`, `rust/kyuzen-gui/src/lib.rs`, `kernel/heap.c`, `graphics/backend/software.c`, `include/aa_math.h`
+`include/display.h`, `kernel/gfx/compositor.c`, `kernel/gfx/kwm.c`, `kernel/display.c`, `apps/libgui.c`, `libs/widget/` (dulu `apps/libui.cpp`), `apps/png.c`, `rust/kyuzen-gui/src/lib.rs`, `kernel/heap.c`, `graphics/backend/software.c`, `include/aa_math.h`
 
 ---
 

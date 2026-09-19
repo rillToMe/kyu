@@ -50,7 +50,8 @@ CFLAGS_LIB    = $(CFLAGS_COMMON) -O2
 #   -fno-rtti               (tidak ada typeid/typeinfo)
 #   -fno-use-cxa-atexit     (tidak ada __cxa_atexit — global dtors)
 #   -fno-threadsafe-statics (tidak ada __cxa_guard_* — static locals)
-# operator new/delete + __cxa_pure_virtual di-stub di apps/libui.cpp.
+# operator new/delete + __cxa_pure_virtual di-stub SEKALI di
+# libs/widget/src/runtime/runtime.cpp (ODR: jangan didefinisikan di file lain).
 CXXFLAGS_LIB  = $(CFLAGS_COMMON) -O2 -fno-exceptions -fno-rtti \
                 -fno-use-cxa-atexit -fno-threadsafe-statics -std=c++17
 
@@ -65,7 +66,16 @@ USERLIB_OBJ = userlib.o
 USERUTIL_OBJ = userutil.o   # helper identitas bersama (UID → username)
 SHELLCORE_OBJ = shell_core.o # shell engine bersama (parser/registry/built-in)
 LIBGUI_OBJ  = libgui.o
-LIBUI_OBJ   = libui.o   # Widget Toolkit Modern C++ (apps/libui.cpp)
+# --- Widget Toolkit Modern C++ (libs/widget/) ---
+# Dulu satu file apps/libui.cpp; kini dipecah per-layer (core/primitives/editor/
+# layout/containers/chrome/dialog/window/services) + abi/libui_abi.cpp. Semua .cpp
+# dikompilasi jadi object terpisah lalu di-link seperti semula — tidak ada static
+# ctor (ELF loader tidak menjalankan .init_array), jadi urutan link bebas.
+WIDGET_DIR   = $(ROOT_DIR)/libs/widget
+WIDGET_SRCS  = $(wildcard $(WIDGET_DIR)/src/*/*.cpp) $(WIDGET_DIR)/abi/libui_abi.cpp
+WIDGET_BUILD = $(WIDGET_DIR)/build
+WIDGET_OBJS  = $(patsubst $(WIDGET_DIR)/%.cpp,$(WIDGET_BUILD)/%.o,$(WIDGET_SRCS))
+LIBUI_OBJ    = $(WIDGET_OBJS)   # Widget Toolkit (libs/widget)
 PNG_OBJ     = png.o     # Dekoder PNG bersama (apps/png.c, stb_image)
 COLOR_OBJS  = color_blend.o color_space.o color_utils.o   # libs/color (dipakai kernel & app)
 LIBUI_COLOR_OBJS = color_utils.o   # objek libs/color yang direferensikan toolkit libui
@@ -134,11 +144,11 @@ $(LIBGUI_OBJ): $(APPS_DIR)/libgui.c
 	$(CC) $(CFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
 
 # ==========================================================
-# COMPILE LIBUI — Widget Toolkit (Modern C++, apps/libui.cpp)
+# COMPILE LIBUI — Widget Toolkit (libs/widget/, satu object per .cpp)
 # ==========================================================
-$(LIBUI_OBJ): $(APPS_DIR)/libui.cpp
-	@echo "[CXX] Mengompilasi libui (Widget Toolkit, C++ freestanding)..."
-	$(CXX) $(CXXFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
+$(WIDGET_BUILD)/%.o: $(WIDGET_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS_LIB) -I$(WIDGET_DIR)/include -I$(INC_DIR) -c $< -o $@
 
 # ==========================================================
 # COMPILE PNG — dekoder bersama (apps/png.c, stb_image)
@@ -442,6 +452,7 @@ widget_demo: $(WIDGET_ELF)
 clean:
 	@echo "[CLEAN] Membersihkan file objek user_apps..."
 	rm -f $(APP_OBJS) $(APP_OBJS:.o=.d)
+	rm -rf $(WIDGET_BUILD)
 	@echo "[CLEAN] Selesai."
 
 # --- Semua objek + header deps (harus sebelum -include) ---

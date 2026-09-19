@@ -2,7 +2,7 @@
 #define AA_MATH_H
 
 // Math anti-alias (coverage) + blend warna untuk toolkit userspace
-// (apps/libui.cpp). Blending compositor kernel kini lewat libs/color
+// (libs/widget/include/core/painter.hpp). Blending compositor kernel kini lewat libs/color
 // (color_blend_alpha) dan di sini hanya memakai aa_cov.
 //
 // INTEGER SAJA: kernel dan app dibangun dengan -mno-sse -mno-sse2 -msoft-float

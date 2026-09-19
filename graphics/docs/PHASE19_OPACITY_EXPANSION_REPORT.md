@@ -48,7 +48,7 @@ update.
 ## libui Integration
 
 No libui change was needed. libui's `Window` is built on `gui_create_window()`
-(apps/libui.cpp), so it inherits the opaque declaration automatically. All libui
+(libs/widget/, dulu apps/libui.cpp), so it inherits the opaque declaration automatically. All libui
 canvas writers are opaque:
 - `Painter::rect/text` -> gui_draw_* -> `color | 0xFF000000`.
 - `Painter::blend` -> `aa_mix(...) | 0xFF000000`.
@@ -69,7 +69,7 @@ libgui paints the whole canvas in `gui_create_window`/`gui_create_desktop`
 (one-time O(n) fill, not per frame) before declaring. This closes the Phase 12/13
 "uninitialized pixel" blocker without any new initialization strategy.
 
-I also checked every direct canvas writer: apps/libui.cpp writes at lines 183
+I also checked every direct canvas writer: libs/widget/include/core/painter.hpp (dulu apps/libui.cpp) writes at lines 183
 (PNG, forced opaque) and 197 (`| 0xFF000000`); user_apps/desktop.c uses only
 gui_draw_rect/gui_draw_text; user_apps/badptr.c writes 0xFF204060. No writer
 emits alpha == 0.

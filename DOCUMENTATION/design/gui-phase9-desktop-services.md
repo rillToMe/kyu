@@ -8,7 +8,7 @@
 > **Konteks**: Phase 8 memberi Advanced Widgets (ListView/Table/TreeView/
 > ScrollView/Menu/MenuBar/Tab/Toolbar). Phase 9 menambahkan **Desktop Services**
 > sesuai roadmap: Clipboard, Dialog, Notification, Drag & Drop, Cursor,
-> Shortcut, Settings. Semua kerjaan userspace toolkit (`apps/libui.cpp` +
+> Shortcut, Settings. Semua kerjaan userspace toolkit (`libs/widget/` +
 > `include/libui.h`) — kecuali **Cursor**, yang butuh satu syscall kernel kecil
 > (compositor pemilik satu-satunya kursor mouse).
 
@@ -39,7 +39,7 @@
 | `apps/userlib.c` | Wrapper `int sys_kwm_set_cursor(int kind)` (int 0x80, RAX=58). |
 | `include/userlib.h` | Deklarasi `sys_kwm_set_cursor`. |
 | `include/libui.h` | ~20 deklarasi C ABI baru + 2 tipe callback (`ui_dialog_cb`, `ui_drop_cb`) + enum kursor. |
-| `apps/libui.cpp` | Clipboard buffer, field DnD+kursor di `Widget`, Ctrl+C/V/X di TextBox, `Dialog` class + state modal Window, toast notification, DnD state + ghost, shortcut registry, Settings save/load, wrapper extern "C". |
+| `libs/widget/` | Clipboard buffer, field DnD+kursor di `Widget`, Ctrl+C/V/X di TextBox, `Dialog` class + state modal Window, toast notification, DnD state + ghost, shortcut registry, Settings save/load, wrapper extern "C". |
 | `user_apps/widget_demo.c` | Toolbar Dialog/Notif, menu Edit → clipboard, shortcut Ctrl+N, tab Setelan baru. |
 | `roadmap/GUI_ROADMAP.md` | Phase 9 → SELESAI. |
 
@@ -105,7 +105,7 @@ void kwm_set_cursor(int kind) {
 → return 0, else -1. Bitmap hand-made 12×16 (I-beam: batang vertikal dengan
 serif; hand: jari menunjuk), dua warna: 1=putih, 2=hitam.
 
-## Toolkit internal (apps/libui.cpp)
+## Toolkit internal (libs/widget/)
 
 ### Widget base — field baru + 3 setter
 
@@ -258,7 +258,7 @@ Window 360×400 tetap. Tambahan:
 ## File
 
 - `include/libui.h` — C ABI Phase 9 (clipboard/shortcut/dialog/notif/dnd/cursor/settings).
-- `apps/libui.cpp` — toolkit: clipboard, Dialog class, toast, DnD, shortcut, cursor bridge, settings, wrapper extern "C".
+- `libs/widget/` — toolkit: clipboard, Dialog class, toast, DnD, shortcut, cursor bridge, settings, wrapper extern "C".
 - `kernel/gfx/compositor.c` — bitmap kursor + `kwm_set_cursor`.
 - `kernel/syscall.c` — syscall 58.
 - `include/gfx.h`, `apps/userlib.c`, `include/userlib.h` — deklarasi/wrapper cursor.

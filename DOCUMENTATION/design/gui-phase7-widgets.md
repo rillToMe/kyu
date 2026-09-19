@@ -29,7 +29,7 @@
 |---|---|
 | `include/libui.h` | Deklarasi C ABI 5 widget baru. |
 | `apps/png.c` | **Baru** — decode PNG bersama: `png_decode(path,&w,&h) → uint32_t* XRGB8888` + `png_free`. |
-| `apps/libui.cpp` | 5 class widget + `Window::run` focus/drag/release + `Painter::image()` + extern `png_decode`. |
+| `libs/widget/` | 5 class widget + `Window::run` focus/drag/release + `Painter::image()` + extern `png_decode`. |
 | `user_apps/widget_demo.c` | Demo diperluas: semua 5 widget + label/button (regresi). |
 | `user_apps/Makefile` | `PNG_OBJ = png.o` + aturan compile + link `WIDGET_ELF` + `APP_OBJS`. |
 | `roadmap/GUI_ROADMAP.md` | Phase 7 → SELESAI. |
@@ -66,7 +66,7 @@ ui_widget_t* ui_image_create(ui_window_t* win, const char* filename, int w, int 
 // rect widget w×h; PNG dimuat dari KyuzenFS saat create; nearest-neighbor scale
 ```
 
-## Toolkit internal (apps/libui.cpp)
+## Toolkit internal (libs/widget/)
 
 ### Widget — 3 virtual baru + flag focus
 
@@ -134,7 +134,7 @@ set_focus(Widget* n): if (n==focused) return;
 - **Image**: `uint32_t* px; int iw,ih;` — `png_decode` di konstruktor; file
   hilang → `px=0` → placeholder rect `button_bg`. Draw: `p.image(x,y,w,h,px,iw,ih)`.
 
-`png_decode`/`png_free` dideklarasikan di libui.cpp sebagai
+`png_decode`/`png_free` dideklarasikan di `libs/widget/include/primitives/image.hpp` sebagai
 `extern "C" uint32_t* png_decode(const char*, int*, int*); extern "C" void png_free(uint32_t*);`
 
 ## apps/png.c (baru)
@@ -185,7 +185,7 @@ Window ±340×380, VBox spacing 10, memakai seluruh 5 widget + regresi label/but
 
 - `include/libui.h` — C ABI 5 widget baru.
 - `apps/png.c` — decode PNG bersama (stb_image, XRGB8888).
-- `apps/libui.cpp` — toolkit C++: Painter::image, focus/grab, 5 widget, wrapper extern "C".
+- `libs/widget/` — toolkit C++: Painter::image, focus/grab, 5 widget, wrapper extern "C".
 - `user_apps/widget_demo.c` — demo app C.
 - `user_apps/Makefile` — `PNG_OBJ`, aturan `png.o`, link `WIDGET_ELF`.
 - `Makefile` (top) — shortcut `widget_demo.elf`; `boot_image.iso` ikut salin (tidak berubah).

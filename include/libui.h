@@ -13,7 +13,7 @@ extern "C" {
 //
 // Aplikasi (C / Rust / Zig / dst.) berinteraksi dengan toolkit
 // lewat API C murni ini. Semua handle OPAQUE — implementasi
-// internal (apps/libui.cpp) adalah Modern C++ yang TIDAK bocor
+// internal (libs/widget/, dulu apps/libui.cpp) adalah Modern C++ yang TIDAK bocor
 // ke sini: tidak ada C++ type, template, exception, RTTI, atau
 // STL di belakang API ini. Semua symbol luar tetap extern "C".
 //
