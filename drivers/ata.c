@@ -132,3 +132,31 @@ uint32_t ata_get_total_sectors(void) {
     uint32_t total_sectors = *((uint32_t*)&buffer[60]);
     return total_sectors;
 }
+
+// =====================================================================
+// Wrapper Block 4KB — Modul 1 KyuzenFS V4.
+// 1 block = 8 sektor LBA kontigu. Dibaca/ditulis sebagai 8 transfer
+// sektor tunggal (driver dasar memang PIO 1-sektor); bcache yang
+// menyatukan semuanya sebagai satu unit cache.
+// =====================================================================
+#define KZFS_BLOCK_SECTORS 8
+
+int ata_read_block4k(uint64_t block_num, void *buf) {
+    if (!buf) return -1;
+    uint8_t *p = (uint8_t*)buf;
+    uint32_t lba0 = (uint32_t)(block_num * KZFS_BLOCK_SECTORS);
+    for (int s = 0; s < KZFS_BLOCK_SECTORS; s++) {
+        ata_read_sector(lba0 + (uint32_t)s, p + (s * 512));
+    }
+    return 0;
+}
+
+int ata_write_block4k(uint64_t block_num, const void *buf) {
+    if (!buf) return -1;
+    const uint8_t *p = (const uint8_t*)buf;
+    uint32_t lba0 = (uint32_t)(block_num * KZFS_BLOCK_SECTORS);
+    for (int s = 0; s < KZFS_BLOCK_SECTORS; s++) {
+        ata_write_sector(lba0 + (uint32_t)s, (uint8_t*)(p + (s * 512)));
+    }
+    return 0;
+}

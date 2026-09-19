@@ -41,26 +41,28 @@
 #include "smp.h"
 #include "spinlock.h"
 #include "wait.h"
-#include "kyuzenfs.h"
+#include "vnode.h"
+#include "kyuzenfs_v4.h"
 #include <stddef.h>
 
 extern void* kmalloc(uint32_t size);
 extern void  kfree(void* ptr);
-extern void* krealloc(void* ptr, uint32_t old_size, uint32_t new_size);
-extern int   kfs_create_file(char* filename, char* data, uint32_t size);
-extern void  kfs_delete_file(char* filename);
-extern int   kfs_exists(char* filename);
-extern uint32_t kfs_get_file_size(char* filename);
-extern int   kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
+struct vnode* kfs_v4_root_vnode(void);
+void kfs_sync_all(void);
 
-// Open-description kinds. TTY descriptions carry no buffer/offset;
-// file descriptions buffer the whole KyuzenFS file in the heap; pipe
-// endpoint descriptions share one vfs_pipe_t (never a generic
+// Open-description kinds. TTY descriptions carry no offset; file
+// descriptions carry a VNODE (KyuzenFS V4 streaming, in-place write);
+// pipe endpoint descriptions share one vfs_pipe_t (never a generic
 // read/write fd: each description knows its direction).
 #define VFS_KIND_TTY        1
 #define VFS_KIND_FILE       0
 #define VFS_KIND_PIPE_READ  2
 #define VFS_KIND_PIPE_WRITE 3
+
+// KyuzenFS V4: file description memegang VNODE (streaming per-block via
+// bcache, write in-place) — TIDAK ada lagi buffer whole-file di RAM.
+#include "vnode.h"
+#include "kyuzenfs_v4.h"
 
 // Pipe object: bounded circular byte buffer shared by exactly one read
 // endpoint description and one write endpoint description (dups alias
@@ -84,12 +86,12 @@ typedef struct vfs_open_file {
     volatile uint32_t refcount;   // references from fd entries (+ temp I/O refs)
     uint8_t  kind;                // VFS_KIND_* (pipe ends know their direction)
     char     path[VFS_MAX_PATH];
-    uint8_t* buf;                 // FILE only; NULL for TTY and pipes
-    uint32_t size;                // valid bytes in buf
-    uint32_t cap;                 // allocated bytes
+    // FILE only: vnode streaming (KyuzenFS V4) — offset/ukuran hidup di
+    // vnode/inode; dirty + flush-on-last-close digantikan oleh sync berkala
+    // (kfs_sync_all) dan vnode sync saat release.
+    struct vnode* vnode;          // FILE only; NULL untuk TTY dan pipes
     uint32_t pos;                 // THE shared file offset (one per description)
     uint32_t flags;               // open-time status flags (VFS_O_*)
-    int      dirty;               // FILE only: needs flush on last close
     vfs_pipe_t* pipe;             // pipe ends only; NULL otherwise
 } vfs_open_file_t;
 
@@ -160,17 +162,9 @@ static void open_get(vfs_open_file_t* of) {
     __sync_fetch_and_add(&of->refcount, 1);
 }
 
-// Flush a dirty buffer to disk. Caller holds vfs_lock; kfs has its own lock and
-// the two are never nested in the reverse order.
-static void flush_locked(vfs_open_file_t* of) {
-    if (of->dirty) {
-        // kfs_create_file refuses an existing name, so replace: delete then
-        // recreate with the current buffer contents.
-        if (kfs_exists(of->path)) kfs_delete_file(of->path);
-        kfs_create_file(of->path, (char*)of->buf, of->size);
-        of->dirty = 0;
-    }
-}
+// KyuzenFS V4: tidak ada flush_locked delete+recreate — write in-place
+// langsung ke block fisik via vnode; metadata disinkronkan oleh
+// kfs_sync_all() berkala dan vnode sync saat release.
 
 // A pipe endpoint closed: drop its side flag and wake everyone on the
 // other side (readers get EOF when writers hit 0; writers fail when
@@ -201,30 +195,30 @@ static void open_put(vfs_open_file_t* of) {
     uint32_t left = __sync_sub_and_fetch(&of->refcount, 1);
     if (left != 0) return;
     if (of->kind == VFS_KIND_FILE) {
-        flush_locked(of);
-        if (of->buf) kfree(of->buf);
+        if (of->vnode) {
+            of->vnode->ops->sync(of->vnode);       // metadata + bcache flush
+            of->vnode->ops->release(of->vnode);    // refcount terakhir di sini
+            of->vnode = NULL;
+        }
     } else if (of->kind == VFS_KIND_PIPE_READ || of->kind == VFS_KIND_PIPE_WRITE) {
         if (of->pipe) pipe_end_closed(of->pipe, of->kind);
     }
     kfree(of);
 }
 
-// Allocate an open description with refcount 1. Buffer owned by the
-// caller on success (moves into the description); freed here on failure.
+// Allocate an open description with refcount 1. Vnode (FILE) dimiliki
+// caller pada sukses (berpindah ke description); dilepas di sini saat gagal.
 static vfs_open_file_t* open_alloc(uint8_t kind, const char* path,
-                                   uint8_t* buf, uint32_t size, uint32_t cap,
-                                   uint32_t pos, uint32_t flags, int dirty) {
+                                   struct vnode* vnode, uint32_t pos,
+                                   uint32_t flags) {
     vfs_open_file_t* of = (vfs_open_file_t*)kmalloc(sizeof(vfs_open_file_t));
     if (!of) return NULL;
     of->refcount = 1;
     of->kind  = kind;
     path_copy(of->path, path ? path : "");
-    of->buf   = buf;
-    of->size  = size;
-    of->cap   = cap;
+    of->vnode = vnode;
     of->pos   = pos;
     of->flags = flags;
-    of->dirty = dirty;
     of->pipe  = NULL;
     return of;
 }
@@ -246,7 +240,7 @@ static void install_tty_locked(int task_id, int fd, uint32_t flags) {
     int s = slot_of(task_id, fd);
     if (s < 0) return;
     if (fds[s].used) return;   // idempotent: never clobber a live fd
-    vfs_open_file_t* of = open_alloc(VFS_KIND_TTY, "tty", NULL, 0, 0, 0, flags, 0);
+    vfs_open_file_t* of = open_alloc(VFS_KIND_TTY, "tty", NULL, 0, flags);
     if (!of) return;
     fds[s].used     = 1;
     fds[s].owner    = task_id;
@@ -273,32 +267,39 @@ int vfs_open(const char* path, uint32_t flags) {
     int task_id = smp_current_task_id();
     if (task_id < 0 || task_id >= MAX_TASKS) return -1;
 
-    int exists = kfs_exists((char*)path);
-    if (!exists && !(flags & VFS_O_CREAT)) return -1;
+    // KyuzenFS V4: resolve via root vnode (lookup/create/truncate), lalu
+    // description hanya menyimpan vnode + offset — streaming per-block.
+    struct vnode* root = kfs_v4_root_vnode();
+    if (!root) return -1;
 
-    uint32_t fsize = exists ? kfs_get_file_size((char*)path) : 0;
-    uint32_t cap   = (fsize < 64) ? 64 : fsize;
+    struct vnode* vn = NULL;
+    if (root->ops->lookup(root, path, &vn) != KZFS_EOK || !vn) {
+        if (!(flags & VFS_O_CREAT)) { root->ops->release(root); return -1; }
+        if (root->ops->create(root, path, 0, &vn) != KZFS_EOK || !vn) {
+            root->ops->release(root);
+            return -1;
+        }
+    } else if (flags & VFS_O_TRUNC) {
+        vn->ops->truncate(vn, 0);
+    }
+    root->ops->release(root);
 
-    uint8_t* buf = (uint8_t*)kmalloc(cap);
-    if (!buf) return -1;
-
-    if (exists && !(flags & VFS_O_TRUNC) && fsize > 0) {
-        if (!kfs_read_to_buffer((char*)path, (char*)buf, cap)) { kfree(buf); return -1; }
-    } else {
-        fsize = 0;   // O_TRUNC or brand-new file starts empty
+    uint64_t fsize = vn->size;
+    if (vn->ops->open(vn, (int)flags) != KZFS_EOK) {
+        vn->ops->release(vn);
+        return -1;
     }
 
-    vfs_open_file_t* of = open_alloc(VFS_KIND_FILE, path, buf, fsize, cap,
-                                     (flags & VFS_O_APPEND) ? fsize : 0,
-                                     flags,
-                                     (!exists || (flags & VFS_O_TRUNC)) ? 1 : 0);
-    if (!of) { kfree(buf); return -1; }
+    vfs_open_file_t* of = open_alloc(VFS_KIND_FILE, path, vn,
+                                     (flags & VFS_O_APPEND) ? (uint32_t)fsize : 0,
+                                     flags);
+    if (!of) { vn->ops->release(vn); return -1; }   // vnode ref pindah ke of
 
     uint64_t f = spinlock_lock_irqsave(&vfs_lock);
     int fd = alloc_fd(task_id);
     if (fd < 0) {
         spinlock_unlock_irqrestore(&vfs_lock, f);
-        if (of->buf) kfree(of->buf);
+        vn->ops->release(vn);      // lepas ref vnode
         kfree(of);
         return -1;   // fd table full
     }
@@ -433,33 +434,15 @@ int vfs_read(int fd, void* buf, uint32_t count) {
         spinlock_unlock_irqrestore(&vfs_lock, f);
         return n;
     }
-    uint32_t avail = (of->pos < of->size) ? (of->size - of->pos) : 0;
-    uint32_t n = (count < avail) ? count : avail;
-    for (uint32_t i = 0; i < n; i++) ((uint8_t*)buf)[i] = of->buf[of->pos + i];
-    of->pos += n;   // shared offset: visible to every duplicate fd
+    // KyuzenFS V4: streaming read via vnode (block cache); offset SHARED
+    // satu per description (alias dup/fork melihat offset yang sama).
+    if (count > (uint32_t)0x40000000u) count = 0x40000000u;  // clamp int-safe
+    uint64_t got = 0;
+    int rc = of->vnode->ops->read(of->vnode, of->pos, buf, count, &got);
+    of->pos += (uint32_t)got;
     spinlock_unlock_irqrestore(&vfs_lock, f);
-    return (int)n;
-}
-
-// Grow the buffer to hold at least `need` bytes. Caller holds vfs_lock.
-// `need` is 64-bit: the caller computes pos+count in 64-bit so a 32-bit wrap
-// can't hide an oversized write (bug 2.1). Reject any need beyond UINT32_MAX —
-// kmalloc/krealloc sizes are uint32_t, and doubling past that wraps to 0,
-// turning the growth loop into an infinite loop.
-static int ensure_cap(vfs_open_file_t* of, uint64_t need) {
-    if (need <= of->cap) return 0;
-    if (need > UINT32_MAX) return -1;   // size can't be represented by kmalloc/krealloc
-    uint32_t newcap = of->cap ? of->cap : 64;
-    while (newcap < need) {
-        uint32_t next = newcap * 2;
-        if (next <= newcap) return -1;  // would overflow past UINT32_MAX → bail
-        newcap = next;
-    }
-    uint8_t* nb = (uint8_t*)krealloc(of->buf, of->cap, newcap);
-    if (!nb) return -1;
-    of->buf = nb;
-    of->cap = newcap;
-    return 0;
+    if (rc != KZFS_EOK && got == 0) return -1;
+    return (int)got;
 }
 
 int vfs_write(int fd, const void* buf, uint32_t count) {
@@ -511,20 +494,17 @@ int vfs_write(int fd, const void* buf, uint32_t count) {
         spinlock_unlock_irqrestore(&vfs_lock, f);
         return n;
     }
-    if (of->flags & VFS_O_APPEND) of->pos = of->size;
-    // Compute end position in 64-bit so pos+count can't wrap to a small value
-    // that fools ensure_cap into thinking the buffer already fits (bug 2.1).
-    uint64_t end = (uint64_t)of->pos + count;
-    if (ensure_cap(of, end) != 0) {
-        spinlock_unlock_irqrestore(&vfs_lock, f);
-        return -1;
-    }
-    for (uint32_t i = 0; i < count; i++) of->buf[of->pos + i] = ((const uint8_t*)buf)[i];
-    of->pos += count;
-    if (of->pos > of->size) of->size = of->pos;
-    of->dirty = 1;
+    // KyuzenFS V4: streaming write IN-PLACE via vnode — block fisik yang
+    // sudah ada langsung ditulisi; block baru dialokasi hanya bila file
+    // membesar. O_APPEND menulis selalu di ujung file (vnode->size live).
+    if (of->flags & VFS_O_APPEND) of->pos = (uint32_t)of->vnode->size;
+    if (count > (uint32_t)0x40000000u) count = 0x40000000u;  // clamp int-safe
+    uint64_t wrote = 0;
+    int rc = of->vnode->ops->write(of->vnode, of->pos, buf, count, &wrote);
+    of->pos += (uint32_t)wrote;
     spinlock_unlock_irqrestore(&vfs_lock, f);
-    return (int)count;
+    if (rc != KZFS_EOK && wrote == 0) return -1;
+    return (int)wrote;
 }
 
 int vfs_lseek(int fd, int32_t offset, int whence) {
@@ -534,7 +514,7 @@ int vfs_lseek(int fd, int32_t offset, int whence) {
     if (of->kind != VFS_KIND_FILE) { spinlock_unlock_irqrestore(&vfs_lock, f); return -1; }
 
     int64_t base = (whence == VFS_SEEK_CUR) ? (int64_t)of->pos
-                 : (whence == VFS_SEEK_END) ? (int64_t)of->size
+                 : (whence == VFS_SEEK_END) ? (int64_t)of->vnode->size
                  : 0;
     int64_t np = base + offset;
     if (np < 0 || np > UINT32_MAX) {   // pos is uint32_t; reject silent truncation (bug 2.2)
@@ -562,8 +542,8 @@ int vfs_pipe(int out[2]) {
         wait_queue_init(&p->wq);
         p->buf = buf; p->rpos = 0; p->wpos = 0; p->used = 0;
         p->readers = 1; p->writers = 1;
-        ro = open_alloc(VFS_KIND_PIPE_READ, "pipe", NULL, 0, 0, 0, VFS_O_RDONLY, 0);
-        if (ro) wo = open_alloc(VFS_KIND_PIPE_WRITE, "pipe", NULL, 0, 0, 0, VFS_O_WRONLY, 0);
+        ro = open_alloc(VFS_KIND_PIPE_READ, "pipe", NULL, 0, VFS_O_RDONLY);
+        if (ro) wo = open_alloc(VFS_KIND_PIPE_WRITE, "pipe", NULL, 0, VFS_O_WRONLY);
     }
     if (!p || !buf || !ro || !wo) {
         if (wo) kfree(wo);

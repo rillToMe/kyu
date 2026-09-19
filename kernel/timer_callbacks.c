@@ -30,6 +30,7 @@ extern void e1000_poll(void);
 // (TCP retransmit, ARP expiry, DHCP renewal, dll).
 // Di-define oleh lwIP di src/core/timeouts.c
 extern void sys_check_timeouts(void);
+extern void kfs_sync_all(void);   // KyuzenFS V4 write-back (cb_fsync)
 
 // ============================================================
 // CALLBACK 1: Visual HUD — spinner + uptime di pojok kanan atas
@@ -154,6 +155,23 @@ static void cb_network(uint32_t tick) {
 }
 
 // ============================================================
+// CALLBACK 5: Filesystem sync — tulis balik block dirty (bcache) +
+// metadata (bitmap/superblock) setiap 3 detik. Write-back interval
+// kecil membatasi kehilangan data saat power loss tanpa membuat I/O
+// disk konstan. kfs_sync_all no-op bila FS belum termount.
+// ============================================================
+static uint64_t next_fs_sync = 0;
+
+static void cb_fsync(uint32_t tick) {
+    (void)tick;
+    uint64_t now = timer_get_ms();
+    if (now >= next_fs_sync) {
+        next_fs_sync = now + 3000;
+        kfs_sync_all();
+    }
+}
+
+// ============================================================
 // ENTRY POINT — dipanggil dari kmain setelah init_timer()
 // ============================================================
 void timer_callbacks_init(void) {
@@ -161,5 +179,6 @@ void timer_callbacks_init(void) {
     timer_register(cb_cursor);   // Slot 1: TTY cursor blink
     timer_register(cb_flush);    // Slot 2: Compositor screen flush
     timer_register(cb_network);  // Slot 3: e1000 RX poll + lwIP timeouts
-    // Slot 4-7: tersedia untuk audio tick, animasi, dll
+    timer_register(cb_fsync);    // Slot 4: KyuzenFS V4 write-back (3s)
+    // Slot 5-7: tersedia untuk audio tick, animasi, dll
 }

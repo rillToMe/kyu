@@ -58,7 +58,12 @@ void pci_probe(void) {
 // Fungsi Sakti untuk Matiin PC (Power Off)
 void acpi_poweroff(void) {
     kprint("\nMenyimpan state dan mematikan OS...\n");
-    
+
+    // KyuzenFS V4: flush seluruh block dirty + metadata sebelum listrik
+    // hilang (write-back cache boleh saja belum mem-flush).
+    extern void kfs_sync_all(void);
+    kfs_sync_all();
+
     // Tembak perintah power-off ke port standar ACPI emulator (QEMU, Bochs, VirtualBox)
     outw(0xB004, 0x2000); // Bochs / versi QEMU lama
     outw(0x604, 0x2000);  // QEMU modern
@@ -72,7 +77,11 @@ void acpi_poweroff(void) {
 // Fungsi Sakti untuk Restart PC (Reboot)
 void system_reboot(void) {
     kprint("\nMerestart OS...\n");
-    
+
+    // KyuzenFS V4: flush data sebelum reset.
+    extern void kfs_sync_all(void);
+    kfs_sync_all();
+
     // 1. Cara Standar: Memaksa CPU reset via PS/2 Keyboard Controller
     uint8_t temp;
     do {

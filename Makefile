@@ -18,7 +18,7 @@ LD = ld.lld
 QEMU = qemu-system-x86_64.exe
 
 # Direktori sumber kernel (Ring 0)
-SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs apps \
+SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs kernel/fs apps \
            graphics graphics/backend graphics/memory drivers/graphics/hw
 
 # ==========================================
@@ -109,7 +109,7 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
-                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c,\
+                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c,\
                         $(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
@@ -268,6 +268,47 @@ test-fork: test/fork_test
 
 test/fork_test: test/fork_test.c include/proc.h include/cred.h include/task.h include/vfs.h
 	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/fork_test.c -Iinclude
+
+# --- Host-side unit test: KyuzenFS V4 (bcache + extent engine + direktori) ---
+# test/kyuzenfs_v4_test.c meng-include kernel/fs/bcache.c dan modul
+# kfs_*.c langsung; ATA/heap/spinlock di-mock ke RAM.
+# Jalan dengan: make test-kyuzenfs-v4
+.PHONY: test-kyuzenfs-v4
+test-kyuzenfs-v4: test/kyuzenfs_v4_test
+	./test/kyuzenfs_v4_test
+
+KFS4_SRCS = kernel/fs/bcache.c kernel/fs/kfs_super.c kernel/fs/kfs_balloc.c \
+            kernel/fs/kfs_inode.c kernel/fs/kfs_extent.c kernel/fs/kfs_dir.c \
+            kernel/fs/kfs_vnode.c kernel/fs/kfs_shim.c
+KFS4_HDRS = include/kyuzenfs_v4.h include/vnode.h include/bcache.h include/ata.h \
+            include/kyuzenfs.h kernel/fs/kfs_internal.h
+
+test/kyuzenfs_v4_test: test/kyuzenfs_v4_test.c $(KFS4_HDRS) $(KFS4_SRCS)
+	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_v4_test.c
+
+# --- Host tool: formatter disk KyuzenFS V4 (Modul 2) ---
+# Format disk.img dari host sebelum boot: make mkfs && ./mkfs.kyuzenfs disk.img
+.PHONY: mkfs
+mkfs: mkfs.kyuzenfs
+
+mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
+	$(HOSTCC) -O2 -Wall -Wextra -iquote include -o $@ tools/mkfs.kyuzenfs.c
+
+clean-tool:
+	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck testimg.img
+
+# --- Cross-check: image buatan mkfs host harus termount oleh parser kernel ---
+# Target memformat testimg.img via ./mkfs.kyuzenfs lalu menjalankan test host
+# yang memuat image tersebut ke RAM disk mock. Jalankan: make test-kyuzenfs-xcheck
+.PHONY: test-kyuzenfs-xcheck
+test-kyuzenfs-xcheck: test/kyuzenfs_xcheck mkfs.kyuzenfs
+	rm -f testimg.img
+	dd if=/dev/zero of=testimg.img bs=1M count=32 2>/dev/null
+	./mkfs.kyuzenfs testimg.img
+	./test/kyuzenfs_xcheck testimg.img
+
+test/kyuzenfs_xcheck: test/kyuzenfs_xcheck.c $(KFS4_HDRS) $(KFS4_SRCS)
+	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_xcheck.c
 
 # --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
 # Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer

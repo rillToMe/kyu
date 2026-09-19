@@ -88,15 +88,9 @@ extern void user_login();
 extern void init_mouse();
 extern void kfs_delete_file(char* filename);
 
-// kprint didefinisikan di kernel/kyuzenfs.c (via write_fs & tty_node)
+// kprint & kprint_num kini di kernel/kprint.c (dipisah dari FS sejak V4)
 extern void kprint(const char* str);
-
-void kprint_num(uint64_t num) {
-    if (num == 0) { kprint("0"); return; }
-    char buf[20]; int i = 18; buf[19] = '\0';
-    while (num > 0) { buf[i--] = (num % 10) + '0'; num /= 10; }
-    kprint(&buf[i + 1]);
-}
+extern void kprint_num(uint64_t num);
 
 // ============================================================
 // BOOT CONSOLE — presentasi ringkas, diagnostik verbose ke serial.
@@ -323,9 +317,9 @@ void kernel_main(void) {
 #endif
 
     kprint_quiet = 1;   // redam log verbose kfs_init (mis. format disk) ke serial
-    kfs_init();
+    kfs_init();          // KyuzenFS V4: bcache + superblock + bitmap mount
     kprint_quiet = 0;
-    boot_state("  OK  ", "Filesystem", 0);
+    boot_state("  OK  ", "Filesystem", "KyuzenFS V4 (extent)");
 
     vfs_init();
     vfs_task_init(0);   // P0 Phase 2: task 0 stdio (fd 0/1/2 -> TTY)
