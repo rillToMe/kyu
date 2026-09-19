@@ -10,6 +10,11 @@
 #include "userlib.h"
 #include "shell.h"
 #include "libui.h"
+#include "color_types.h"   // tema + warna prompt memakai COLOR_RGB (libs/color)
+
+// Warna prompt/caret (biru muda) — dipakai di dua tempat: accent tema dan gaya
+// prompt TextEdit. Satu definisi supaya keduanya tidak bisa menyimpang.
+#define COLOR_PROMPT COLOR_RGB(0x7C, 0xC7, 0xFF)
 
 static ui_widget_t* out;    // transcript (TextEdit editable: header+prompt+output)
 static ui_window_t* g_win;  // untuk menutup window saat `logout`
@@ -131,13 +136,14 @@ void main(void) {
     ui_window_set_title(win, "Terminal");
 
     // Tema terminal: latar hitam, teks terang, accent biru muda (prompt/caret).
+    // Warna per komponen lewat libs/color (bukan hex 0xAARRGGBB lagi).
     ui_theme_t theme;
-    theme.bg           = 0x0B0D10;
-    theme.fg           = 0xD7DCE2;
-    theme.accent       = 0x7CC7FF;
-    theme.button_bg    = 0x0B0D10;
-    theme.button_fg    = 0xD7DCE2;
-    theme.button_hover = 0x16191D;
+    theme.bg           = COLOR_RGB(0x0B, 0x0D, 0x10);
+    theme.fg           = COLOR_RGB(0xD7, 0xDC, 0xE2);
+    theme.accent       = COLOR_PROMPT;
+    theme.button_bg    = COLOR_RGB(0x0B, 0x0D, 0x10);
+    theme.button_fg    = COLOR_RGB(0xD7, 0xDC, 0xE2);
+    theme.button_hover = COLOR_RGB(0x16, 0x19, 0x1D);
     ui_window_set_theme(win, &theme);
 
     // Satu permukaan transcript: prompt adalah baris terakhir, Enter = submit.
@@ -158,7 +164,7 @@ void main(void) {
     shell_build_prompt(g_prompt, sizeof(g_prompt), "@kyuzen:~$ ");
     // Prompt berwarna (gaya shell Linux): "user@kyuzen:~$ " biru muda,
     // kontras terhadap output putih di baris yang sama.
-    ui_textedit_set_prompt_style(out, g_prompt, 0x7CC7FF);
+    ui_textedit_set_prompt_style(out, g_prompt, COLOR_PROMPT);
 
     term_show("KyuzenOS Terminal\n");
     term_show("Type 'help' for available commands.\n\n");

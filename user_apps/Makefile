@@ -68,6 +68,7 @@ LIBGUI_OBJ  = libgui.o
 LIBUI_OBJ   = libui.o   # Widget Toolkit Modern C++ (apps/libui.cpp)
 PNG_OBJ     = png.o     # Dekoder PNG bersama (apps/png.c, stb_image)
 COLOR_OBJS  = color_blend.o color_space.o color_utils.o   # libs/color (dipakai kernel & app)
+LIBUI_COLOR_OBJS = color_utils.o   # objek libs/color yang direferensikan toolkit libui
 
 # --- Target ELF Akhir ---
 FILEMAN_ELF = $(OUT_DIR)/fileman.elf
@@ -149,7 +150,8 @@ $(PNG_OBJ): $(APPS_DIR)/png.c
 
 # ==========================================================
 # COMPILE COLOR — libs/color bersama (header tersedia via CFLAGS_COMMON)
-# App yang memakai fungsi out-of-line (blend/space/utils) menambahkan
+# Toolkit libui mereferensikan color_darken/lighten → $(LIBUI_COLOR_OBJS) ikut
+# di link app GUI. App lain yang memakai blend/ruang warna menambahkan
 # $(COLOR_OBJS) ke baris link-nya.
 # ==========================================================
 COLOR_DIR = $(ROOT_DIR)/libs/color/src
@@ -173,9 +175,9 @@ fileman.o: fileman.c
 	@echo "[CC] Mengompilasi fileman.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(FILEMAN_ELF): fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(FILEMAN_ELF): fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking fileman.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] fileman.elf siap!"
 
 fileman: $(FILEMAN_ELF)
@@ -187,9 +189,9 @@ viewer.o: viewer.c
 	@echo "[CC] Mengompilasi viewer.c (O2)..."
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
-$(VIEWER_ELF): viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(VIEWER_ELF): viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking viewer.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] viewer.elf siap!"
 
 viewer: $(VIEWER_ELF)
@@ -201,9 +203,9 @@ clock.o: clock.c
 	@echo "[CC] Mengompilasi clock.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(CLOCK_ELF): clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(CLOCK_ELF): clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking clock.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] clock.elf siap!"
 
 clock: $(CLOCK_ELF)
@@ -215,9 +217,9 @@ calc.o: calc.c
 	@echo "[CC] Mengompilasi calc.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(CALC_ELF): calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(CALC_ELF): calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking calc.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] calc.elf siap!"
 
 calc: $(CALC_ELF)
@@ -229,9 +231,9 @@ taskmgr.o: taskmgr.c
 	@echo "[CC] Mengompilasi taskmgr.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(TASKMGR_ELF): taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(TASKMGR_ELF): taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking taskmgr.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] taskmgr.elf siap!"
 
 taskmgr: $(TASKMGR_ELF)
@@ -243,9 +245,9 @@ notepad.o: notepad.c
 	@echo "[CC] Mengompilasi notepad.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(NOTEPAD_ELF): notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(NOTEPAD_ELF): notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking notepad.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] notepad.elf siap!"
 
 notepad: $(NOTEPAD_ELF)
@@ -274,9 +276,9 @@ terminal.o: terminal.c
 	@echo "[CC] Mengompilasi terminal.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(TERMINAL_ELF): terminal.o $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(TERMINAL_ELF): terminal.o $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking terminal.elf (libui toolkit + shell engine + png)..."
-	$(LD) $(LDFLAGS) terminal.o $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) terminal.o $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] terminal.elf siap!"
 
 terminal: $(TERMINAL_ELF)
@@ -288,9 +290,9 @@ settings.o: settings.c
 	@echo "[CC] Mengompilasi settings.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(SETTINGS_ELF): settings.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(SETTINGS_ELF): settings.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking settings.elf (libui toolkit + png)..."
-	$(LD) $(LDFLAGS) settings.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) settings.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] settings.elf siap!"
 
 settings: $(SETTINGS_ELF)
@@ -427,9 +429,9 @@ widget_demo.o: widget_demo.c
 	@echo "[CC] Mengompilasi widget_demo.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(WIDGET_ELF): widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+$(WIDGET_ELF): widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 	@echo "[LD] Linking widget_demo.elf (app C + libui C++ toolkit + png)..."
-	$(LD) $(LDFLAGS) widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	$(LD) $(LDFLAGS) widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(LIBUI_COLOR_OBJS) -o $@
 	@echo "[OK] widget_demo.elf siap!"
 
 widget_demo: $(WIDGET_ELF)

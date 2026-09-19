@@ -207,9 +207,13 @@ Pola umum: `gui_create_window`+`gui_mainloop`+draw langsung →
   klik pilih; tombol Buka/Refresh. `.elf` → `sys_spawn`; `.png` → tulis
   `view.tmp` + spawn `viewer.elf`; `.txt` → tulis `edit.tmp` + spawn
   `notepad.elf` (arg antar-app via temp-file, pola lama fileman→edit.tmp).
-- **viewer.c → Image Viewer**: daftar `.png` di `ListView`, gambar di
-  `Image` dalam `ScrollView`, zoom ± toolbar (`ui_image_set_scale`); dari
-  Explorer (`view.tmp`) → muat langsung, tutup → kembali ke Explorer.
+- **viewer.c → Image Viewer**: daftar `.png` di `ListView` (sidebar kiri),
+  gambar di `Image` dalam `ScrollView`, zoom ± toolbar (`ui_image_set_scale`);
+  dari Explorer (`view.tmp`) → muat langsung, tutup → kembali ke Explorer.
+  *Diperbarui Phase 11* — lihat
+  [`gui-phase11-image-viewer.md`](gui-phase11-image-viewer.md): gambar
+  di-auto-fit ke area (tanpa geser manual), tombol nyata + menubar +
+  statusbar, scrollbar hanya saat zoom.
 - **calc.c → Kalkulator**: display `Label` + grid 5×4 `Button` (HBox per
   baris), state machine `+,-,×,÷,%,+/-,C/CE,=` diambil utuh dari versi
   libgui.

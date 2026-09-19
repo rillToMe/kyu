@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <stdio.h>
 
+#include "aa_math.h"   // pembanding paritas color_blend_alpha (jalur lama compositor)
 #include "color_blend.h"
 #include "color_space.h"
 #include "color_types.h"
@@ -66,6 +67,12 @@ static void test_types(void) {
     // Decode hex gaya display KyuzenOS (0xAARRGGBB), mis. ps1_color libui.
     color_t hex = color_from_u32(0xFF7CC7FFu, FORMAT_ARGB);
     assert(hex.r == 0x7C && hex.g == 0xC7 && hex.b == 0xFF && hex.a == 0xFF);
+
+    // Helper nilai: ganti cakupan / paksa opaque tanpa mengubah komponen lain.
+    color_t faded = color_with_alpha(c, 7);
+    assert(faded.r == c.r && faded.g == c.g && faded.b == c.b && faded.a == 7);
+    assert(color_opaque(COLOR_TRANSPARENT).a == 255);
+    assert(color_opaque(COLOR_TRANSPARENT).r == 0);
 }
 
 static void test_blend(void) {
@@ -102,6 +109,25 @@ static void test_blend(void) {
     color_blend_span(span_dst, span_src, 3);
     for (int i = 0; i < 3; i++) {
         assert(color_eq(span_dst[i], span_expect[i]));
+    }
+}
+
+// Paritas dengan aa_mix (jalur blend lama compositor/libui): wajib identik
+// pixel-per-pixel di atas canvas opaque, supaya migrasi tidak mengubah render.
+static void test_aa_mix_parity(void) {
+    const uint32_t srcs[4] = { 0x123456, 0xFFFFFF, 0x000000, 0xE81123 };
+    const uint32_t dsts[4] = { 0x000000, 0xFFFFFF, 0x808080, 0x1E293B };
+    for (int s = 0; s < 4; s++) {
+        for (int d = 0; d < 4; d++) {
+            for (uint32_t a = 0; a <= 255; a++) {
+                color_t src = color_from_u32(srcs[s], FORMAT_ARGB);
+                color_t dst = color_from_u32(dsts[d], FORMAT_ARGB);
+                src.a = (uint8_t)a;
+                dst.a = 255;   // canvas compositor diperlakukan opaque
+                uint32_t got = color_to_u32(color_blend_alpha(src, dst), FORMAT_ARGB) & 0xFFFFFFu;
+                assert(got == aa_mix(srcs[s], dsts[d], a));
+            }
+        }
     }
 }
 
@@ -235,11 +261,31 @@ static void test_palette(void) {
     assert(rgb24(COLOR_CYAN) == 0x00FFFF);
     assert(rgb24(COLOR_MAGENTA) == 0xFF00FF);
     assert(rgb24(COLOR_GRAY) == 0x808080 && COLOR_GRAY.a == 255);
+
+    // Bentuk INITIALIZER: yang penting konstanta (sah untuk `static const` di C)
+    // dan nilainya sama dengan bentuk nilai runtime COLOR_RGB()/palet.
+    static const color_t init_rgb   = COLOR_RGB_INIT(0x2D, 0x2D, 0x2D);   // tema notepad
+    static const color_t init_prompt = COLOR_RGB_INIT(0x7C, 0xC7, 0xFF);  // prompt terminal
+    static const color_t init_white = COLOR_WHITE_INIT;
+    static const color_t init_black = COLOR_BLACK_INIT;
+    static const color_t init_clear = COLOR_TRANSPARENT_INIT;
+    static const color_t init_rgba  = COLOR_RGBA_INIT(10, 20, 30, 40);
+    assert(color_eq(init_rgb, COLOR_RGB(0x2D, 0x2D, 0x2D)));
+    assert(color_eq(init_prompt, COLOR_RGB(0x7C, 0xC7, 0xFF)));
+    assert(color_eq(init_white, COLOR_WHITE) && color_eq(init_black, COLOR_BLACK));
+    assert(color_eq(init_clear, COLOR_TRANSPARENT));
+    assert(init_rgb.a == 255 && init_rgba.a == 40);
+    assert(color_to_u32(init_rgb, FORMAT_ARGB) == 0xFF2D2D2Du);
+    assert(color_to_u32(init_prompt, FORMAT_ARGB) == 0xFF7CC7FFu);
+    // Komponen di luar uint8_t dipangkas, sama seperti COLOR_RGBA().
+    static const color_t init_clip = COLOR_RGBA_INIT(0x1FF, 0x2FF, 0x3FF, 0x400);
+    assert(color_eq(init_clip, COLOR_RGBA(0x1FF, 0x2FF, 0x3FF, 0x400)));
 }
 
 int main(void) {
     test_types();
     test_blend();
+    test_aa_mix_parity();
     test_hsl();
     test_hsv();
     test_roundtrip_sweep();

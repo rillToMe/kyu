@@ -22,6 +22,7 @@ Linux), menggantikan satu file raksasa secara bertahap.
 | [`sched-module-split.md`](design/sched-module-split.md) | Pemecahan `kernel/task.c` (907 baris) jadi modul `kernel/sched/` (core, runqueue, lifecycle, block, debug) — tanpa perubahan perilaku, `task.h` tidak berubah |
 | [`fs-phase1-3-directories.md`](design/fs-phase1-3-directories.md) | KyuzenFS 3 fase: folder sebagai entry biasa + path absolut, syscall path (`sys_get_file_list`/`sys_mkdir`), migrasi app ke `/apps/` |
 | [`color-library.md`](design/color-library.md) | Library warna modular `libs/color/`: `color_t` RGBA, blending integer, HSL/HSV, palet + utility UI; zero-alloc, kernel & user-space, verifikasi sweep 256³ warna |
+| [`gui-phase11-image-viewer.md`](design/gui-phase11-image-viewer.md) | Image Viewer: sidebar + auto-fit (tanpa geser manual) + statusbar; API libui baru `ui_image_set_fit`/`ui_image_natural_size`/`ui_scrollview_set_pan`/`ui_listview_set_selected` |
 
 ### troubleshooting/
 

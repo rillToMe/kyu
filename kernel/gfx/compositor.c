@@ -4,7 +4,9 @@
 #include "kwm_internal.h"
 #include "display.h"
 #include "spinlock.h"
-#include "aa_math.h"
+#include "aa_math.h"      // aa_cov — coverage geometri (bukan warna)
+#include "color_blend.h"  // color_blend_alpha — blend shared kernel/app
+#include "color_utils.h"  // palet COLOR_BLACK/WHITE/TRANSPARENT
 #include "heap.h"     // kmalloc/kfree — buffer image kursor HW (§9.4)
 #include "ghal.h"     // Phase 2B: present lewat Graphics HAL
 #include "panic.h"    // lockdown: hentikan present saat BSOD aktif
@@ -208,36 +210,49 @@ static void base_blit_for_region(DisplayBuffer* back_db, DisplayBuffer* screen_d
         blit_rect_db(back_db, screen_db, remain[i]);
 }
 
+// --- Kanvas XRGB <-> color_t (libs/color) ---
+// Byte tinggi kanvas Kyuzen = mask transparansi (display.h), bukan alpha;
+// pixel kanvas yang di-blend diperlakukan opaque agar hasil = aa_mix() lama.
+static inline uint32_t xrgb_px(color_t c) {
+    return color_to_u32(c, FORMAT_ARGB) & 0x00FFFFFFu;
+}
+
 // Isi area solid, dipotong ke `clip` (bounds check per baris sekali).
-static void fill_rect_clip(uint32_t* fb, int pitch4, Rect area, uint32_t color,
+static void fill_rect_clip(uint32_t* fb, int pitch4, Rect area, color_t color,
                            Rect clip) {
     Rect c;
     if (!rect_intersect(area, clip, &c)) return;
+    const uint32_t px = xrgb_px(color);
     for (uint32_t yy = 0; yy < c.height; yy++) {
         uint32_t* dst = fb + ((uint32_t)c.y + yy) * (uint32_t)pitch4 + (uint32_t)c.x;
-        for (uint32_t xx = 0; xx < c.width; xx++) dst[xx] = color;
+        for (uint32_t xx = 0; xx < c.width; xx++) dst[xx] = px;
     }
 }
 
 // --- Primitif modern: blend / gradient / rounded ---
-// Math (mix/shade/coverage) di include/aa_math.h — dibagi dengan toolkit
-// userspace apps/libui.cpp, integer saja (tanpa SSE/float).
+// Coverage rounded-rect (aa_cov) tetap di include/aa_math.h; blending warna
+// lewat libs/color (color_blend_alpha) — integer saja (tanpa SSE/float).
 static inline void blend_px(uint32_t* fb, int pitch4, int x, int y,
-                            uint32_t c, uint32_t a, Rect clip) {
+                            color_t c, uint32_t a, Rect clip) {
     if (a == 0) return;
     if (x < clip.x || x >= clip.x + (int)clip.width ||
         y < clip.y || y >= clip.y + (int)clip.height) return;
-    uint32_t* d = &fb[y * pitch4 + x];
-    *d = aa_mix(c, *d, a);
+    color_t src = color_with_alpha(c, (uint8_t)a);
+    color_t dst = color_opaque(color_from_u32(fb[y * pitch4 + x], FORMAT_ARGB));
+    fb[y * pitch4 + x] = xrgb_px(color_blend_alpha(src, dst));
 }
 
-static void blend_rect_clip(uint32_t* fb, int pitch4, Rect area, uint32_t c,
+static void blend_rect_clip(uint32_t* fb, int pitch4, Rect area, color_t c,
                             uint32_t a, Rect clip) {
     Rect k;
     if (a == 0 || !rect_intersect(area, clip, &k)) return;
+    const color_t src = color_with_alpha(c, (uint8_t)a);
     for (uint32_t yy = 0; yy < k.height; yy++) {
         uint32_t* dst = fb + ((uint32_t)k.y + yy) * (uint32_t)pitch4 + (uint32_t)k.x;
-        for (uint32_t xx = 0; xx < k.width; xx++) dst[xx] = aa_mix(c, dst[xx], a);
+        for (uint32_t xx = 0; xx < k.width; xx++) {
+            color_t d = color_opaque(color_from_u32(dst[xx], FORMAT_ARGB));
+            dst[xx] = xrgb_px(color_blend_alpha(src, d));
+        }
     }
 }
 
@@ -248,14 +263,15 @@ static inline uint32_t rr_cov(int px, int py, Rect a, int rt, int rb) {
 // Fill rounded-rect + gradient vertikal (top→bot), sudut anti-alias, dipotong
 // ke `clip`. rt/rb = radius sudut atas/bawah (0 = kotak).
 static void round_grad_fill(uint32_t* fb, int pitch4, Rect a,
-                            uint32_t top, uint32_t bot, int rt, int rb, Rect clip) {
+                            color_t top, color_t bot, int rt, int rb, Rect clip) {
     int W = (int)a.width, H = (int)a.height;
     if (W <= 0 || H <= 0) return;
     if (rt > W / 2) rt = W / 2;
     if (rb > W / 2) rb = W / 2;
+    const int flat = color_to_u32(top, FORMAT_ARGB) == color_to_u32(bot, FORMAT_ARGB);
     for (int iy = a.y; iy < a.y + H; iy++) {
-        uint32_t c = (top == bot) ? top
-                   : aa_mix(bot, top, (uint32_t)((iy - a.y) * 255 / (H > 1 ? H - 1 : 1)));
+        uint32_t cv = (uint32_t)((iy - a.y) * 255 / (H > 1 ? H - 1 : 1));
+        color_t c = flat ? top : color_blend_alpha(color_with_alpha(bot, (uint8_t)cv), top);
         int r = (rt && iy < a.y + rt) ? rt
               : (rb && iy >= a.y + H - rb) ? rb : 0;
         if (!r) {
@@ -288,10 +304,10 @@ static void frame_shadow(uint32_t* fb, int pitch4, Rect frame, Rect clip) {
         Rect b = { s.x, s.y + (int)s.height - 1, s.width, 1 };
         Rect l = { s.x, s.y + 1, 1, s.height - 2 };
         Rect rr = { s.x + (int)s.width - 1, s.y + 1, 1, s.height - 2 };
-        blend_rect_clip(fb, pitch4, t, 0x000000, a, clip);
-        blend_rect_clip(fb, pitch4, b, 0x000000, a, clip);
-        blend_rect_clip(fb, pitch4, l, 0x000000, a, clip);
-        blend_rect_clip(fb, pitch4, rr, 0x000000, a, clip);
+        blend_rect_clip(fb, pitch4, t, COLOR_BLACK, a, clip);
+        blend_rect_clip(fb, pitch4, b, COLOR_BLACK, a, clip);
+        blend_rect_clip(fb, pitch4, l, COLOR_BLACK, a, clip);
+        blend_rect_clip(fb, pitch4, rr, COLOR_BLACK, a, clip);
     }
 }
 
@@ -312,23 +328,25 @@ static void frame_edge(uint32_t* fb, int pitch4, Rect frame, Rect clip) {
 // Segmen garis (DDA) dipotong ke `clip` — untuk glyph "X" tombol close.
 static void titlebar_line(uint32_t* fb, int pitch4,
                           int x0, int y0, int x1, int y1,
-                          uint32_t color, Rect clip) {
+                          color_t color, Rect clip) {
     int dx = x1 - x0, dy = y1 - y0;
     int steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy) ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
     if (steps < 1) steps = 1;
+    const uint32_t solid = xrgb_px(color);
     for (int i = 0; i <= steps; i++) {
         int x = x0 + (dx * i) / steps;
         int y = y0 + (dy * i) / steps;
         if (x >= clip.x && x < clip.x + (int)clip.width &&
             y >= clip.y && y < clip.y + (int)clip.height)
-            fb[y * pitch4 + x] = color;
+            fb[y * pitch4 + x] = solid;
     }
 }
 
 // Teks judul window di titlebar (Phase 10). Digambar karakter per karakter
 // (font 8x16), clamp ke `max_x` (area sebelum tombol close) + clip rect.
 static void titlebar_text(uint32_t* fb, int pitch4, int x, int y,
-                          const char* str, int max_x, uint32_t color, Rect clip) {
+                          const char* str, int max_x, color_t color, Rect clip) {
+    const uint32_t solid = xrgb_px(color);
     for (int i = 0; str[i] && x + 8 <= max_x; i++) {
         unsigned char c = (unsigned char)str[i];
         if (c > 127) { x += 8; continue; }
@@ -340,7 +358,7 @@ static void titlebar_text(uint32_t* fb, int pitch4, int x, int y,
                 if (!(bmp[row] & (0x80 >> col))) continue;
                 int px = x + col;
                 if (px < (int)clip.x || px >= (int)(clip.x + clip.width)) continue;
-                fb[py * pitch4 + px] = color;
+                fb[py * pitch4 + px] = solid;
             }
         }
         x += 8;
@@ -506,8 +524,8 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
                 if (rect_intersect(tb, r, &clip)) {
                     // Chrome netral: isian rata (tanpa gradient biru), sudut
                     // atas membulat. Fokus hanya sedikit lebih terang.
-                    uint32_t base = (w == focused_win_id) ? KWM_TITLEBAR_COLOR
-                                                          : KWM_TITLEBAR_INACT;
+                    color_t base = (w == focused_win_id) ? KWM_TITLEBAR_COLOR
+                                                         : KWM_TITLEBAR_INACT;
                     round_grad_fill(backbuffer, pitch4, tb, base, base,
                                     KWM_CORNER_R, 0, r);
                     // Tombol close: hit area penuh-tinggi di tepi kanan.
@@ -515,7 +533,7 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
                     Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W, win_y,
                                 KWM_CLOSE_BTN_W, KWM_TITLEBAR_H };
                     int hovered = (hovered_close_win == w + 1);
-                    uint32_t ico = KWM_CTL_FG;
+                    color_t ico = KWM_CTL_FG;
                     if (hovered) {
                         fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_HOVER_BG, r);
                         ico = KWM_CLOSE_HOVER_FG;
@@ -558,14 +576,17 @@ static void hw_cursor_fill(int kind) {
     const uint8_t (*bm)[12] = kind == 0 ? cursor_bitmap
                             : kind == 1 ? g_ibeam_bitmap
                             : g_hand_bitmap;
+    const uint32_t px_none  = color_to_u32(COLOR_TRANSPARENT, FORMAT_ARGB);
+    const uint32_t px_white = color_to_u32(COLOR_WHITE, FORMAT_ARGB);
+    const uint32_t px_black = color_to_u32(COLOR_BLACK, FORMAT_ARGB);
     for (int y = 0; y < HW_CURSOR_SIZE; y++) {
         uint32_t* row = g_cursor_img_buf + y * HW_CURSOR_SIZE;
         for (int x = 0; x < HW_CURSOR_SIZE; x++) {
-            uint32_t c = 0x00000000;   // transparan
+            uint32_t c = px_none;   // transparan
             if (x < CURSOR_WIDTH && y < CURSOR_HEIGHT) {
                 uint8_t p = bm[y][x];
-                if (p == 1) c = 0xFFFFFFFF;      // putih opaque
-                else if (p == 2) c = 0xFF000000; // hitam opaque
+                if (p == 1) c = px_white;
+                else if (p == 2) c = px_black;
             }
             row[x] = c;
         }
@@ -737,6 +758,8 @@ void compositor_flush() {
         const uint8_t (*cbm)[12] = g_cursor_kind == 0 ? cursor_bitmap
                          : g_cursor_kind == 1 ? g_ibeam_bitmap
                          : g_hand_bitmap;
+        const uint32_t px_white = xrgb_px(COLOR_WHITE);
+        const uint32_t px_black = xrgb_px(COLOR_BLACK);
         for (int y = 0; y < CURSOR_HEIGHT; y++) {
             for (int x = 0; x < CURSOR_WIDTH; x++) {
                 // Bug 5.5: cek batas BAWAH juga — koordinat negatif membuat offset
@@ -744,8 +767,8 @@ void compositor_flush() {
                 if (cy + y < 0 || cx + x < 0 ||
                     cy + y >= (int32_t)mode->height || cx + x >= (int32_t)mode->width) continue;
                 uint32_t offset = ((cy + y) * pitch4) + (cx + x);
-                if (cbm[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
-                else if (cbm[y][x] == 2) backbuffer[offset] = 0x000000;
+                if (cbm[y][x] == 1) backbuffer[offset] = px_white;
+                else if (cbm[y][x] == 2) backbuffer[offset] = px_black;
             }
         }
     }

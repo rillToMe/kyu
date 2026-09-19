@@ -8,12 +8,27 @@
 
 #include "userlib.h"
 #include "libui.h"
+#include "color_utils.h"   // palet + COLOR_RGB_INIT/COLOR_WHITE_INIT (libs/color)
 
 static ui_window_t* g_win;
 
-static const ui_theme_t tema_gelap  = { 0x121212, 0xE0E0E0, 0xE94560, 0x0F3460, 0xFFFFFF, 0x2A4A7E };
-static const ui_theme_t tema_terang = { 0xF0F0F0, 0x222222, 0xD32F2F, 0xCFD8DC, 0x222222, 0x90A4AE };
-static const ui_theme_t tema_hijau  = { 0x0D1F14, 0xDFF2E0, 0x4CAF50, 0x1B4D2E, 0xE8F5E9, 0x2E7D46 };
+// Warna ditulis per komponen (libs/color) — urutan field tetap 6 warna ABI
+// ui_theme_t: bg, fg, accent, button_bg, button_fg, button_hover.
+static const ui_theme_t tema_gelap = {
+    COLOR_RGB_INIT(0x12, 0x12, 0x12), COLOR_RGB_INIT(0xE0, 0xE0, 0xE0),
+    COLOR_RGB_INIT(0xE9, 0x45, 0x60), COLOR_RGB_INIT(0x0F, 0x34, 0x60),
+    COLOR_WHITE_INIT,          COLOR_RGB_INIT(0x2A, 0x4A, 0x7E),
+};
+static const ui_theme_t tema_terang = {
+    COLOR_RGB_INIT(0xF0, 0xF0, 0xF0), COLOR_RGB_INIT(0x22, 0x22, 0x22),
+    COLOR_RGB_INIT(0xD3, 0x2F, 0x2F), COLOR_RGB_INIT(0xCF, 0xD8, 0xDC),
+    COLOR_RGB_INIT(0x22, 0x22, 0x22), COLOR_RGB_INIT(0x90, 0xA4, 0xAE),
+};
+static const ui_theme_t tema_hijau = {
+    COLOR_RGB_INIT(0x0D, 0x1F, 0x14), COLOR_RGB_INIT(0xDF, 0xF2, 0xE0),
+    COLOR_RGB_INIT(0x4C, 0xAF, 0x50), COLOR_RGB_INIT(0x1B, 0x4D, 0x2E),
+    COLOR_RGB_INIT(0xE8, 0xF5, 0xE9), COLOR_RGB_INIT(0x2E, 0x7D, 0x46),
+};
 
 static void itoa(uint32_t n, char* b) {
     if (n == 0) { b[0] = '0'; b[1] = '\0'; return; }

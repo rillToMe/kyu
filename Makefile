@@ -283,8 +283,8 @@ COLOR_HDRS = libs/color/include/color_types.h libs/color/include/color_blend.h \
 test-color: test/color_test
 	./test/color_test
 
-test/color_test: test/color_test.c test/color_cxx_check.cpp $(COLOR_SRCS) $(COLOR_HDRS)
-	$(HOSTCC) -O2 -Wall -Wextra -Ilibs/color/include -o $@ test/color_test.c $(COLOR_SRCS)
+test/color_test: test/color_test.c test/color_cxx_check.cpp $(COLOR_SRCS) $(COLOR_HDRS) include/aa_math.h
+	$(HOSTCC) -O2 -Wall -Wextra -Iinclude -Ilibs/color/include -o $@ test/color_test.c $(COLOR_SRCS)
 	$(HOSTCXX) -std=c++17 -Wall -Wextra -fsyntax-only -Ilibs/color/include test/color_cxx_check.cpp
 
 # --- Host-side unit test: KyuzenFS V4 (bcache + extent engine + direktori) ---
@@ -314,7 +314,9 @@ mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 
 clean-tool:
 	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
-	      test/panic_test.exe test/color_test test/color_test.exe testimg.img
+	      test/panic_test.exe test/color_test test/color_test.exe test/color_utils_host.o \
+	      test/textedit_test test/textedit_test.exe \
+	      test/libui_theme_test test/libui_theme_test.exe testimg.img
 
 # --- Cross-check: image buatan mkfs host harus termount oleh parser kernel ---
 # Target memformat testimg.img via ./mkfs.kyuzenfs lalu menjalankan test host
@@ -349,8 +351,25 @@ test/panic_test: test/panic_test.c kernel/panic.c kernel/panic_log.c kernel/cras
 test-textedit: test/textedit_test
 	./test/textedit_test
 
-test/textedit_test: test/textedit_test.cpp apps/libui.cpp include/libui.h include/libgui.h
-	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote include -o $@ test/textedit_test.cpp apps/libui.cpp
+test/textedit_test: test/textedit_test.cpp apps/libui.cpp include/libui.h include/libgui.h \
+                    libs/color/src/color_utils.c libs/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote include -Ilibs/color/include -o $@ test/textedit_test.cpp apps/libui.cpp test/color_utils_host.o
+
+# Host test tema + render libui: apps/libui.cpp di-INCLUDE (bukan di-link)
+# supaya Window/Button/Painter bisa diperiksa, lalu render sungguhan dicek
+# piksel-per-piksel. Mengunci regresi "gradien tombol rata" yang muncul saat
+# warna tema ABI (XRGB, alpha 0) mulai dilewatkan color_blend_alpha.
+# Jalankan: make test-libui-theme
+.PHONY: test-libui-theme
+test-libui-theme: test/libui_theme_test
+	./test/libui_theme_test
+
+test/libui_theme_test: test/libui_theme_test.cpp apps/libui.cpp include/libui.h \
+                       include/libgui.h include/aa_math.h \
+                       libs/color/src/color_utils.c libs/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/color/include -o $@ test/libui_theme_test.cpp test/color_utils_host.o
 
 # Desktop host test: desktop.c di-include langsung dengan syscall FS di-stub.\
 # Menguji discover_apps()/manifest DAN siklus notifikasi crash (kartu harus\
@@ -360,8 +379,9 @@ test/textedit_test: test/textedit_test.cpp apps/libui.cpp include/libui.h includ
 test-desktop: test/desktop_manifest_test
 	./test/desktop_manifest_test
 
-test/desktop_manifest_test: test/desktop_manifest_test.c user_apps/desktop.c include/userlib.h include/libgui.h
-	$(HOSTCC) -O1 -Wall -iquote include -o $@ test/desktop_manifest_test.c
+test/desktop_manifest_test: test/desktop_manifest_test.c user_apps/desktop.c include/userlib.h include/libgui.h \
+                           libs/color/include/color_types.h
+	$(HOSTCC) -O1 -Wall -iquote include -Ilibs/color/include -o $@ test/desktop_manifest_test.c
 
 # --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
 # Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer

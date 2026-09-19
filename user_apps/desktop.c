@@ -31,15 +31,15 @@
 #define ICON_Y0  24
 #define LBL_MAX  (CELL_W / 8)   // char label per sel (font 8px), sisanya dipotong
 
-// --- warna ---
-#define WALL_BG     0x141A2E
-#define WALL_TXT    0x3A4160
-#define TASK_BG     0x0B0E1C
-#define TASK_EDGE   0x2A3355
-#define TASK_BTN    0x1A2138
-#define TASK_ACTIVE 0x2E4A8E
-#define ICON_TXT    0xC0C8E0
-#define APP_DEFAULT 0x37474F    // app tanpa manifest (abu netral)
+// --- warna (libs/color: per komponen, bukan hex 0xAARRGGBB) ---
+#define WALL_BG     COLOR_RGB(0x14, 0x1A, 0x2E)
+#define WALL_TXT    COLOR_RGB(0x3A, 0x41, 0x60)
+#define TASK_BG     COLOR_RGB(0x0B, 0x0E, 0x1C)
+#define TASK_EDGE   COLOR_RGB(0x2A, 0x33, 0x55)
+#define TASK_BTN    COLOR_RGB(0x1A, 0x21, 0x38)
+#define TASK_ACTIVE COLOR_RGB(0x2E, 0x4A, 0x8E)
+#define ICON_TXT    COLOR_RGB(0xC0, 0xC8, 0xE0)
+#define APP_DEFAULT COLOR_RGB(0x37, 0x47, 0x4F)   // app tanpa manifest (abu netral)
 
 // --- notifikasi crash (boot setelah panic) ---
 // Kartu informasi di sudut kanan atas. Dipakai SEKALI saja: sys_crash_notice()
@@ -48,10 +48,10 @@
 #define NOTIF_H       100
 #define NOTIF_MARGIN  16
 #define NOTIF_MS      8000     // lama tampil, lalu hilang sendiri
-#define NOTIF_BG      0x3A1220 // latar merah tua
-#define NOTIF_EDGE    0xE06060
-#define NOTIF_TITLE   0xFF8080
-#define NOTIF_TXT     0xE8DCE0
+#define NOTIF_BG      COLOR_RGB(0x3A, 0x12, 0x20)   // latar merah tua
+#define NOTIF_EDGE    COLOR_RGB(0xE0, 0x60, 0x60)
+#define NOTIF_TITLE   COLOR_RGB(0xFF, 0x80, 0x80)
+#define NOTIF_TXT     COLOR_RGB(0xE8, 0xDC, 0xE0)
 
 static crash_notice_t g_notice;
 static int            g_notice_on = 0;
@@ -65,7 +65,7 @@ static int            g_notice_repaint = 0;   // minta render layar penuh (hapus
 typedef struct {
     char     label[32];
     char     elf[32];     // path lengkap "/apps/<nama>" (maks 6+22+1)
-    uint32_t color;
+    color_t  color;       // dari manifest (libs/color)
 } AppEntry;
 static AppEntry g_apps[MAX_APPS];
 static int      g_napps = 0;
@@ -84,9 +84,14 @@ static int neq(const char* a, const char* b, int n) {
     return 1;
 }
 
-// "0x1565C0" (atau desimal) → RGB. Berhenti di karakter non-digit, jadi aman
-// dipanggil pada nilai yang belum di-NUL (langsung menunjuk ke tengah buffer).
-static uint32_t parse_color(const char* s) {
+// Nilai RGB 24-bit dari color_t — untuk checksum daftar app (bukan pixel).
+static uint32_t rgb24(color_t c) {
+    return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
+}
+
+// "0x1565C0" (atau desimal) → color_t opaque. Berhenti di karakter non-digit,
+// jadi aman dipanggil pada nilai yang belum di-NUL (menunjuk ke tengah buffer).
+static color_t parse_color(const char* s) {
     uint32_t v = 0;
     if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
         for (int i = 2; ; i++) {
@@ -100,7 +105,8 @@ static uint32_t parse_color(const char* s) {
     } else {
         for (int i = 0; s[i] >= '0' && s[i] <= '9'; i++) v = v * 10 + (uint32_t)(s[i] - '0');
     }
-    return v & 0xFFFFFF;
+    v &= 0xFFFFFFu;
+    return COLOR_RGB((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
 }
 
 // Manifest "<base>.app": satu "key=value" per baris. Dikenali: name, color,
@@ -173,7 +179,7 @@ static int discover_apps(void) {
 
     uint32_t s = (uint32_t)g_napps;
     for (int i = 0; i < g_napps; i++) {
-        s = s * 31 + g_apps[i].color;
+        s = s * 31 + rgb24(g_apps[i].color);
         for (int j = 0; g_apps[i].label[j]; j++) s = s * 31 + (uint8_t)g_apps[i].label[j];
     }
     int changed = (s != g_apps_sum);
@@ -248,7 +254,8 @@ static void render_taskbar(gui_window_t* d) {
         int bw = slen(g_wins[i].title) * 8 + 20;
         gui_draw_rect(d, bx, H - TB_H + 4, bw, TB_H - 8,
                       g_wins[i].focused ? TASK_ACTIVE : TASK_BTN);
-        gui_draw_text(d, g_wins[i].title, bx + 10, H - TB_H + 9, 0xE0E0E0);
+        gui_draw_text(d, g_wins[i].title, bx + 10, H - TB_H + 9,
+                      COLOR_RGB(0xE0, 0xE0, 0xE0));
         bx += bw + 6;
     }
 }
@@ -271,7 +278,7 @@ static void notice_probe(void) {
 }
 
 // Garis teks di dalam kartu (font 8px, satu baris per panggilan).
-static void notice_line(gui_window_t* d, int x, int y, const char* s, uint32_t color) {
+static void notice_line(gui_window_t* d, int x, int y, const char* s, color_t color) {
     gui_draw_text(d, s, x, y, color);
 }
 
@@ -309,7 +316,8 @@ static void render_notice(gui_window_t* d) {
     notice_line(d, x + 14, y + 50, l3, NOTIF_TXT);
 
     notice_line(d, x + 14, y + 74,
-                "klik: tutup  -  klik kartu ini: buka File Manager", 0xA0B0D0);
+                "klik: tutup  -  klik kartu ini: buka File Manager",
+                COLOR_RGB(0xA0, 0xB0, 0xD0));
 }
 
 // Tutup kartu: matikan flag + minta render penuh (wilayah kartu tidak punya

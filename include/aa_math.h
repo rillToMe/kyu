@@ -1,8 +1,9 @@
 #ifndef AA_MATH_H
 #define AA_MATH_H
 
-// Math blending & anti-alias yang dipakai BERSAMA oleh compositor kernel
-// (kernel/gfx/compositor.c) dan toolkit userspace (apps/libui.cpp).
+// Math anti-alias (coverage) + blend warna untuk toolkit userspace
+// (apps/libui.cpp). Blending compositor kernel kini lewat libs/color
+// (color_blend_alpha) dan di sini hanya memakai aa_cov.
 //
 // INTEGER SAJA: kernel dan app dibangun dengan -mno-sse -mno-sse2 -msoft-float
 // (Makefile:76, user_apps/Makefile:41) dan kernel tidak pernah mengaktifkan

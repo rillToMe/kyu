@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "spinlock.h"
 #include "display.h"
+#include "color_types.h"   // color_t — konstanta dekorasi WM
 
 #define MAX_WINDOWS 16
 
@@ -20,12 +21,12 @@
 // satu kesatuan, bukan kotak hitam dengan bingkai putih.
 #define KWM_TITLEBAR_H      32
 #define KWM_CLOSE_BTN_W     46
-#define KWM_TITLEBAR_COLOR  0x2D2D2D   // fokus (#2D2D2D)
-#define KWM_TITLEBAR_INACT  0x252526   // tidak fokus (sedikit lebih gelap)
-#define KWM_TITLE_FG        0xD4D4D4   // teks judul (off-white)
-#define KWM_CTL_FG          0xA0A0A0   // ikon kontrol (X) normal
-#define KWM_CLOSE_HOVER_BG  0xE81123   // latar close saat hover
-#define KWM_CLOSE_HOVER_FG  0xFFFFFF   // ikon close saat hover
+static const color_t KWM_TITLEBAR_COLOR = { 0x2D, 0x2D, 0x2D, 255 };  // fokus (#2D2D2D)
+static const color_t KWM_TITLEBAR_INACT = { 0x25, 0x25, 0x26, 255 };  // tidak fokus (sedikit lebih gelap)
+static const color_t KWM_TITLE_FG       = { 0xD4, 0xD4, 0xD4, 255 };  // teks judul (off-white)
+static const color_t KWM_CTL_FG         = { 0xA0, 0xA0, 0xA0, 255 };  // ikon kontrol (X) normal
+static const color_t KWM_CLOSE_HOVER_BG = { 0xE8, 0x11, 0x23, 255 };  // latar close saat hover
+static const color_t KWM_CLOSE_HOVER_FG = { 0xFF, 0xFF, 0xFF, 255 };  // ikon close saat hover
 
 // --- Dekorasi modern (Phase 11 rendering) ---
 // Titlebar digambar bergradient dengan sudut ATAS membulat, dan setiap frame
@@ -39,7 +40,7 @@
 // konten window tidak menyatu dengan desktop. Ring shadow bawah baru mulai
 // ~3px di luar frame (offset blur ke bawah), jadi tepi bawah butuh garis ini.
 // Abu terang + alpha: memisahkan window gelap dari desktop gelap.
-#define KWM_EDGE_COLOR      0x9A9A9A
+static const color_t KWM_EDGE_COLOR = { 0x9A, 0x9A, 0x9A, 255 };
 #define KWM_EDGE_ALPHA      70
 
 typedef struct {

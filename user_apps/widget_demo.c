@@ -12,6 +12,7 @@
 
 #include "userlib.h"
 #include "libui.h"
+#include "color_utils.h"   // palet + COLOR_RGB_INIT/COLOR_WHITE_INIT (libs/color)
 
 static ui_widget_t* status;     // label status (di atas tab)
 static ui_widget_t* lbl;        // counter "+1" (regresi Phase 6)
@@ -133,9 +134,21 @@ static void on_notif_btn(void* userdata) {
 }
 
 // Preset tema — disalin ke window oleh ui_window_set_theme (bukan pointer).
-static const ui_theme_t tema_gelap  = { 0x121212, 0xE0E0E0, 0xE94560, 0x0F3460, 0xFFFFFF, 0x2A4A7E };
-static const ui_theme_t tema_terang = { 0xF0F0F0, 0x222222, 0xD32F2F, 0xCFD8DC, 0x222222, 0x90A4AE };
-static const ui_theme_t tema_hijau  = { 0x0D1F14, 0xDFF2E0, 0x4CAF50, 0x1B4D2E, 0xE8F5E9, 0x2E7D46 };
+static const ui_theme_t tema_gelap = {
+    COLOR_RGB_INIT(0x12, 0x12, 0x12), COLOR_RGB_INIT(0xE0, 0xE0, 0xE0),
+    COLOR_RGB_INIT(0xE9, 0x45, 0x60), COLOR_RGB_INIT(0x0F, 0x34, 0x60),
+    COLOR_WHITE_INIT,          COLOR_RGB_INIT(0x2A, 0x4A, 0x7E),
+};
+static const ui_theme_t tema_terang = {
+    COLOR_RGB_INIT(0xF0, 0xF0, 0xF0), COLOR_RGB_INIT(0x22, 0x22, 0x22),
+    COLOR_RGB_INIT(0xD3, 0x2F, 0x2F), COLOR_RGB_INIT(0xCF, 0xD8, 0xDC),
+    COLOR_RGB_INIT(0x22, 0x22, 0x22), COLOR_RGB_INIT(0x90, 0xA4, 0xAE),
+};
+static const ui_theme_t tema_hijau = {
+    COLOR_RGB_INIT(0x0D, 0x1F, 0x14), COLOR_RGB_INIT(0xDF, 0xF2, 0xE0),
+    COLOR_RGB_INIT(0x4C, 0xAF, 0x50), COLOR_RGB_INIT(0x1B, 0x4D, 0x2E),
+    COLOR_RGB_INIT(0xE8, 0xF5, 0xE9), COLOR_RGB_INIT(0x2E, 0x7D, 0x46),
+};
 
 static void on_theme(void* userdata) {
     ui_window_set_theme(g_win, (const ui_theme_t*)userdata);
@@ -206,12 +219,12 @@ void main(void) {
     g_win = win;
 
     ui_theme_t th;
-    th.bg           = 0x121212;
-    th.fg           = 0xE0E0E0;
-    th.accent       = 0xE94560;
-    th.button_bg    = 0x0F3460;
-    th.button_fg    = 0xFFFFFF;
-    th.button_hover = 0x2A4A7E;
+    th.bg           = COLOR_RGB(0x12, 0x12, 0x12);
+    th.fg           = COLOR_RGB(0xE0, 0xE0, 0xE0);
+    th.accent       = COLOR_RGB(0xE9, 0x45, 0x60);
+    th.button_bg    = COLOR_RGB(0x0F, 0x34, 0x60);
+    th.button_fg    = COLOR_WHITE;
+    th.button_hover = COLOR_RGB(0x2A, 0x4A, 0x7E);
     ui_window_set_theme(win, &th);
 
     // --- MenuBar + Toolbar (bar full-width) ---

@@ -26,6 +26,9 @@
 // ============================================================
 #include "userlib.h"
 #include "libui.h"
+// Palet warna (libs/color): tema ditulis per komponen lewat
+// COLOR_RGB_INIT (bentuk initializer untuk tabel `static const`).
+#include "color_types.h"
 
 #define WIN_W      720
 #define WIN_H      560
@@ -51,13 +54,13 @@ enum { VIEW_WRAP = 0 };
 //   → tombol #3C3C3C, hover #4A4A4A. Toolkit menurunkan lapisan itu dari 6
 //   warna ABI ini (lihat Theme::derive di apps/libui.cpp).
 static const ui_theme_t NOTEPAD_THEME = {
-    0x2D2D2D,   // bg          — dasar window (di balik margin)
-    0xD4D4D4,   // fg          — teks isi (off-white, bukan putih penuh)
-    0x0098BC,   // accent      — centang menu (biru aksen halus); caret+shortcut
-                //             diturunkan: caret ~#00E5FF, shortcut ~amber
-    0x1E1E1E,   // button_bg   — area teks utama ("kertas" editor)
-    0xD4D4D4,   // button_fg   — teks menu/status/tombol
-    0x3E3E42,   // button_hover — hover item menu + blok seleksi
+    COLOR_RGB_INIT(0x2D, 0x2D, 0x2D),   // bg          — dasar window (di balik margin)
+    COLOR_RGB_INIT(0xD4, 0xD4, 0xD4),   // fg          — teks isi (off-white, bukan putih penuh)
+    COLOR_RGB_INIT(0x00, 0x98, 0xBC),   // accent      — centang menu (biru aksen halus); caret+shortcut
+                                       //             diturunkan: caret ~#00E5FF, shortcut ~amber
+    COLOR_RGB_INIT(0x1E, 0x1E, 0x1E),   // button_bg   — area teks utama ("kertas" editor)
+    COLOR_RGB_INIT(0xD4, 0xD4, 0xD4),   // button_fg   — teks menu/status/tombol
+    COLOR_RGB_INIT(0x3E, 0x3E, 0x42),   // button_hover — hover item menu + blok seleksi
 };
 
 static ui_window_t* g_win;

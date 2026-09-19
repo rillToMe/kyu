@@ -33,6 +33,19 @@ static inline color_t color_make(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 #define COLOR_RGB(r, g, b)      color_make((uint8_t)(r), (uint8_t)(g), (uint8_t)(b), 255u)
 #define COLOR_RGBA(r, g, b, a)  color_make((uint8_t)(r), (uint8_t)(g), (uint8_t)(b), (uint8_t)(a))
 
+// Salinan dengan alpha/cakupan diganti (komponen lain utuh).
+static inline color_t color_with_alpha(color_t c, uint8_t a) {
+    c.a = a;
+    return c;
+}
+
+// Salinan dipaksa opaque — permukaan kanvas XRGB diperlakukan buram sebelum
+// di-blend (byte tinggi kanvas = mask transparansi, bukan alpha).
+static inline color_t color_opaque(color_t c) {
+    c.a = 255;
+    return c;
+}
+
 // color_t → pixel framebuffer sesuai format hardware.
 static inline uint32_t color_to_u32(color_t c, color_format_t fmt) {
     switch (fmt) {
@@ -47,6 +60,15 @@ static inline uint32_t color_to_u32(color_t c, color_format_t fmt) {
         return ((uint32_t)c.a << 24) | ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
     }
 }
+
+// Bentuk INITIALIZER: daftar komponen, untuk `static const` di C.
+// color_make()/COLOR_RGB() menghasilkan nilai lewat panggilan inline — bukan
+// constant expression di C — jadi inisialisasi statik memakai makro ini:
+//   static const color_t C = COLOR_RGB_INIT(0x2D, 0x2D, 0x2D);
+//   static const ui_theme_t T = { COLOR_RGB_INIT(...), COLOR_WHITE_INIT, ... };
+// Hanya sah di posisi initializer (bukan sebagai nilai dalam ekspresi biasa).
+#define COLOR_RGB_INIT(r, g, b)      { (uint8_t)(r), (uint8_t)(g), (uint8_t)(b), 255u }
+#define COLOR_RGBA_INIT(r, g, b, a)  { (uint8_t)(r), (uint8_t)(g), (uint8_t)(b), (uint8_t)(a) }
 
 // Kebalikan color_to_u32 — decode pixel (PNG, screenshot, capture, dll).
 static inline color_t color_from_u32(uint32_t v, color_format_t fmt) {

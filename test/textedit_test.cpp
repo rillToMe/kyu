@@ -58,13 +58,13 @@ void gui_flush(gui_window_t* w) { (void)w; }
 void gui_damage_rect(gui_window_t* w, int x, int y, int cw, int ch) {
     (void)w; (void)x; (void)y; (void)cw; (void)ch;
 }
-void gui_draw_rect(gui_window_t* w, int x, int y, int cw, int ch, uint32_t c) {
+void gui_draw_rect(gui_window_t* w, int x, int y, int cw, int ch, color_t c) {
     (void)w; (void)x; (void)y; (void)cw; (void)ch; (void)c;
 }
-void gui_draw_text(gui_window_t* w, const char* t, int x, int y, uint32_t c) {
+void gui_draw_text(gui_window_t* w, const char* t, int x, int y, color_t c) {
     (void)w; (void)t; (void)x; (void)y; (void)c;
 }
-void gui_draw_char(gui_window_t* w, char ch, int x, int y, uint32_t c) {
+void gui_draw_char(gui_window_t* w, char ch, int x, int y, color_t c) {
     (void)w; (void)ch; (void)x; (void)y; (void)c;
 }
 int gui_set_window_title(gui_window_t* w, const char* t) { (void)w; (void)t; return 0; }

@@ -25,13 +25,18 @@
 extern "C" {
 #include "userlib.h"
 #include "libgui.h"
+// libs/color — C/C++ compatible; di dalam extern "C" agar fungsi out-of-line
+// (color_blend_span) tetap berlinkage C.
+#include "color_types.h"
+#include "color_blend.h"
+#include "color_utils.h"
 }
 
 // libui.h punya guard extern "C" sendiri — aman di-include dari C++.
 #include "libui.h"
 
-// Math blend/AA dibagi dengan compositor kernel (kernel/gfx/compositor.c).
-// Semua static inline, integer saja — aman di-include dari C++.
+// Coverage AA (aa_cov) tetap dari include/aa_math.h; blending warna libui kini
+// lewat libs/color. Semua static inline, integer saja — aman di-include C++.
 #include "aa_math.h"
 
 // Dekoder PNG bersama (apps/png.c, stb_image) — dilink oleh app yang memakai
@@ -98,7 +103,8 @@ extern "C" void __cxa_pure_virtual() { for (;;) {} }
 namespace ui {
 
 // ------------------------------------------------------------
-// Theme — layout field identik ui_theme_t (C ABI).
+// Theme — 6 warna dasar dari ui_theme_t (C ABI) + lapisan turunan, semua
+// color_t (libs/color). to_abi() mem-pack kembali format file settings.ui.
 //
 // ENAM warna ABI di bawah adalah INPUT dari aplikasi. Di atasnya, struct ini
 // menurunkan LAPISAN PERMUKAAN (surface layers) gaya Modern Dark:
@@ -113,41 +119,91 @@ namespace ui {
 // Aplikasi cukup set 6 warna dasar; turunannya dihitung sekali per set_theme.
 // ------------------------------------------------------------
 struct Theme {
-    uint32_t bg, fg, accent, button_bg, button_fg, button_hover;
-    uint32_t editor, chrome, panel, btnfill, divider, mborder, acc_text, caret;
-    Theme() : bg(0x1A1A2E), fg(0xE0E0E0), accent(0xE94560),
-              button_bg(0x0F3460), button_fg(0xFFFFFF), button_hover(0x2A4A7E) {
+    color_t bg, fg, accent, button_bg, button_fg, button_hover;
+    color_t editor, chrome, panel, btnfill, divider, mborder, acc_text, caret;
+    Theme() : bg(COLOR_RGB(0x1A, 0x1A, 0x2E)), fg(COLOR_RGB(0xE0, 0xE0, 0xE0)),
+              accent(COLOR_RGB(0xE9, 0x45, 0x60)), button_bg(COLOR_RGB(0x0F, 0x34, 0x60)),
+              button_fg(COLOR_WHITE), button_hover(COLOR_RGB(0x2A, 0x4A, 0x7E)) {
         derive();
     }
     void set(const ui_theme_t* t) {
-        bg = t->bg; fg = t->fg; accent = t->accent;
-        button_bg = t->button_bg; button_fg = t->button_fg; button_hover = t->button_hover;
+        // ABI app = color_t; alpha dipaksa opaque. Wajib: warna tema dipakai
+        // sebagai dst/latar pencampuran, dan color_blend_alpha membaca
+        // dst.a == 0 sebagai "kanvas kosong" sehingga gradien tombol
+        // (@rrect_grad) akan rata dengan warna bawahnya.
+        bg = color_opaque(t->bg);
+        fg = color_opaque(t->fg);
+        accent = color_opaque(t->accent);
+        button_bg = color_opaque(t->button_bg);
+        button_fg = color_opaque(t->button_fg);
+        button_hover = color_opaque(t->button_hover);
         derive();
+    }
+    // 6 warna dasar → struct ABI (color_t), untuk disimpan ke settings.ui.
+    void to_abi(ui_theme_t* t) const {
+        t->bg = bg;
+        t->fg = fg;
+        t->accent = accent;
+        t->button_bg = button_bg;
+        t->button_fg = button_fg;
+        t->button_hover = button_hover;
     }
     void derive() {
         // Abjad kecerahan (akhirnya naik): editor < panel < chrome < dialog.
         // Persen shade dihitung agar turunan palet charcoal #1E1E1E jatuh di
         // nilai spesifikasi: panel #252526, chrome #2D2D2D, tombol #3C3C3C,
         // divider #333333, border modal #454545.
-        editor = button_bg;                         // "kertas" paling gelap
-        panel = 0x252526;                           // isi modal + popup menu
-        chrome = 0x2D2D2D;                          // menubar + status bar
-        btnfill = 0x3C3C3C;                         // isian tombol dialog
-        divider = 0x333333;                         // garis pemisah 1px
-        mborder = 0x454545;                         // border modal halus
+        editor = button_bg;                        // "kertas" paling gelap
+        panel = COLOR_RGB(0x25, 0x25, 0x26);       // isi modal + popup menu
+        chrome = COLOR_RGB(0x2D, 0x2D, 0x2D);      // menubar + status bar
+        btnfill = COLOR_RGB(0x3C, 0x3C, 0x3C);     // isian tombol dialog
+        divider = COLOR_RGB(0x33, 0x33, 0x33);     // garis pemisah 1px
+        mborder = COLOR_RGB(0x45, 0x45, 0x45);     // border modal halus
         // Aksen (konstanta, gaya VS Code — tidak ikut accent app supaya
         // selalu sesuai spesifikasi Modern Dark):
         //   acc_text — shortcut "Ctrl+N" amber #DCDCAA
         //   caret    — kursor editor cyan #00E5FF (kontras di charcoal)
-        acc_text = 0xDCDCAA;
-        caret = 0x00E5FF;
+        acc_text = COLOR_RGB(0xDC, 0xDC, 0xAA);
+        caret = COLOR_RGB(0x00, 0xE5, 0xFF);
     }
 };
 
 // ------------------------------------------------------------
-// Warna: aa_mix / aa_shade / aa_cov dari include/aa_math.h — INTEGER saja,
-// dibagi dengan compositor kernel (app juga -mno-sse -msoft-float).
+// Warna: color_t + palet libs/color. Campuran lewat color_blend_alpha,
+// state tombol lewat color_darken/color_lighten; coverage sudut tetap aa_cov.
+// Semua integer — app dibangun -mno-sse -msoft-float.
 // ------------------------------------------------------------
+
+// Persen shade lama (aa_shade) → skala 0..255 untuk color_darken/color_lighten.
+// Dua rumus tidak identik (aa_shade memakai persen dengan truncate, library
+// memakai skala 255 dengan pembulatan); faktor di bawah dipilih supaya hasilnya
+// SAMA PERSIS dengan aa_shade untuk palet charcoal tema bawaan
+// (#1E1E1E button_bg, #D4D4D4 fg) → tidak ada regresi satu piksel pun di UI.
+// Contoh: darken(#1E1E1E, 42) == aa_shade(#1E1E1E, -18) == #191919.
+constexpr uint8_t SHADE_5  = 13;    // +5%  (terang)  — lighten(#1E1E1E) = #292929
+constexpr uint8_t SHADE_10 = 25;    // ±10% (gradien tombol) — #343434 → #1B1B1B
+constexpr uint8_t SHADE_18 = 42;    // -18% (tombol ditekan) — #191919
+constexpr uint8_t SHADE_55 = 139;   // -55% (item menu nonaktif) — #606060
+
+// Format file "settings.ui" — lihat include/libui.h (blok ui_settings_save).
+// Tag 4 byte membedakan v1 (28 byte) dari file lama v0 (24 byte, tanpa tag).
+constexpr int  SETTINGS_TAG_LEN = 4;
+constexpr char SETTINGS_TAG[SETTINGS_TAG_LEN + 1] = "KTH1";
+constexpr int  SETTINGS_V1_LEN = SETTINGS_TAG_LEN + (int)sizeof(ui_theme_t);
+
+static bool tag_match(const char* b, const char* tag) {
+    for (int i = 0; i < SETTINGS_TAG_LEN; i++)
+        if (b[i] != tag[i]) return false;
+    return true;
+}
+
+// Tema kosong = semua RGB nol (alpha selalu 255 di file, jadi tidak dihitung).
+static bool theme_empty(const ui_theme_t* t) {
+    color_t c[6] = { t->bg, t->fg, t->accent, t->button_bg, t->button_fg, t->button_hover };
+    for (int i = 0; i < 6; i++)
+        if (c[i].r || c[i].g || c[i].b) return false;
+    return true;
+}
 
 // ------------------------------------------------------------
 // Painter — satu-satunya jembatan widget -> renderer (libgui C)
@@ -199,13 +255,15 @@ public:
         w = x1 - x; h = y1 - y;
         return true;
     }
-    void rect(int x, int y, int w, int h, uint32_t c) {
+    void rect(int x, int y, int w, int h, color_t c) {
         if (!clip_rect(x, y, w, h)) return;
-        gui_draw_rect(win, x, y, w, h, c | 0xFF000000);
+        // libgui memaksa alpha opaque saat menulis canvas (mask transparansi
+        // window urusan compositor), jadi `c` dikirim apa adanya.
+        gui_draw_rect(win, x, y, w, h, c);
     }
-    void text(const char* s, int x, int y, uint32_t c) {
+    void text(const char* s, int x, int y, color_t c) {
         // Tanpa clip: jalur cepat (libgui menandai damage ter-clip sendiri).
-        if (!clip_on && !rclip_on) { gui_draw_text(win, s, x, y, c | 0xFF000000); return; }
+        if (!clip_on && !rclip_on) { gui_draw_text(win, s, x, y, c); return; }
         // Ter-clip: gambar per-sel 8x16; hanya sel yang beririsan dengan clip.
         // cx/cy dijejak terpisah (bukan x + i*8): setelah '\n' kolom HARUS
         // kembali ke kiri, kalau tidak baris kedua dan seterusnya melebar ke
@@ -215,7 +273,7 @@ public:
             if (s[i] == '\n') { cy += 16; cx = x; continue; }
             int rx = cx, ry = cy, rw = 8, rh = 16;
             if (clip_rect(rx, ry, rw, rh))
-                gui_draw_char(win, s[i], cx, cy, c | 0xFF000000);
+                gui_draw_char(win, s[i], cx, cy, c);
             cx += 8;
         }
     }
@@ -242,22 +300,25 @@ public:
     // Compositor kernel memakai byte alpha canvas sebagai MASK opaque
     // (0 = tembus), bukan faktor blend → blending harus dilakukan di sini:
     // baca pixel canvas, campur, tulis kembali.
-    void blend(int px, int py, uint32_t c, uint32_t a) {
+    void blend(int px, int py, color_t c, uint32_t a) {
         if (a == 0) return;
         int x = px, y = py, w = 1, h = 1;
         if (!clip_rect(x, y, w, h)) return;
         uint32_t* d = &win->canvas[y * (int)win->width + x];
-        *d = aa_mix(c, *d, a) | 0xFF000000;
+        color_t src = color_with_alpha(c, (uint8_t)a);
+        color_t dst = color_opaque(color_from_u32(*d, FORMAT_ARGB));
+        *d = color_to_u32(color_blend_alpha(src, dst), FORMAT_ARGB);
         gui_damage_rect(win, x, y, 1, 1);
     }
-    void blend_rect(int x, int y, int w, int h, uint32_t c, uint32_t a) {
+    void blend_rect(int x, int y, int w, int h, color_t c, uint32_t a) {
         for (int iy = y; iy < y + h; iy++)
             for (int ix = x; ix < x + w; ix++) blend(ix, iy, c, a);
     }
     // Gradient vertikal (lerp integer per baris).
-    void vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bot) {
+    void vgrad(int x, int y, int w, int h, color_t top, color_t bot) {
         for (int iy = 0; iy < h; iy++)
-            rect(x, y + iy, w, 1, aa_mix(bot, top, (uint32_t)(iy * 255 / (h > 1 ? h - 1 : 1))));
+            rect(x, y + iy, w, 1, color_blend_alpha(
+                color_with_alpha(bot, (uint8_t)(iy * 255 / (h > 1 ? h - 1 : 1))), top));
     }
     // Coverage 0..255 pixel (px,py) di dalam rounded-rect (aa_math.h:
     // supersample 4x4 integer — pengganti Wu yang butuh float).
@@ -265,13 +326,14 @@ public:
         return aa_cov(px, py, x, y, w, h, r, r);
     }
     // Rounded rect + gradient vertikal, sudut anti-alias.
-    void rrect_grad(int x, int y, int w, int h, int r, uint32_t top, uint32_t bot) {
+    void rrect_grad(int x, int y, int w, int h, int r, color_t top, color_t bot) {
         if (w <= 0 || h <= 0) return;
         if (r > w / 2) r = w / 2;
         if (r > h / 2) r = h / 2;
+        const bool flat = color_to_u32(top, FORMAT_ARGB) == color_to_u32(bot, FORMAT_ARGB);
         for (int iy = y; iy < y + h; iy++) {
-            uint32_t c = (top == bot) ? top
-                       : aa_mix(bot, top, (uint32_t)((iy - y) * 255 / (h > 1 ? h - 1 : 1)));
+            color_t c = flat ? top : color_blend_alpha(
+                color_with_alpha(bot, (uint8_t)((iy - y) * 255 / (h > 1 ? h - 1 : 1))), top);
             if (iy >= y + r && iy < y + h - r) { rect(x, iy, w, 1, c); continue; }
             rect(x + r, iy, w - 2 * r, 1, c);
             for (int k = 0; k < r; k++) {
@@ -280,11 +342,11 @@ public:
             }
         }
     }
-    void rrect(int x, int y, int w, int h, int r, uint32_t c) {
+    void rrect(int x, int y, int w, int h, int r, color_t c) {
         rrect_grad(x, y, w, h, r, c, c);
     }
     // Border 1px halus mengikuti sudut bulat (alpha, bukan garis keras).
-    void rrect_border(int x, int y, int w, int h, int r, uint32_t c, uint32_t a) {
+    void rrect_border(int x, int y, int w, int h, int r, color_t c, uint32_t a) {
         if (w <= 0 || h <= 0) return;
         if (r > w / 2) r = w / 2;
         if (r > h / 2) r = h / 2;
@@ -312,10 +374,10 @@ public:
         for (int k = 1; k <= 4; k++) {
             int sx = x - k, sy = y - k + 3, sw = w + 2 * k, sh = h + 2 * k;
             uint32_t a = A[k - 1];
-            blend_rect(sx, sy, sw, 1, 0, a);
-            blend_rect(sx, sy + sh - 1, sw, 1, 0, a);
-            blend_rect(sx, sy + 1, 1, sh - 2, 0, a);
-            blend_rect(sx + sw - 1, sy + 1, 1, sh - 2, 0, a);
+            blend_rect(sx, sy, sw, 1, COLOR_BLACK, a);
+            blend_rect(sx, sy + sh - 1, sw, 1, COLOR_BLACK, a);
+            blend_rect(sx, sy + 1, 1, sh - 2, COLOR_BLACK, a);
+            blend_rect(sx + sw - 1, sy + 1, 1, sh - 2, COLOR_BLACK, a);
         }
     }
 };
@@ -476,16 +538,16 @@ public:
     }
     virtual ~Button() { _ui_free(text); }
     virtual void draw(Painter& p) override {
-        uint32_t base = pressed ? aa_shade(p.theme.button_bg, -18)
-                      : hover   ? p.theme.button_hover
-                                : p.theme.button_bg;
+        color_t base = pressed ? color_darken(p.theme.button_bg, SHADE_18)
+                     : hover   ? p.theme.button_hover
+                               : p.theme.button_bg;
         // Gradient ~10% (terang di atas; dibalik saat pressed) + sudut 6px.
         p.rrect_grad(x, y, w, h, 6,
-                     aa_shade(base, pressed ? -5 : 10),
-                     aa_shade(base, pressed ?  5 : -10));
-        p.rrect_border(x, y, w, h, 6, 0x000000, pressed ? 90 : 55);
+                     pressed ? color_darken(base, SHADE_5)  : color_lighten(base, SHADE_10),
+                     pressed ? color_lighten(base, SHADE_5) : color_darken(base, SHADE_10));
+        p.rrect_border(x, y, w, h, 6, COLOR_BLACK, pressed ? 90 : 55);
         // Inset shadow tipis di tepi atas saat ditekan.
-        if (pressed) p.blend_rect(x + 6, y + 1, w - 12, 1, 0x000000, 60);
+        if (pressed) p.blend_rect(x + 6, y + 1, w - 12, 1, COLOR_BLACK, 60);
         p.text(text, x + (w - _ui_strlen(text) * 8) / 2,
                y + (h - 16) / 2 + (pressed ? 1 : 0), p.theme.button_fg);
     }
@@ -524,7 +586,7 @@ public:
     virtual bool focusable() override { return true; }
     virtual void draw(Painter& p) override {
         p.rect(x, y, w, h, p.theme.button_bg);
-        uint32_t border = has_focus ? p.theme.accent : p.theme.fg;
+        color_t border = has_focus ? p.theme.accent : p.theme.fg;
         p.rect(x, y, w, 1, border);
         p.rect(x, y + h - 1, w, 1, border);
         p.rect(x, y, 1, h, border);
@@ -582,7 +644,7 @@ public:
     // sisanya theme.fg. ps1_len == 0 = fitur mati (notepad & co).
     char ps1[32];
     int ps1_len;
-    uint32_t ps1_color;
+    color_t ps1_color;
     // --- Phase 11: seleksi, clipboard, undo/redo, word wrap (notepad) ---
     int sel_anchor;            // jangkar seleksi (-1 = tak ada). cur = ujung lain
     bool wrap;                 // word wrap aktif? (terminal: false)
@@ -604,7 +666,7 @@ public:
 
     TextEdit(int width, int height) : len(0), cur(0), scroll_top(0),
                                       readonly(false), enter_cb(0), enter_data(0),
-                                      ps1_len(0), ps1_color(0xFF7CC7FF),
+                                      ps1_len(0), ps1_color(COLOR_RGB(0x7C, 0xC7, 0xFF)),
                                       sel_anchor(-1), wrap(false),
                                       change_cb(0), change_data(0),
                                       n_ops(0), op_pos(0), undo_on(false) {
@@ -674,13 +736,13 @@ public:
         return true;
     }
     void set_enter(ui_click_cb cb, void* u) { enter_cb = cb; enter_data = u; }
-    void set_prompt_style(const char* prefix, uint32_t color) {
+    void set_prompt_style(const char* prefix, color_t color) {
         ps1_len = 0;
         if (!prefix) { mark_dirty(); return; }
         for (; ps1_len < (int)sizeof(ps1) - 1 && prefix[ps1_len]; ps1_len++)
             ps1[ps1_len] = prefix[ps1_len];
         ps1[ps1_len] = '\0';
-        ps1_color = color;
+        ps1_color = color_opaque(color);
         mark_dirty();
     }
     // Baris idx (offset mulai baris) diawali prefix prompt berwarna?
@@ -1091,7 +1153,7 @@ public:
                 if (ci >= hlo && ci < hhi)
                     p.rect(cx, vy, CHAR_W, LINE_H, p.theme.button_hover);
                 char t[2] = { text[ci], '\0' };
-                uint32_t col = (ps1_here && c < ps1_len) ? ps1_color : p.theme.fg;
+                color_t col = (ps1_here && c < ps1_len) ? ps1_color : p.theme.fg;
                 p.text(t, cx, vy + 1, col);
                 cx += CHAR_W;
             }
@@ -1229,25 +1291,38 @@ class Image : public Widget {
 public:
     uint32_t* px;
     int iw, ih;
-    Image(const char* filename, int dw, int dh) : px(0), iw(0), ih(0) {
+    int percent;          // skala aktif (10..400), di-set lewat set_scale/set_fit
+    Image(const char* filename, int dw, int dh) : px(0), iw(0), ih(0), percent(100) {
         w = dw; h = dh;
         px = png_decode(filename, &iw, &ih);
     }
     virtual ~Image() { png_free(px); }
     // Phase 10: zoom viewer — target display size dihitung ulang dari ukuran
     // natural PNG (persen 10..400). `w`/`h` jadi area target yang digambar.
-    void set_scale(int percent) {
-        if (percent < 10) percent = 10;
-        if (percent > 400) percent = 400;
+    void set_scale(int p) {
+        if (p < 10) p = 10;
+        if (p > 400) p = 400;
+        percent = p;
         mark_dirty();                     // bounds lama (bisa mengecil)
         if (iw > 0) { w = iw * percent / 100; h = ih * percent / 100; }
         mark_dirty();                     // bounds baru
+    }
+    // Phase 11: skala agar SELURUH gambar masuk view (view_w × view_h). Return
+    // persen efektif setelah clamp (0 bila tak ada gambar). Rasio dipilih dari
+    // sumbu yang paling sempit supaya kedua sisi pasti masuk.
+    int set_fit(int view_w, int view_h) {
+        if (iw <= 0 || ih <= 0 || view_w <= 0 || view_h <= 0) return 0;
+        int pw = view_w * 100 / iw;
+        int ph = view_h * 100 / ih;
+        set_scale(pw < ph ? pw : ph);
+        return percent;
     }
     // Phase 10: ganti file PNG (viewer galeri) — muat ulang, reset zoom 100%.
     void set_file(const char* filename) {
         mark_dirty();
         png_free(px);
         px = png_decode(filename, &iw, &ih);
+        percent = 100;
         if (iw > 0) { w = iw; h = ih; }   // natural size; ScrollView menyesuaikan
         mark_dirty();
     }
@@ -1441,15 +1516,72 @@ public:
 class ScrollView : public Scrollable {
 public:
     Widget* child;
-    ScrollView(int width, int height) : child(0) {
+    // Phase 11: mode "lihat gambar" — scroll 2 arah (bar horizontal hanya saat
+    // perlu), anak di tengah saat lebih kecil dari view, dan titik tengah view
+    // dipertahankan saat ukuran anak berubah (zoom). Default OFF supaya app lain
+    // (settings/widget_demo/notepad) tidak berubah satu piksel pun.
+    bool pan;
+    int hscroll, hscroll_max;
+    bool hbar_drag;
+    int hbar_grab_x, hbar_grab_scroll;
+    int last_cw, last_ch, last_vw, last_vh;   // ukuran terakhir (anchor zoom)
+
+    ScrollView(int width, int height)
+        : child(0), pan(false), hscroll(0), hscroll_max(0), hbar_drag(false),
+          hbar_grab_x(0), hbar_grab_scroll(0),
+          last_cw(0), last_ch(0), last_vw(0), last_vh(0) {
         w = width; h = height;
         set_scroll_max(0);
     }
     virtual ~ScrollView() { if (child) delete child; }
     void set_child(Widget* c) {
         child = c;
-        set_scroll_max(c ? c->h : 0);
+        update_scroll_maxes();
         if (c) mark_dirty();
+    }
+    void set_pan(int on) {
+        bool v = on != 0;
+        if (v == pan) return;
+        pan = v;
+        hscroll = 0;
+        mark_dirty();
+    }
+    // Scrollbar horizontal hanya tampil kalau isi lebih lebar dari view.
+    bool hbar_shown() const { return pan && hscroll_max > 0; }
+    // Tinggi viewport yang benar-benar terlihat (dikurangi bar horizontal).
+    int view_h() const { return h - (hbar_shown() ? BAR_W : 0); }
+    int hbar_thumb_w() const {
+        int vw = content_w();
+        int content_w_px = vw + hscroll_max;
+        if (content_w_px <= 0) return vw;
+        int tw = vw * vw / content_w_px;
+        if (tw < 8) tw = 8;
+        return tw;
+    }
+    // Hitung ulang kedua max. Mode biasa = aturan lama (cuma vertikal) supaya
+    // app lain identik; mode pan menghitung bar mana yang perlu tampil dulu.
+    void update_scroll_maxes() {
+        if (!child) { set_scroll_view(0, h); hscroll_max = 0; hscroll = 0; return; }
+        if (!pan) { set_scroll_max(child->h); hscroll_max = 0; hscroll = 0; return; }
+        int vw = w, vh = h;
+        for (int i = 0; i < 2; i++) {          // vbar⇄hbar saling menyempitkan
+            int x0 = child->w, y0 = child->h;
+            bool vbar = y0 > vh;
+            vw = w - (vbar ? BAR_W : 0);
+            bool hbar = x0 > vw;
+            vh = h - (hbar ? BAR_W : 0);
+        }
+        set_scroll_view(child->h, vh);
+        hscroll_max = child->w - vw;
+        if (hscroll_max < 0) hscroll_max = 0;
+        if (hscroll > hscroll_max) hscroll = hscroll_max;
+    }
+    // Offset anak relatif terhadap viewport (center bila muat, else scroll).
+    void child_offset(int& ox, int& oy) const {
+        int vw = content_w(), vh = view_h();
+        if (!pan) { ox = 0; oy = -scroll; return; }
+        ox = child->w < vw ? (vw - child->w) / 2 : -hscroll;
+        oy = child->h < vh ? (vh - child->h) / 2 : -scroll;
     }
     virtual int dirty_child_count() override { return child ? 1 : 0; }
     virtual Widget* dirty_child(int i) override { (void)i; return child; }
@@ -1457,30 +1589,101 @@ public:
     // muncul/hilang. Recompute sebelum panen damage agar strip ikut ter-render.
     virtual void settle() override {
         if (!child) return;
-        int old = scroll_max;
-        set_scroll_max(child->h);
-        if (scroll_max != old) mark_dirty();
+        int old = scroll_max, oldh = hscroll_max;
+        update_scroll_maxes();
+        if (pan && last_cw > 0) {
+            int vw = content_w(), vh = view_h();
+            if (child->w != last_cw || child->h != last_ch ||
+                vw != last_vw || vh != last_vh) {
+                // Zoom: titik tengah view dipertahankan, jadi gambar membesar dari
+                // tengah (bukan melompat ke pojok kiri-atas). Saat isi lama lebih
+                // KECIL dari view, posisi itu bukan `scroll` (anak di-center) —
+                // tengah view = tengah isi, jadi pakai last_c?/2.
+                int sx = last_cw < last_vw ? last_cw / 2 : hscroll + last_vw / 2;
+                int sy = last_ch < last_vh ? last_ch / 2 : scroll + last_vh / 2;
+                hscroll = sx * child->w / last_cw - vw / 2;
+                scroll  = sy * child->h / last_ch - vh / 2;
+                if (hscroll < 0) hscroll = 0;
+                if (hscroll > hscroll_max) hscroll = hscroll_max;
+                if (scroll < 0) scroll = 0;
+                if (scroll > scroll_max) scroll = scroll_max;
+            }
+        }
+        if (pan) {
+            last_cw = child->w; last_ch = child->h;
+            last_vw = content_w(); last_vh = view_h();
+        }
+        if (scroll_max != old || hscroll_max != oldh) mark_dirty();
     }
     virtual void on_content_click(int mx, int my) override {
         if (!child) { if (click_cb) click_cb(userdata); return; }
-        child->x = x; child->y = y - scroll;
+        int ox, oy;
+        child_offset(ox, oy);
+        child->x = x + ox; child->y = y + oy;
         Widget* c = child->pick(mx, my);
         if (c) c->on_click(mx, my);
     }
+    // Strip bawah = bar horizontal (diambil dulu sebelum bar vertikal).
+    bool hbar_hit(int mx, int my) const {
+        return pan && hbar_shown() && my >= y + h - BAR_W && my < y + h &&
+               mx >= x && mx < x + content_w();
+    }
+    virtual void on_click(int mx, int my) override {
+        if (hbar_hit(mx, my)) {
+            hbar_drag = true;
+            hbar_grab_x = mx;
+            hbar_grab_scroll = hscroll;
+            int tw = hbar_thumb_w();
+            int range = content_w() - tw;
+            if (range > 0) hscroll = (mx - x - tw / 2) * hscroll_max / range;
+            if (hscroll < 0) hscroll = 0;
+            if (hscroll > hscroll_max) hscroll = hscroll_max;
+            mark_dirty();
+            return;
+        }
+        Scrollable::on_click(mx, my);
+    }
+    virtual bool on_drag(int mx, int my) override {
+        if (!hbar_drag) return Scrollable::on_drag(mx, my);
+        int tw = hbar_thumb_w();
+        int range = content_w() - tw;
+        if (range <= 0) return true;
+        hscroll = hbar_grab_scroll + (mx - hbar_grab_x) * hscroll_max / range;
+        if (hscroll < 0) hscroll = 0;
+        if (hscroll > hscroll_max) hscroll = hscroll_max;
+        mark_dirty();
+        return true;
+    }
+    virtual void on_release() override { hbar_drag = false; Scrollable::on_release(); }
+    void draw_hbar(Painter& p) {
+        if (!hbar_shown()) return;
+        int vw = content_w();
+        int by = y + h - BAR_W;
+        p.rect(x, by, vw, BAR_W, p.theme.button_bg);
+        int tw = hbar_thumb_w();
+        int range = vw - tw;
+        int tx = range > 0 ? x + hscroll * range / hscroll_max : x;
+        p.rect(tx, by, tw, BAR_W, p.theme.accent);
+    }
     virtual void draw(Painter& p) override {
         if (!child) { p.rect(x, y, w, h, p.theme.button_bg); draw_bar(p); return; }
-        child->x = x; child->y = y - scroll;
+        int ox, oy;
+        child_offset(ox, oy);
+        child->x = x + ox; child->y = y + oy;
         // draw pertama hanya untuk arrange (VBox menghitung h-nya di sini);
         // keduanya ter-clip viewport agar isi yang lebih panjang dari view
         // tidak bocor keluar. Lalu hitung ulang scroll_max (bar mungkin
         // muncul → konten menyempit) dan gambar ulang dengan lebar benar.
         p.set_clip(x, y, w, h);
         child->draw(p);
-        set_scroll_max(child->h);
-        p.set_clip(x, y, content_w(), h);
+        update_scroll_maxes();
+        child_offset(ox, oy);
+        child->x = x + ox; child->y = y + oy;
+        p.set_clip(x, y, content_w(), view_h());
         child->draw(p);
         p.clear_clip();
         draw_bar(p);
+        draw_hbar(p);
     }
 };
 
@@ -1510,6 +1713,20 @@ public:
         mark_dirty();
     }
     void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
+    // Phase 11: pilih baris dari kode (viewer membuka berkas dari Explorer)
+    // + gulirkan baris itu ke dalam view kalau sedang di luar. Tidak memanggil
+    // change_cb — pemanggilnya yang tahu dan menghindari rekursi.
+    void set_selected(int i) {
+        if (i < 0 || i >= n || i == selected) return;
+        selected = i;
+        int view_h = h - BAR_W;
+        int ry = i * ROW_H;
+        if (ry < scroll) scroll = ry;
+        else if (ry + ROW_H > scroll + view_h) scroll = ry + ROW_H - view_h;
+        if (scroll < 0) scroll = 0;
+        if (scroll > scroll_max) scroll = scroll_max;
+        mark_dirty();
+    }
     virtual void set_hover(bool on) override { if (!on && hover_row >= 0) { hover_row = -1; mark_dirty(); } }
     virtual bool track_hover(int mx, int my) override {
         (void)mx;
@@ -2148,7 +2365,7 @@ public:
             // Kolom centang (View > Word Wrap) — kotak accent, bukan glyph,
             // karena font bitmap toolkit hanya punya ASCII.
             if (items[i].checked) p.rect(x + 8, ry + (ROW_H - 8) / 2, 8, 8, p.theme.accent);
-            uint32_t fg = items[i].disabled ? aa_shade(p.theme.fg, -55) : p.theme.fg;
+            color_t fg = items[i].disabled ? color_darken(p.theme.fg, SHADE_55) : p.theme.fg;
             p.text(items[i].label, x + 24, ry + (ROW_H - 16) / 2, fg);
             if (items[i].acc) {
                 // Shortcut ("Ctrl+S") pakai warna aksen khusus agar menonjol
@@ -2556,22 +2773,44 @@ public:
     }
 
     // --- Settings (Phase 9): persist theme ke KyuzenFS "settings.ui" ---
+    // Dua versi format (lihat include/libui.h):
+    //   v1 — tag "KTH1" + 6 x color_t = 28 byte  (yang ditulis sekarang)
+    //   v0 — 6 x uint32 0x00RRGGBB = 24 byte      (file lama; tetap dibaca)
+    // Ukuran payload beda (24 vs 28) + tag, jadi versinya bisa dibedakan
+    // tanpa menyentuh struct ABI.
     int settings_save() {
         int fd = sys_open("settings.ui", O_WRONLY | O_CREAT | O_TRUNC);
         if (fd < 0) return 0;
-        sys_write_fd(fd, &theme, sizeof(ui_theme_t));
+        char buf[SETTINGS_V1_LEN];
+        memcpy(buf, SETTINGS_TAG, SETTINGS_TAG_LEN);
+        ui_theme_t out;
+        theme.to_abi(&out);   // 6 x color_t (struct = blob: semua field uint8)
+        memcpy(buf + SETTINGS_TAG_LEN, &out, sizeof(out));
+        int n = sys_write_fd(fd, buf, SETTINGS_V1_LEN);
         sys_close(fd);
-        return 1;
+        return n == SETTINGS_V1_LEN;
     }
     int settings_load() {
         int fd = sys_open("settings.ui", O_RDONLY);
         if (fd < 0) return 0;
-        ui_theme_t t;
-        int n = sys_read_fd(fd, &t, sizeof(ui_theme_t));
+        char buf[SETTINGS_V1_LEN];
+        int n = sys_read_fd(fd, buf, SETTINGS_V1_LEN);
         sys_close(fd);
-        if (n != (int)sizeof(ui_theme_t)) return 0;      // file bukan theme valid
-        if (!t.bg && !t.fg && !t.accent && !t.button_bg &&
-            !t.button_fg && !t.button_hover) return 0;    // blob kosong
+        ui_theme_t t;
+        if (n == SETTINGS_V1_LEN && tag_match(buf, SETTINGS_TAG)) {
+            memcpy(&t, buf + SETTINGS_TAG_LEN, sizeof(t));       // v1
+        } else if (n == (int)sizeof(ui_theme_t)) {
+            // v0: theme ditulis sebagai 6 x uint32 0x00RRGGBB.
+            uint32_t legacy[6];
+            memcpy(legacy, buf, sizeof(legacy));
+            color_t c[6];
+            for (int i = 0; i < 6; i++) c[i] = color_from_u32(legacy[i], FORMAT_ARGB);
+            t.bg = c[0]; t.fg = c[1]; t.accent = c[2];
+            t.button_bg = c[3]; t.button_fg = c[4]; t.button_hover = c[5];
+        } else {
+            return 0;   // ukuran tak dikenal → bukan theme
+        }
+        if (theme_empty(&t)) return 0;     // blob kosong (semua RGB nol)
         set_theme(&t);
         return 1;
     }
@@ -3067,6 +3306,17 @@ void ui_image_set_file(ui_widget_t* widget, const char* filename) {
     reinterpret_cast<ui::Image*>(widget)->set_file(filename);
 }
 
+// Phase 11: skala otomatis agar seluruh gambar masuk view (return persen).
+int ui_image_set_fit(ui_widget_t* widget, int view_w, int view_h) {
+    return reinterpret_cast<ui::Image*>(widget)->set_fit(view_w, view_h);
+}
+
+void ui_image_natural_size(ui_widget_t* widget, int* out_w, int* out_h) {
+    ui::Image* im = reinterpret_cast<ui::Image*>(widget);
+    if (out_w) *out_w = im->iw;
+    if (out_h) *out_h = im->ih;
+}
+
 // --- TextEdit (Phase 10) ---
 ui_widget_t* ui_textedit_create(ui_window_t* win, int w, int h) {
     (void)win;
@@ -3112,7 +3362,7 @@ void ui_textedit_append(ui_widget_t* widget, const char* text) {
     reinterpret_cast<ui::TextEdit*>(widget)->append(text);
 }
 
-void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, uint32_t color) {
+void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, color_t color) {
     reinterpret_cast<ui::TextEdit*>(widget)->set_prompt_style(prefix, color);
 }
 
@@ -3324,6 +3574,11 @@ ui_widget_t* ui_scrollview_create(ui_window_t* win, int w, int h) {
     return reinterpret_cast<ui_widget_t*>(new ui::ScrollView(w, h));
 }
 
+// Phase 11: mode "lihat gambar" (scroll 2 arah + center + anchor zoom).
+void ui_scrollview_set_pan(ui_widget_t* widget, int on) {
+    reinterpret_cast<ui::ScrollView*>(widget)->set_pan(on);
+}
+
 void ui_scrollview_set_child(ui_widget_t* widget, ui_widget_t* child) {
     reinterpret_cast<ui::ScrollView*>(widget)->set_child(reinterpret_cast<ui::Widget*>(child));
 }
@@ -3340,6 +3595,11 @@ void ui_listview_add_item(ui_widget_t* widget, const char* label) {
 
 int ui_listview_selected(ui_widget_t* widget) {
     return reinterpret_cast<ui::ListView*>(widget)->selected;
+}
+
+// Phase 11: pilih baris dari kode (dipakai viewer saat dibuka dari Explorer).
+void ui_listview_set_selected(ui_widget_t* widget, int index) {
+    reinterpret_cast<ui::ListView*>(widget)->set_selected(index);
 }
 
 void ui_listview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {

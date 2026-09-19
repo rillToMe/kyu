@@ -8,6 +8,7 @@
 #include "font8x16.h"
 #include "libgui.h"
 #include "userlib.h"
+#include "color_types.h"
 #include <stdint.h>
 
 // INTERNAL HELPERS
@@ -78,9 +79,17 @@ void gui_damage_rect(gui_window_t* win, int x, int y, int w, int h) {
 // CANVAS DRAWING — koordinat dalam canvas KONTEN (y=0 = baris isi
 // pertama; titlebar milik WM tidak pernah digambar app).
 
-static void _lgui_fill_rect(gui_window_t* win, int x, int y, int w, int h, uint32_t color) {
+// Canvas libgui selalu opaque (dulu `color | 0xFF000000`); API publik sekarang
+// menerima `color_t` (include/libgui.h) dan diserialisasi lewat libs/color di
+// sini — satu-satunya tempat warna jadi pixel 32-bit.
+static inline uint32_t _lgui_px(color_t c) {
+    c.a = 255;
+    return color_to_u32(c, FORMAT_ARGB);
+}
+
+static void _lgui_fill_rect(gui_window_t* win, int x, int y, int w, int h, color_t color) {
     _lgui_damage(win, x, y, w, h);   // Phase 4: rect yang mungkin berubah
-    uint32_t solid = color | 0xFF000000;
+    uint32_t solid = _lgui_px(color);
     int W = (int)win->width;
     int H = (int)win->height;
     for (int py = y; py < y + h; py++) {
@@ -91,11 +100,11 @@ static void _lgui_fill_rect(gui_window_t* win, int x, int y, int w, int h, uint3
     }
 }
 
-static void _lgui_draw_char_abs(gui_window_t* win, char c, int x, int y, uint32_t color) {
+static void _lgui_draw_char_abs(gui_window_t* win, char c, int x, int y, color_t color) {
     if (c < 0 || c > 127) return;
     _lgui_damage(win, x, y, 8, 16);   // Phase 4: sel glyph 8x16
     const unsigned char* bitmap = font8x16[(int)(unsigned char)c];
-    uint32_t solid = color | 0xFF000000;
+    uint32_t solid = _lgui_px(color);
     int W = (int)win->width;
     int H = (int)win->height;
     for (int row = 0; row < 16; row++) {
@@ -109,7 +118,7 @@ static void _lgui_draw_char_abs(gui_window_t* win, char c, int x, int y, uint32_
     }
 }
 
-static void _lgui_draw_string_abs(gui_window_t* win, const char* str, int x, int y, uint32_t color) {
+static void _lgui_draw_string_abs(gui_window_t* win, const char* str, int x, int y, color_t color) {
     int cx = x, cy = y;
     for (int i = 0; str[i]; i++) {
         if (str[i] == '\n') { cy += 16; cx = x; }
@@ -147,7 +156,7 @@ gui_window_t* gui_create_window(uint32_t width, uint32_t height) {
     }
 
     // Gambar latar awal (konten penuh) + upload penuh awal.
-    _lgui_fill_rect(win, 0, 0, (int)width, (int)height, 0xF5F5F5);
+    _lgui_fill_rect(win, 0, 0, (int)width, (int)height, COLOR_RGB(0xF5, 0xF5, 0xF5));
     sys_kwm_update_window(win->win_id, win->canvas);
     win->dmg_valid = 0;   // sudah ter-upload; jangan kirim ulang saat flush pertama
 
@@ -191,7 +200,7 @@ gui_window_t* gui_create_desktop(void) {
     }
 
     // Latar awal (wallpaper default) lalu update penuh.
-    _lgui_fill_rect(win, 0, 0, (int)sw, (int)sh, 0x1E293B);
+    _lgui_fill_rect(win, 0, 0, (int)sw, (int)sh, COLOR_RGB(0x1E, 0x29, 0x3B));
     sys_kwm_update_window(win->win_id, win->canvas);
     win->dmg_valid = 0;   // sudah ter-upload
 
@@ -293,23 +302,23 @@ void gui_mainloop(gui_window_t* win) {
 
 // DRAWING API — koordinat RELATIF ke KONTEN window
 
-void gui_draw_rect(gui_window_t* win, int x, int y, int w, int h, uint32_t color) {
+void gui_draw_rect(gui_window_t* win, int x, int y, int w, int h, color_t color) {
     if (!win) return;
     _lgui_fill_rect(win, x, y, w, h, color);
 }
 
-void gui_draw_char(gui_window_t* win, char c, int x, int y, uint32_t color) {
+void gui_draw_char(gui_window_t* win, char c, int x, int y, color_t color) {
     if (!win) return;
     _lgui_draw_char_abs(win, c, x, y, color);
 }
 
-void gui_draw_text(gui_window_t* win, const char* text, int x, int y, uint32_t color) {
+void gui_draw_text(gui_window_t* win, const char* text, int x, int y, color_t color) {
     if (!win) return;
     _lgui_draw_string_abs(win, text, x, y, color);
 }
 
 void gui_draw_label_num(gui_window_t* win, const char* label, uint32_t num,
-                        const char* suffix, int x, int y, uint32_t color) {
+                        const char* suffix, int x, int y, color_t color) {
     char buf[128];
     _lgui_strncpy(buf, label, 80);
     char num_str[16];
@@ -320,12 +329,13 @@ void gui_draw_label_num(gui_window_t* win, const char* label, uint32_t num,
 }
 
 void gui_draw_bar(gui_window_t* win, int x, int y, int w, int h,
-                  uint32_t value, uint32_t max_value, uint32_t bar_color) {
+                  uint32_t value, uint32_t max_value, color_t bar_color) {
     if (!win || max_value == 0) return;
     // Background bar (abu-abu gelap)
-    gui_draw_rect(win, x, y, w, h, 0x333333);
+    _lgui_fill_rect(win, x, y, w, h, COLOR_RGB(0x33, 0x33, 0x33));
     // Isi bar
     int filled = (int)((value * (uint32_t)w) / max_value);
     if (filled > w) filled = w;
-    if (filled > 0) gui_draw_rect(win, x, y, filled, h, bar_color);
+    if (filled > 0)
+        _lgui_fill_rect(win, x, y, filled, h, bar_color);
 }

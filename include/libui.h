@@ -2,6 +2,7 @@
 #define LIBUI_H
 
 #include <stdint.h>
+#include "color_types.h"   // warna tema/API = color_t (libs/color)
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,14 +38,16 @@ extern "C" {
 typedef struct ui_window ui_window_t;   // satu window + pohon widget
 typedef struct ui_widget ui_widget_t;   // basis semua widget (label, button, layout)
 
-// Tema — warna ARGB (alpha dipaksa 0xFF di painter).
+// Tema — 6 warna `color_t` (libs/color). Byte alpha diabaikan painter (semua
+// permukaan window opaque), jadi isi saja dengan COLOR_RGB(). Untuk tabel
+// `static const` di C pakai bentuk initializer COLOR_RGB_INIT()/COLOR_WHITE_INIT.
 typedef struct ui_theme {
-    uint32_t bg;             // latar window
-    uint32_t fg;             // teks umum
-    uint32_t accent;         // aksen
-    uint32_t button_bg;      // latar tombol
-    uint32_t button_fg;      // teks tombol
-    uint32_t button_hover;   // latar tombol saat hover
+    color_t bg;             // latar window
+    color_t fg;             // teks umum
+    color_t accent;         // aksen
+    color_t button_bg;      // latar tombol
+    color_t button_fg;      // teks tombol
+    color_t button_hover;   // latar tombol saat hover
 } ui_theme_t;
 
 // Callback klik tombol. userdata = argumen ui_button_set_click.
@@ -124,6 +127,12 @@ ui_widget_t* ui_image_create(ui_window_t* win, const char* filename, int w, int 
 void ui_image_set_scale(ui_widget_t* widget, int percent);
 // Phase 10: ganti file PNG yang ditampilkan (viewer galeri), reset zoom 100%.
 void ui_image_set_file(ui_widget_t* widget, const char* filename);
+// Phase 11: skala otomatis agar SELURUH gambar masuk area view — dipakai viewer
+// saat membuka gambar supaya tidak perlu digeser manual. Return persen yang
+// dipakai (0 = tidak ada gambar), sudah di-clamp ke rentang ui_image_set_scale.
+int  ui_image_set_fit(ui_widget_t* widget, int view_w, int view_h);
+// Ukuran natural PNG yang sedang tampil (0,0 bila kosong/gagal decode).
+void ui_image_natural_size(ui_widget_t* widget, int* out_w, int* out_h);
 
 // --- TextEdit (Phase 10) ---
 // Editor multi-baris. Buffer teks polos 8K; kursor + scroll roda/otomatis.
@@ -141,7 +150,7 @@ void ui_textedit_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 // `color` (gaya prompt shell Linux), sisanya tetap theme.fg. prefix dicopy
 // oleh toolkit; 0/"" mematikan highlight. Dipakai terminal.c agar prompt
 // "user@kyuzen:~$ " kontras terhadap output.
-void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, uint32_t color);
+void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, color_t color);
 
 // --- TextEdit: API editor (Phase 11 — dipakai notepad) ---
 // Semua mutasi lewat satu jalur (apply_replace) sehingga undo selalu konsisten.
@@ -203,12 +212,21 @@ void ui_window_add_bar(ui_window_t* win, ui_widget_t* bar);
 // Wadah scrollable generik: satu widget anak, scroll roda + scrollbar.
 ui_widget_t* ui_scrollview_create(ui_window_t* win, int w, int h);
 void ui_scrollview_set_child(ui_widget_t* widget, ui_widget_t* child);
+// Phase 11: mode "lihat gambar": scrollbar HORIZONTAL ikut aktif (kalau isi
+// lebih lebar dari view), anak ditaruh di tengah saat lebih kecil dari view,
+// dan saat ukuran anak berubah (zoom) titik tengah view dipertahankan — jadi
+// membesarkan gambar tidak melompat ke pojok kiri-atas. Scrollbar cuma muncul
+// saat isi benar-benar melebihi view, sesuai perilaku image viewer biasa.
+void ui_scrollview_set_pan(ui_widget_t* widget, int on);
 
 // --- ListView ---
 // Daftar item vertikal (row 20px); klik memilih & memanggil change_cb.
 ui_widget_t* ui_listview_create(ui_window_t* win, int w, int h);
 void ui_listview_add_item(ui_widget_t* widget, const char* label);
 int ui_listview_selected(ui_widget_t* widget);   // index item terpilih, -1 = tak ada
+// Pilih item dari kode (mis. viewer membuka berkas dari Explorer); baris
+// bergulir ke dalam view bila di luar. Index di luar rentang → tanpa efek.
+void ui_listview_set_selected(ui_widget_t* widget, int index);
 void ui_listview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 
 // --- Table ---
@@ -316,8 +334,11 @@ enum { UI_CURSOR_ARROW = 0, UI_CURSOR_IBEAM = 1, UI_CURSOR_HAND = 2 };
 void ui_widget_set_cursor(ui_widget_t* widget, int kind);
 
 // --- Settings (persist theme ke KyuzenFS "settings.ui") ---
-// Simpan/muat tema window sebagai blob 6×uint32. Load menolak file yang
-// bukan theme valid (semua nol). Return 1 sukses, 0 gagal/tak ada file.
+// Format file (dua versi, ukuran beda sehingga bisa dibedakan):
+//   v1 — tag "KTH1" (4 byte) + 6 × color_t (r,g,b,a) = 28 byte
+//   v0 — 6 × uint32 0x00RRGGBB tanpa tag = 24 byte (file lama, tetap dibaca)
+// Load menolak file yang bukan theme valid (ukuran tak dikenal atau semua nol)
+// dan memakai jalur v0 untuk file lama. Return 1 sukses, 0 gagal/tak ada file.
 int ui_settings_save(ui_window_t* win);
 int ui_settings_load(ui_window_t* win);
 

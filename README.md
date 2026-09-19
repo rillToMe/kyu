@@ -85,7 +85,7 @@ Everything on screen - every pixel, window, and keystroke - is produced by code 
 | --- | --- |
 | `shell` | Login shell with 25+ commands (`help`, `ls`, `zen`, `start`, `sched`, `ping`, …) |
 | `fileman` | File manager for KyuzenFS |
-| `viewer` | PNG image viewer (stb_image) |
+| `viewer` | Image Viewer: PNG gallery (sidebar), auto-fit to window, zoom + scrollbars on demand (stb_image) |
 | `clock` | Real-time clock widget |
 | `calc` | Calculator |
 | `taskmgr` | Task / system monitor |

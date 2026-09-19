@@ -12,6 +12,11 @@
 #include "../user_apps/desktop.c"
 #undef main
 
+// Pembanding warna (desktop.c memakai color_t dari libs/color).
+static int color_eq(color_t a, color_t b) {
+    return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
 // --- FS palsu ---
 typedef struct { const char* name; const char* data; } FakeFile;
 static FakeFile FS[] = {
@@ -77,20 +82,21 @@ int  sys_kwm_get_windows(kwm_window_info_t* b, int m) { (void)b; (void)m; return
 int  sys_kwm_activate_window(int id) { (void)id; return 0; }
 void sys_kwm_update_window(int id, uint32_t* b) { (void)id; (void)b; }
 gui_window_t* gui_create_desktop(void) { return 0; }
-void gui_draw_rect(gui_window_t* w, int x, int y, int cw, int ch, uint32_t c) {
+void gui_draw_rect(gui_window_t* w, int x, int y, int cw, int ch, color_t c) {
     (void)w; (void)x; (void)y; (void)cw; (void)ch; (void)c;
 }
-void gui_draw_text(gui_window_t* w, const char* t, int x, int y, uint32_t c) {
+void gui_draw_text(gui_window_t* w, const char* t, int x, int y, color_t c) {
     (void)w; (void)t; (void)x; (void)y; (void)c;
 }
 void gui_flush(gui_window_t* w) { (void)w; }
 
 int main(void) {
-    // parse_color: hex, desimal, sampah.
-    assert(parse_color("0x1565C0") == 0x1565C0);
-    assert(parse_color("0XABCDEF") == 0xABCDEF);
-    assert(parse_color("255") == 255);
-    assert(parse_color("xyz") == 0);
+    // parse_color: hex, desimal, sampah (hasilnya color_t opaque).
+    assert(color_eq(parse_color("0x1565C0"), COLOR_RGB(0x15, 0x65, 0xC0)));
+    assert(color_eq(parse_color("0XABCDEF"), COLOR_RGB(0xAB, 0xCD, 0xEF)));
+    assert(color_eq(parse_color("255"), COLOR_RGB(0, 0, 255)));
+    assert(color_eq(parse_color("xyz"), COLOR_RGB(0, 0, 0)));
+    assert(parse_color("0x1565C0").a == 255);
 
     // Scan: hanya *.elf; desktop.elf disembunyikan manifest (hidden=1).
     assert(discover_apps() == 1);          // beda dari checksum awal (0)
@@ -98,14 +104,14 @@ int main(void) {
 
     assert(!strcmp(g_apps[0].label, "Explorer"));      // dari manifest
     assert(!strcmp(g_apps[0].elf, "/apps/fileman.elf"));
-    assert(g_apps[0].color == 0x1565C0);
+    assert(color_eq(g_apps[0].color, COLOR_RGB(0x15, 0x65, 0xC0)));
 
     assert(!strcmp(g_apps[1].label, "Kalkulator"));    // CRLF ikut ter-trim
-    assert(g_apps[1].color == 0x2E7D32);
+    assert(color_eq(g_apps[1].color, COLOR_RGB(0x2E, 0x7D, 0x32)));
 
     assert(!strcmp(g_apps[2].label, "badptr"));        // fallback tanpa manifest
     assert(!strcmp(g_apps[2].elf, "/apps/badptr.elf"));
-    assert(g_apps[2].color == APP_DEFAULT);
+    assert(color_eq(g_apps[2].color, APP_DEFAULT));
 
     assert(discover_apps() == 0);          // scan ulang tanpa perubahan FS
 

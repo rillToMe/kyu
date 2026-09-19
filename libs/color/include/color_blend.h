@@ -17,8 +17,9 @@ static inline uint32_t color_div255(uint32_t x) {
 
 // Overlay src di atas dst (non-premultiplied, a = cakupan 0..255).
 // src.a == 0 → dst apa adanya (tidak menggambar); dst.a == 0 → src (kanvas
-// kosong); selain itu campuran RGB dengan hasil opaque (a=255) — sesuai model
-// mask display KyuzenOS yang hanya mengenal transparan/opaque.
+// kosong); selain itu campuran RGB (s*src.a + d*(255-src.a)) / 255 dengan hasil
+// opaque (a=255) — PERSIS sama dengan aa_mix() yang lama, jadi pemakaian di
+// compositor/libui pixel-identical (dikunci test paritas).
 static inline color_t color_blend_alpha(color_t src, color_t dst) {
     if (src.a == 0) return dst;
     if (dst.a == 0) {
@@ -29,9 +30,9 @@ static inline color_t color_blend_alpha(color_t src, color_t dst) {
     if (src.a == 255) return src;
     uint32_t na = 255u - src.a;
     color_t out;
-    out.r = (uint8_t)(color_div255((uint32_t)src.r * src.a) + color_div255((uint32_t)dst.r * na));
-    out.g = (uint8_t)(color_div255((uint32_t)src.g * src.a) + color_div255((uint32_t)dst.g * na));
-    out.b = (uint8_t)(color_div255((uint32_t)src.b * src.a) + color_div255((uint32_t)dst.b * na));
+    out.r = (uint8_t)(((uint32_t)src.r * src.a + (uint32_t)dst.r * na) / 255u);
+    out.g = (uint8_t)(((uint32_t)src.g * src.a + (uint32_t)dst.g * na) / 255u);
+    out.b = (uint8_t)(((uint32_t)src.b * src.a + (uint32_t)dst.b * na) / 255u);
     out.a = 255;
     return out;
 }

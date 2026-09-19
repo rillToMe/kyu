@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "userlib.h"
+#include "color_types.h"   // API gambar memakai color_t (libs/color)
 
 // ============================================================
 // Kyuzen GUI Framework (libgui)
@@ -78,24 +79,30 @@ void gui_destroy(gui_window_t* win);
 // --- Drawing API ---
 // Semua koordinat RELATIF terhadap KONTEN window. y=0 = baris isi pertama
 // (di bawah titlebar milik WM).
+//
+// Warna memakai `color_t` (libs/color) — bukan hex 0xAARRGGBB lagi. Tulis
+// komponennya dengan COLOR_RGB()/COLOR_RGBA() atau ambil dari palet
+// (COLOR_WHITE, COLOR_BLACK, ...). Canvas libgui selalu opaque: byte alpha
+// warna di sini dipaksa 255 saat ditulis, jadi warna transparan tetap
+// menggambar (mask transparansi window dikelola compositor, bukan app).
 
 // Isi persegi panjang dengan warna solid.
-void gui_draw_rect(gui_window_t* win, int x, int y, int w, int h, uint32_t color);
+void gui_draw_rect(gui_window_t* win, int x, int y, int w, int h, color_t color);
 
 // Gambar satu karakter (dari font 8x16 built-in).
-void gui_draw_char(gui_window_t* win, char c, int x, int y, uint32_t color);
+void gui_draw_char(gui_window_t* win, char c, int x, int y, color_t color);
 
 // Gambar string teks.
-void gui_draw_text(gui_window_t* win, const char* text, int x, int y, uint32_t color);
+void gui_draw_text(gui_window_t* win, const char* text, int x, int y, color_t color);
 
 // Gambar string dengan angka uint32_t di belakangnya (misal: "RAM: 128 MB").
 void gui_draw_label_num(gui_window_t* win, const char* label, uint32_t num,
-                        const char* suffix, int x, int y, uint32_t color);
+                        const char* suffix, int x, int y, color_t color);
 
 // Gambar progress bar horizontal.
 // value/max = rasio (0..max), bar_color = warna isi.
 void gui_draw_bar(gui_window_t* win, int x, int y, int w, int h,
-                  uint32_t value, uint32_t max_value, uint32_t bar_color);
+                  uint32_t value, uint32_t max_value, color_t bar_color);
 
 // Paksa flush canvas ke layar (biasanya dipanggil otomatis oleh mainloop).
 void gui_flush(gui_window_t* win);

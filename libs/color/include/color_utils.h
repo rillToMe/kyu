@@ -21,6 +21,12 @@ static const color_t COLOR_CYAN        = {   0, 255, 255, 255 };
 static const color_t COLOR_MAGENTA     = { 255,   0, 255, 255 };
 static const color_t COLOR_GRAY        = { 128, 128, 128, 255 };
 
+// Palet bentuk initializer — dipakai di `static const` (lihat COLOR_RGB_INIT
+// di color_types.h). Versi nilai runtime tetap objek COLOR_* di atas.
+#define COLOR_TRANSPARENT_INIT  {   0,   0,   0,   0 }
+#define COLOR_BLACK_INIT        {   0,   0,   0, 255 }
+#define COLOR_WHITE_INIT        { 255, 255, 255, 255 }
+
 #ifdef __cplusplus
 extern "C" {
 #endif
