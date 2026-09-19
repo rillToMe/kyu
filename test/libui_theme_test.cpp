@@ -151,6 +151,7 @@ void png_free(uint32_t* b) { free(b); }
 #include "primitives/slider.hpp"      // ui::Slider
 #include "containers/scrollview.hpp"  // ui::ScrollView
 #include "containers/listview.hpp"    // ui::ListView
+#include "containers/table.hpp"       // ui::Table
 #include "dialog/promptdialog.hpp"    // ui::PromptDialog
 #include "window/window.hpp"          // ui::Window (composition root)
 
@@ -432,6 +433,37 @@ int main(void) {
         int before = pd.input_at(pd.x);
         check(ok == 1 && half_l == 3 && half_r == 4 && before == 0,
               "prompt: klik → indeks kursor sejajar offset teks draw() (x+22)");
+    }
+
+    // --- 8. Table: clear() tidak meninggalkan seleksi/hover stale ---------
+    // Path refresh Explorer membebaskan semua baris, tapi selected/hover_row
+    // tetap menunjuk index yang sudah tak ada → baris hasil refresh berikutnya
+    // bisa ter-highlight "selected" padahal user tak pernah memilihnya.
+    {
+        ui::Table t(240, 100);
+        t.x = 0; t.y = 0;
+        t.add_column("Nama", 120);
+        const char* r1[1] = { "berkas1" };
+        const char* r2[1] = { "berkas2" };
+        t.add_row(r1, 1);
+        t.add_row(r2, 1);
+        check(t.nrows == 2, "table: dua baris masuk sebelum clear()");
+
+        // Simulasi klik baris ke-1 (index 1) lalu refresh.
+        t.on_content_click(0, t.y + ui::Table::HEADER_H + ui::Table::ROW_H + 2);
+        check(t.selected == 1, "table: klik baris mengubah seleksi");
+        t.hover_row = 1;
+        t.clear();
+        check(t.nrows == 0 && t.selected == -1 && t.hover_row == -1,
+              "table: clear() mereset selected/hover_row (tidak menunjuk baris mati)");
+
+        // Refresh mengisi baris baru: tak ada yang ter-highlight tanpa klik.
+        t.add_row(r1, 1);
+        t.add_row(r2, 1);
+        check(t.selected == -1 && t.hover_row == -1,
+              "table: setelah clear() + add_row, tak ada baris ter-highlight sendiri");
+        t.on_content_click(0, t.y + ui::Table::HEADER_H + ui::Table::ROW_H + 2);
+        check(t.selected == 1, "table: seleksi lewat klik tetap jalan setelah clear()");
     }
 
     printf("\n%d PASS, %d FAIL\n", PASS, FAIL);

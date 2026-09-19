@@ -54,6 +54,13 @@ public:
         for (int r = 0; r < nrows; r++)
             for (int c = 0; c < ncols; c++) { _ui_free(cells[r][c]); cells[r][c] = 0; }
         nrows = 0;
+        // Baris lama sudah dibebaskan, jadi index seleksi/hover jadi stale:
+        // baris hasil refresh berikutnya bisa ter-highlight "selected"/"hover"
+        // padahal user tak pernah memilihnya. -1 = "tidak ada" (konvensi
+        // constructor). change_cb SENGAJA tidak dipanggil — clear() bukan aksi
+        // user, memanggil callback di sini adalah perilaku baru.
+        selected = -1;
+        hover_row = -1;
         set_scroll_view(0, h - HEADER_H - BAR_W);
         mark_dirty();
     }
