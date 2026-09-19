@@ -21,6 +21,7 @@ Linux), menggantikan satu file raksasa secara bertahap.
 | [`ring3-tahap2-boundary-copy.md`](design/ring3-tahap2-boundary-copy.md) | Ring 3 Tahap 2 — boundary copy: pointer user divalidasi + di-copy in/out via `kernel/usercopy.c`; kontrak per-syscall (copy/shared/bypass); fix UAF `sys_load_elf` |
 | [`sched-module-split.md`](design/sched-module-split.md) | Pemecahan `kernel/task.c` (907 baris) jadi modul `kernel/sched/` (core, runqueue, lifecycle, block, debug) — tanpa perubahan perilaku, `task.h` tidak berubah |
 | [`fs-phase1-3-directories.md`](design/fs-phase1-3-directories.md) | KyuzenFS 3 fase: folder sebagai entry biasa + path absolut, syscall path (`sys_get_file_list`/`sys_mkdir`), migrasi app ke `/apps/` |
+| [`color-library.md`](design/color-library.md) | Library warna modular `libs/color/`: `color_t` RGBA, blending integer, HSL/HSV, palet + utility UI; zero-alloc, kernel & user-space, verifikasi sweep 256³ warna |
 
 ### troubleshooting/
 

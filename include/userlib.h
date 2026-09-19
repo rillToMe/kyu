@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>   // size_t
 #include "proc.h"     // P0 Phase 2: PROC_* bounds, proc_info_t, wait/exit ABI
+#include "crash_notice.h"  // sys_crash_notice: notifikasi crash (boot setelah panic)
 
 // --- STRUKTUR PESAN EVENT (GUI) ---
 #define EVENT_NONE          0
@@ -221,6 +222,12 @@ int sys_kwm_set_title(int win_id, const char* title);   // 0 / -1 (hanya pemilik
 int sys_kwm_get_windows(kwm_window_info_t* buf, int max);   // -> jumlah / -1
 int sys_kwm_activate_window(int win_id); // bring-to-front + fokus; 0 / -1
 int sys_get_screen_size(uint32_t* w, uint32_t* h);   // -> 0 / -1
+
+// sys_crash_notice (syscall 80): isi *out dengan ringkasan crash terakhir.
+// Return 1 kalau BOOT INI baru menerbitkan laporan crash (yaitu boot tepat
+// setelah sistem panic), 0 kalau tidak ada — jadi aplikasi bisa menampilkan
+// notifikasi sekali saja, bukan tiap startup. Dipakai desktop.
+int sys_crash_notice(crash_notice_t* out);
 
 void sys_shutdown(void);
 void sys_reboot(void);

@@ -59,8 +59,17 @@ int sys_read_file_to_buffer(char* f, char* buf, uint32_t cap) {
 }
 
 // --- stub sisanya (tidak dipanggil oleh test) ---
+static int g_spawns = 0;
+static int g_prints = 0;
 uint64_t sys_uptime(void) { return 0; }
-int  sys_spawn(char* f) { (void)f; return 0; }
+int  sys_spawn(char* f) { (void)f; g_spawns++; return 0; }
+void print(char* s) { (void)s; g_prints++; }
+void print_num(uint32_t v) { (void)v; }
+// Pemberitahuan crash: 0 = tidak ada laporan baru (boot normal).
+int  sys_crash_notice(crash_notice_t* out) {
+    (void)out;
+    return 0;
+}
 void sys_yield(void) {}
 void sys_exit(void) {}
 int  sys_get_event(kyuzen_event_t* e) { (void)e; return 0; }
@@ -74,6 +83,7 @@ void gui_draw_rect(gui_window_t* w, int x, int y, int cw, int ch, uint32_t c) {
 void gui_draw_text(gui_window_t* w, const char* t, int x, int y, uint32_t c) {
     (void)w; (void)t; (void)x; (void)y; (void)c;
 }
+void gui_flush(gui_window_t* w) { (void)w; }
 
 int main(void) {
     // parse_color: hex, desimal, sampah.
@@ -107,6 +117,37 @@ int main(void) {
     d.width = 100; d.height = 80;          // layar kerdil → minimal 1 kolom
     assert(grid_cols(&d) == 1);
     assert(grid_cap(&d) >= 1 && grid_cap(&d) <= g_napps);
+
+    // --- notifikasi crash: tutup lewat klik di luar kartu ---
+    // Kartu tidak boleh "lengket": klik apa pun di luar kartu menutupnya,
+    // dan klik itu TETAP diproses sebagai aksi normal (tidak dikonsumsi).
+    gui_window_t w2 = { 0 };
+    w2.width = 1280; w2.height = 800;
+    int card_x = 1280 - NOTIF_W - NOTIF_MARGIN;
+
+    g_notice_on = 1; g_notice_repaint = 0; g_spawns = 0;
+    assert(notice_click(&w2, card_x - 1, NOTIF_MARGIN + 10) == 0);   // kiri kartu
+    assert(notice_click(&w2, card_x + 10, NOTIF_MARGIN - 1) == 0);   // atas kartu
+    assert(notice_click(&w2, card_x + 10, NOTIF_MARGIN + NOTIF_H) == 0);  // bawah kartu
+    assert(g_notice_on == 1);                        // belum tertutup (masih tampil)
+
+    assert(notice_click(&w2, card_x + 10, NOTIF_MARGIN + 10) == 1);  // dalam kartu
+    assert(g_notice_on == 0 && g_notice_repaint == 1);// tertutup + minta repaint penuh
+    assert(g_spawns == 1);                           // klik kartu → File Manager
+    assert(notice_click(&w2, card_x + 10, NOTIF_MARGIN + 10) == 0);  // sudah tertutup
+    assert(g_spawns == 1);                           // tidak spawn dua kali
+
+    // Jalur klik-di-luar / waktu habis memakai notice_close() yang sama.
+    g_notice_on = 1; g_notice_repaint = 0; g_spawns = 0;
+    notice_close("uji");
+    assert(g_notice_on == 0 && g_notice_repaint == 1 && g_spawns == 0);
+    g_notice_repaint = 0;
+    notice_close("uji");                             // idempoten, bukan dobel
+    assert(g_notice_on == 0 && g_notice_repaint == 0);
+
+    // Durasi tampil harus masuk akal (detik, bukan menit) — kartu yang menempel
+    // lama terasa seperti bug bagi pemakai.
+    assert(NOTIF_MS >= 3000 && NOTIF_MS <= 15000);
 
     printf("desktop manifest: OK\n");
     return 0;

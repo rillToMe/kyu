@@ -14,6 +14,7 @@
 #include "cred.h"
 #include "proc.h"
 #include "ghal.h"   // Phase 2C §9.6: sys_gpu_stats — lewat kontrak HAL, bukan driver core (rule §5.5)
+#include "crash_archive.h"   // sys_crash_notice: pemberitahuan crash ke aplikasi
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -1256,6 +1257,19 @@ void syscall_handler(registers_t *r) {
     else if (syscall_num == 67) { // sys_kwm_set_window_opaque(win_id)
         extern int kwm_set_window_opaque(int);
         ret_val = (uint64_t)kwm_set_window_opaque((int)r->rbx);
+    }
+    else if (syscall_num == SYS_CRASH_NOTICE) { // sys_crash_notice(crash_notice_t* out)
+        // Pemberitahuan crash untuk aplikasi (desktop memakainya untuk
+        // menampilkan notifikasi saat boot setelah panic). Struct kecil & tetap
+        // -> bounce buffer di stack, tanpa kmalloc.
+        crash_notice_t kn;
+        int have = crash_archive_notice(&kn);
+        if (user_range_ok(&uc, r->rbx, sizeof(kn))) {
+            if (copy_to_user(&uc, r->rbx, &kn, sizeof(kn)) != 0) have = 0;
+        } else {
+            have = 0;                       // pointer user tidak valid
+        }
+        ret_val = (uint64_t)have;
     }
 
     // P0 Phase 3: kill observed on trap exit. Covers "flag set while

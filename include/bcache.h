@@ -67,6 +67,11 @@ void bcache_release(struct block_buffer *b);
 // Tulis seluruh dirty block ke disk (shutdown / sync global).
 void bcache_flush_all(void);
 
+// Versi BEST-EFFORT untuk jalur panic: kalau bcache_lock sedang dipegang CPU
+// lain (atau oleh CPU yang fault — self-deadlock), TIDAK menunggu dan langsung
+// return 0. Return 1 kalau seluruh dirty block benar-benar ditulis.
+int  bcache_flush_all_try(void);
+
 // Statistik (diagnostik / taskmgr).
 uint64_t bcache_hit_count(void);
 uint64_t bcache_miss_count(void);

@@ -45,8 +45,16 @@ namespace {
 // Runtime shim: C++ memori -> syscalls KyuzenOS
 // ------------------------------------------------------------
 void  _ui_free(void* p)     { if (p) sys_free(p); }
+void* _ui_alloc(unsigned n) { return sys_alloc(n); }
 
 int _ui_strlen(const char* s) { int n = 0; while (s[n]) n++; return n; }
+int _ui_strncmp(const char* a, const char* b, int n) {
+    for (int i = 0; i < n; i++) {
+        if (a[i] != b[i]) return (unsigned char)a[i] - (unsigned char)b[i];
+        if (!a[i]) return 0;
+    }
+    return 0;
+}
 
 // Copy string — toolkit OWNS salinannya (caller boleh pakai stack buffer).
 char* _ui_strdup(const char* s) {
@@ -74,12 +82,15 @@ void clipboard_clear() { _ui_free(g_clipboard); g_clipboard = 0; }
 } // namespace
 
 // C++ operator new/delete (global scope, bukan namespace) -> sys_alloc/sys_free.
-void* operator new(unsigned long n)              { return sys_alloc((uint32_t)n); }
-void* operator new[](unsigned long n)            { return sys_alloc((uint32_t)n); }
+// Ukuran memakai __SIZE_TYPE__ (bukan `unsigned long`) agar deklarasi ini tetap
+// cocok saat file ini dikompilasi untuk HOST test (MinGW/LLP64: size_t =
+// unsigned long long) maupun untuk kernel/app bare-metal.
+void* operator new(__SIZE_TYPE__ n)              { return sys_alloc((uint32_t)n); }
+void* operator new[](__SIZE_TYPE__ n)            { return sys_alloc((uint32_t)n); }
 void  operator delete(void* p) noexcept          { if (p) sys_free(p); }
 void  operator delete[](void* p) noexcept        { if (p) sys_free(p); }
-void  operator delete(void* p, unsigned long) noexcept   { if (p) sys_free(p); }
-void  operator delete[](void* p, unsigned long) noexcept { if (p) sys_free(p); }
+void  operator delete(void* p, __SIZE_TYPE__) noexcept   { if (p) sys_free(p); }
+void  operator delete[](void* p, __SIZE_TYPE__) noexcept { if (p) sys_free(p); }
 
 // Dipanggil kalau vtable class abstrak terpanggil (bug) — jangan kembali.
 extern "C" void __cxa_pure_virtual() { for (;;) {} }
@@ -87,12 +98,50 @@ extern "C" void __cxa_pure_virtual() { for (;;) {} }
 namespace ui {
 
 // ------------------------------------------------------------
-// Theme — layout field identik ui_theme_t (C ABI)
+// Theme — layout field identik ui_theme_t (C ABI).
+//
+// ENAM warna ABI di bawah adalah INPUT dari aplikasi. Di atasnya, struct ini
+// menurunkan LAPISAN PERMUKAAN (surface layers) gaya Modern Dark:
+//   editor   — area teks utama (paling gelap)
+//   chrome   — menu bar / status bar (sedikit lebih terang dari editor)
+//   panel    — isi modal dialog
+//   btnfill  — isian tombol di dalam dialog
+//   divider  — garis pemisah 1px antar layer
+//   mborder  — border modal (aksen halus)
+//   acc_text — teks aksen (shortcut "Ctrl+S" di dropdown, label About)
+//   caret    — kursor editor (kontras, jelas)
+// Aplikasi cukup set 6 warna dasar; turunannya dihitung sekali per set_theme.
 // ------------------------------------------------------------
 struct Theme {
     uint32_t bg, fg, accent, button_bg, button_fg, button_hover;
+    uint32_t editor, chrome, panel, btnfill, divider, mborder, acc_text, caret;
     Theme() : bg(0x1A1A2E), fg(0xE0E0E0), accent(0xE94560),
-              button_bg(0x0F3460), button_fg(0xFFFFFF), button_hover(0x2A4A7E) {}
+              button_bg(0x0F3460), button_fg(0xFFFFFF), button_hover(0x2A4A7E) {
+        derive();
+    }
+    void set(const ui_theme_t* t) {
+        bg = t->bg; fg = t->fg; accent = t->accent;
+        button_bg = t->button_bg; button_fg = t->button_fg; button_hover = t->button_hover;
+        derive();
+    }
+    void derive() {
+        // Abjad kecerahan (akhirnya naik): editor < panel < chrome < dialog.
+        // Persen shade dihitung agar turunan palet charcoal #1E1E1E jatuh di
+        // nilai spesifikasi: panel #252526, chrome #2D2D2D, tombol #3C3C3C,
+        // divider #333333, border modal #454545.
+        editor = button_bg;                         // "kertas" paling gelap
+        panel = 0x252526;                           // isi modal + popup menu
+        chrome = 0x2D2D2D;                          // menubar + status bar
+        btnfill = 0x3C3C3C;                         // isian tombol dialog
+        divider = 0x333333;                         // garis pemisah 1px
+        mborder = 0x454545;                         // border modal halus
+        // Aksen (konstanta, gaya VS Code — tidak ikut accent app supaya
+        // selalu sesuai spesifikasi Modern Dark):
+        //   acc_text — shortcut "Ctrl+N" amber #DCDCAA
+        //   caret    — kursor editor cyan #00E5FF (kontras di charcoal)
+        acc_text = 0xDCDCAA;
+        caret = 0x00E5FF;
+    }
 };
 
 // ------------------------------------------------------------
@@ -158,13 +207,16 @@ public:
         // Tanpa clip: jalur cepat (libgui menandai damage ter-clip sendiri).
         if (!clip_on && !rclip_on) { gui_draw_text(win, s, x, y, c | 0xFF000000); return; }
         // Ter-clip: gambar per-sel 8x16; hanya sel yang beririsan dengan clip.
-        int cy = y;
+        // cx/cy dijejak terpisah (bukan x + i*8): setelah '\n' kolom HARUS
+        // kembali ke kiri, kalau tidak baris kedua dan seterusnya melebar ke
+        // kanan — inilah yang dulu merusak teks multi-baris di dialog.
+        int cx = x, cy = y;
         for (int i = 0; s[i] && i < 512; i++) {
-            if (s[i] == '\n') { cy += 16; continue; }
-            int cx = x + i * 8;
+            if (s[i] == '\n') { cy += 16; cx = x; continue; }
             int rx = cx, ry = cy, rw = 8, rh = 16;
             if (clip_rect(rx, ry, rw, rh))
                 gui_draw_char(win, s[i], cx, cy, c | 0xFF000000);
+            cx += 8;
         }
     }
     // Blit PNG XRGB8888 (px = iw×ih) diskalakan nearest-neighbor ke rect
@@ -290,16 +342,26 @@ public:
     // meng-unions hanya rect itu, bukan seluruh pohon widget.
     bool dirty;
     int dm_x, dm_y, dm_w, dm_h;
+    // Window pemilik widget (0 kalau belum dipasang). Dipakai operasi yang
+    // mengubah TATA LETAK (mis. sembunyikan widget) supaya seluruh layar
+    // digambar ulang, bukan hanya kotak widget itu sendiri.
+    class Window* owner;
 
     Widget() : x(0), y(0), w(0), h(0), visible(true), has_focus(false),
               click_cb(0), userdata(0), draggable(false), dnd_payload(0),
               drop_target(false), drop_cb(0), drop_data(0),
               cursor_kind(UI_CURSOR_ARROW),
-              dirty(false), dm_x(0), dm_y(0), dm_w(0), dm_h(0) {}
+              dirty(false), dm_x(0), dm_y(0), dm_w(0), dm_h(0), owner(0) {}
     virtual ~Widget() { _ui_free(dnd_payload); }
+    // Pemilik dipasang Window saat widget masuk pohon (Layout menurunkan ke anak).
+    virtual void set_owner(Window* o) { owner = o; }
     virtual void draw(Painter& p) = 0;
     virtual void set_hover(bool on) { (void)on; }
     virtual void set_focus(bool on) { has_focus = on; mark_dirty(); }
+    // Tampil/sembunyi tanpa menghapus widget. Layout (VBox/HBox) melewati anak
+    // yang tidak visible, jadi baris yang disembunyikan tidak makan tempat.
+    // Definisi di luar class: butuh Window lengkap (damage_full).
+    void set_visible(bool on);
     virtual bool focusable() { return false; }   // TextBox → true
     // Phase 8: akumulasi rect kotor (window-local) — over-report BOLEH.
     void mark_area(int ax, int ay, int aw, int ah) {
@@ -521,12 +583,95 @@ public:
     char ps1[32];
     int ps1_len;
     uint32_t ps1_color;
+    // --- Phase 11: seleksi, clipboard, undo/redo, word wrap (notepad) ---
+    int sel_anchor;            // jangkar seleksi (-1 = tak ada). cur = ujung lain
+    bool wrap;                 // word wrap aktif? (terminal: false)
+    ui_click_cb change_cb;     // dipanggil setiap isi teks berubah (modified flag)
+    void* change_data;
+    // Undo/redo berbasis OPERASI (bukan snapshot penuh): tiap perubahan teks
+    // menyimpan bagian yang dihapus + yang disisipkan, jadi mengetik 60 karakter
+    // tetap 60 langkah undo tanpa menyalin buffer 8K per huruf.
+    struct EditOp {
+        int pos;               // titik perubahan (indeks dokumen)
+        int del_len; char* del;// teks yang DIHAPUS (untuk undo)
+        int ins_len; char* ins;// teks yang DISISIPKAN (untuk redo)
+    };
+    enum { MAX_OPS = 64 };
+    EditOp ops[MAX_OPS];
+    int n_ops;                 // jumlah op terpakai
+    int op_pos;                // jumlah op yang "sudah dilakukan" (posisi undo)
+    bool undo_on;              // app meminta undo/redo (notepad: ya)
+
     TextEdit(int width, int height) : len(0), cur(0), scroll_top(0),
                                       readonly(false), enter_cb(0), enter_data(0),
-                                      ps1_len(0), ps1_color(0xFF7CC7FF) {
+                                      ps1_len(0), ps1_color(0xFF7CC7FF),
+                                      sel_anchor(-1), wrap(false),
+                                      change_cb(0), change_data(0),
+                                      n_ops(0), op_pos(0), undo_on(false) {
         w = width; h = height;
         text[0] = '\0';
         cursor_kind = UI_CURSOR_IBEAM;
+    }
+    virtual ~TextEdit() { ops_clear(); }
+    // Bebaskan semua memori op (undo/redo) — juga saat window ditutup.
+    void ops_clear() {
+        for (int i = 0; i < n_ops; i++) {
+            _ui_free(ops[i].del); _ui_free(ops[i].ins);
+            ops[i].del = ops[i].ins = 0;
+        }
+        n_ops = 0; op_pos = 0;
+    }
+    static char* dup_n(const char* s, int n) {
+        char* c = (char*)_ui_alloc((unsigned)(n > 0 ? n : 1) + 1u);
+        if (!c) return 0;
+        for (int i = 0; i < n; i++) c[i] = s[i];
+        c[n] = '\0';
+        return c;
+    }
+    void op_clear_range(int from) {              // buang op dari indeks `from`
+        for (int i = from; i < n_ops; i++) {
+            _ui_free(ops[i].del); _ui_free(ops[i].ins);
+            ops[i].del = ops[i].ins = 0;
+        }
+        if (n_ops > from) n_ops = from;
+        if (op_pos > n_ops) op_pos = n_ops;
+    }
+    void op_record(int pos, const char* del, int del_len, const char* ins, int ins_len) {
+        if (!undo_on) return;
+        op_clear_range(op_pos);               // cabang redo lama dibuang
+        if (n_ops >= MAX_OPS) {               // penuh: buang op paling tua
+            _ui_free(ops[0].del); _ui_free(ops[0].ins);
+            for (int i = 1; i < n_ops; i++) ops[i - 1] = ops[i];
+            n_ops--; op_pos--;
+            if (op_pos < 0) op_pos = 0;
+        }
+        EditOp& o = ops[n_ops];
+        o.pos = pos; o.del_len = del_len; o.ins_len = ins_len;
+        o.del = del_len > 0 ? dup_n(del, del_len) : 0;
+        o.ins = ins_len > 0 ? dup_n(ins, ins_len) : 0;
+        n_ops++;
+        op_pos = n_ops;
+    }
+    // Terapkan perubahan operasi (dir = -1 undo, +1 redo).
+    bool op_apply(int dir) {
+        if (dir < 0) {
+            if (op_pos <= 0) return false;
+            op_pos--;
+        } else {
+            if (op_pos >= n_ops) return false;
+        }
+        EditOp& o = ops[op_pos];
+        // undo: buang yang tadinya disisipkan, lalu kembalikan yang terhapus.
+        // redo: buang yang tadinya terhapus, lalu sisipkan lagi.
+        int d_len = (dir < 0) ? o.ins_len : o.del_len;
+        int i_len = (dir < 0) ? o.del_len : o.ins_len;
+        const char* i_src = (dir < 0) ? o.del : o.ins;
+        apply_replace(o.pos, d_len, i_src, i_len, false);
+        if (dir > 0) op_pos++;
+        else cur = o.pos;                    // undo: kursor ke titik perubahan
+        ensure_cursor_visible();
+        mark_dirty();
+        return true;
     }
     void set_enter(ui_click_cb cb, void* u) { enter_cb = cb; enter_data = u; }
     void set_prompt_style(const char* prefix, uint32_t color) {
@@ -566,19 +711,9 @@ public:
     int vis_lines() const { int v = h / LINE_H; return v < 1 ? 1 : v; }
 
     // --- edit buffer ---
-    void insert_at(int idx, char c) {
-        if (len >= MAX_TEXT - 1) return;
-        for (int i = len; i > idx; i--) text[i] = text[i - 1];
-        text[idx] = c;
-        len++;
-        text[len] = '\0';
-    }
-    void delete_at(int idx) {
-        if (idx < 0 || idx >= len) return;
-        for (int i = idx; i < len; i++) text[i] = text[i + 1];
-        len--;
-        text[len] = '\0';
-    }
+    // insert_at/delete_at lama digantikan apply_replace() (satu titik ubah +
+    // perekaman undo). Tidak ada pemanggil lain — dibuang supaya tidak ada
+    // jalur edit yang lolos dari undo.
     void append(const char* s) {
         mark_dirty();
         for (int i = 0; s[i] && len < MAX_TEXT - 1; i++) text[len++] = s[i];
@@ -588,21 +723,198 @@ public:
         clamp_scroll();
         mark_dirty();
     }
-    void clear() { mark_dirty(); len = 0; cur = 0; scroll_top = 0; text[0] = '\0'; }
+    void clear() {
+        mark_dirty();
+        apply_replace(0, len, 0, 0, true);   // sekaligus tercatat di undo
+    }
 
-    // --- scroll ---
+    // ------------------------------------------------------------
+    // SATU-SATUNYA titik perubahan teks: hapus `del_n` di `pos`, lalu sisipkan
+    // `ins_n` karakter. Semua aksi (ketik, backspace, delete, paste, cut,
+    // replace-all, undo/redo) lewat sini supaya undo selalu konsisten.
+    // record=false dipakai saat undo/redo menerapkan op (jangan rekam ulang).
+    // ------------------------------------------------------------
+    void apply_replace(int pos, int del_n, const char* ins, int ins_n, bool record) {
+        if (pos < 0) pos = 0;
+        if (pos > len) pos = len;
+        if (del_n < 0) del_n = 0;
+        if (del_n > len - pos) del_n = len - pos;
+        if (ins_n < 0) ins_n = 0;
+        if (len - del_n + ins_n > MAX_TEXT - 1)         // clamp ke kapasitas buffer
+            ins_n = MAX_TEXT - 1 - (len - del_n);
+        if (ins_n < 0) ins_n = 0;
+        if (record) op_record(pos, text + pos, del_n, ins, ins_n);
+        if (del_n > 0)
+            for (int i = pos; i + del_n <= len; i++) text[i] = text[i + del_n];
+        if (ins_n > 0) {
+            for (int i = len + ins_n; i >= pos + ins_n; i--) text[i] = text[i - ins_n];
+            for (int i = 0; i < ins_n; i++) text[pos + i] = ins[i];
+        }
+        len += ins_n - del_n;
+        text[len] = '\0';
+        cur = pos + ins_n;
+        sel_anchor = -1;
+        ensure_cursor_visible();
+        mark_dirty();
+        if (change_cb) change_cb(change_data);
+    }
+    // Sisipkan teks di kursor (dipakai menu Edit → Waktu/Tanggal, replace-all).
+    void insert_str(const char* s) {
+        int n = 0; while (s[n]) n++;
+        if (n == 0) return;
+        int lo = sel_lo(), hi = sel_hi();
+        apply_replace(lo, hi - lo, s, n, true);
+    }
+
+    // --- seleksi ---
+    bool has_sel() const { return sel_anchor >= 0 && sel_anchor != cur; }
+    int  sel_lo() const {
+        if (sel_anchor < 0) return cur;
+        return sel_anchor < cur ? sel_anchor : cur;
+    }
+    int  sel_hi() const {
+        if (sel_anchor < 0) return cur;
+        return sel_anchor < cur ? cur : sel_anchor;
+    }
+    void sel_all() { sel_anchor = 0; cur = len; ensure_cursor_visible(); mark_dirty(); }
+    void sel_set(int a, int b) {
+        if (a < 0) a = 0; if (a > len) a = len;
+        if (b < 0) b = 0; if (b > len) b = len;
+        sel_anchor = a; cur = b;
+        ensure_cursor_visible(); mark_dirty();
+    }
+    // Hapus seleksi (tanpa mencatat op baru kalau kosong).
+    void sel_delete() {
+        if (!has_sel()) { sel_anchor = -1; return; }
+        int lo = sel_lo(), hi = sel_hi();
+        apply_replace(lo, hi - lo, 0, 0, true);
+    }
+    void copy_sel() {
+        if (!has_sel()) return;
+        int lo = sel_lo(), hi = sel_hi();
+        char* buf = (char*)_ui_alloc((unsigned)(hi - lo) + 1u);
+        if (!buf) return;
+        for (int i = lo; i < hi; i++) buf[i - lo] = text[i];
+        buf[hi - lo] = '\0';
+        ui_clipboard_set_text(buf);
+        _ui_free(buf);
+    }
+    void cut_sel() {
+        if (!has_sel()) return;
+        copy_sel();
+        sel_delete();
+    }
+    void paste_clip() {
+        const char* s = ui_clipboard_get_text();
+        if (!s || !s[0]) return;
+        int n = 0; while (s[n]) n++;
+        int lo = sel_lo(), hi = sel_hi();
+        apply_replace(lo, hi - lo, s, n, true);
+    }
+
+    // --- kursor bergerak (menghormati Shift = perluas seleksi) ---
+    void move_to(int idx, bool extend) {
+        if (idx < 0) idx = 0;
+        if (idx > len) idx = len;
+        if (extend) { if (sel_anchor < 0) sel_anchor = cur; }
+        else sel_anchor = -1;
+        cur = idx;
+        ensure_cursor_visible();
+        mark_dirty();
+    }
+    // Lompat satu kata (Ctrl+Left/Right), gaya editor biasa.
+    int word_left(int idx) const {
+        while (idx > 0 && (text[idx - 1] == ' ' || text[idx - 1] == '\n')) idx--;
+        while (idx > 0 && text[idx - 1] != ' ' && text[idx - 1] != '\n') idx--;
+        return idx;
+    }
+    int word_right(int idx) const {
+        while (idx < len && text[idx] != ' ' && text[idx] != '\n') idx++;
+        while (idx < len && (text[idx] == ' ' || text[idx] == '\n')) idx++;
+        return idx;
+    }
+
+    // ------------------------------------------------------------
+    // Pemetaan baris LAYAR (word wrap). Saat wrap mati, satu baris layar = satu
+    // baris dokumen, jadi jalur terminal/readonly tetap identik dengan dulu.
+    // ------------------------------------------------------------
+    int wrap_cols() const { int c = (w - 8) / CHAR_W; return c < 1 ? 1 : c; }
+    // Indeks akhir baris layar yang mulai di `start`.
+    int row_limit(int start) const {
+        if (!wrap) { int i = start; while (i < len && text[i] != '\n') i++; return i; }
+        int cols = wrap_cols(), i = start, c = 0, last_space = -1;
+        while (i < len && text[i] != '\n' && c < cols) {
+            if (text[i] == ' ') last_space = i;
+            i++; c++;
+        }
+        // Potong di spasi terakhir supaya kata tidak terbelah (gaya Notepad).
+        if (i < len && text[i] != '\n' && last_space > start) i = last_space + 1;
+        return i;
+    }
+    int disp_rows() const {
+        int n = 0, i = 0;
+        for (;;) {
+            n++;
+            int lim = row_limit(i);
+            if (lim >= len) break;
+            i = (text[lim] == '\n') ? lim + 1 : lim;
+            if (i >= len) { n++; break; }        // '\n' di akhir → baris kosong
+            if (n > MAX_TEXT) break;             // jaga-jaga
+        }
+        return n;
+    }
+    void disp_pos(int idx, int* row, int* col) const {
+        int n = 0, i = 0;
+        for (;;) {
+            int lim = row_limit(i);
+            if (idx <= lim || lim >= len) {
+                *row = n;
+                *col = idx - i;
+                if (*col < 0) *col = 0;
+                return;
+            }
+            i = (text[lim] == '\n') ? lim + 1 : lim;
+            n++;
+        }
+    }
+    int disp_to_idx(int row, int col) const {
+        int n = 0, i = 0;
+        for (;;) {
+            int lim = row_limit(i);
+            if (n == row) {
+                int idx = i + (col > 0 ? col : 0);
+                return idx > lim ? lim : idx;
+            }
+            if (lim >= len) return len;
+            i = (text[lim] == '\n') ? lim + 1 : lim;
+            n++;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Sisa kelas: scroll, mouse, keyboard, gambar.
+    // ------------------------------------------------------------
+
+    // --- scroll (dalam BARIS LAYAR, jadi ikut word wrap) ---
     void clamp_scroll() {
-        int mt = total_lines() - vis_lines();
+        int mt = disp_rows() - vis_lines();
         if (mt < 0) mt = 0;
         if (scroll_top > mt) scroll_top = mt;
         if (scroll_top < 0) scroll_top = 0;
     }
     void ensure_cursor_visible() {
-        int line = line_at(cur);
-        if (line < scroll_top) scroll_top = line;
-        else if (line >= scroll_top + vis_lines())
-            scroll_top = line - vis_lines() + 1;
+        int row = 0, col = 0;
+        disp_pos(cur, &row, &col);
+        if (row < scroll_top) scroll_top = row;
+        else if (row >= scroll_top + vis_lines())
+            scroll_top = row - vis_lines() + 1;
         clamp_scroll();
+    }
+    // Indeks dokumen dari koordinat window-local konten.
+    int idx_at(int mx, int my) const {
+        int col = (mx - x - 4) / CHAR_W; if (col < 0) col = 0;
+        int row = (my - y) / LINE_H + scroll_top; if (row < 0) row = 0;
+        return disp_to_idx(row, col);
     }
 
     virtual void on_click(int mx, int my) override {
@@ -612,19 +924,24 @@ public:
             mark_dirty();
             return;
         }
-        int col = (mx - x - 4) / CHAR_W; if (col < 0) col = 0;
-        int row = (my - y) / LINE_H + scroll_top;
-        int idx = 0, ln = 0;
-        while (ln < row && idx < len) {
-            if (text[idx] == '\n') ln++;
-            idx++;
-        }
-        int c = 0;
-        while (idx < len && text[idx] != '\n' && c < col) { idx++; c++; }
+        // Klik = letakkan kursor + pasang jangkar; geser mouse (on_drag)
+        // sesudahnya memperluas seleksi.
+        int idx = idx_at(mx, my);
         cur = idx;
+        sel_anchor = readonly ? -1 : idx;
         ensure_cursor_visible();
         mark_dirty();
     }
+    // Seret mouse = blok seleksi (Notepad: seleksi teks dengan drag).
+    virtual bool on_drag(int mx, int my) override {
+        if (enter_cb || sel_anchor < 0) return false;
+        int idx = idx_at(mx, my);
+        if (idx == cur) return false;
+        cur = idx;
+        mark_dirty();
+        return true;
+    }
+    virtual void on_release() override { sel_anchor = has_sel() ? sel_anchor : -1; }
     virtual bool on_scroll(int delta) override {
         int old = scroll_top;
         scroll_top += delta;        // +1 roda bawah = lihat output lebih bawah
@@ -634,89 +951,165 @@ public:
     }
     virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
         mark_dirty();
-        if (mods & KEY_MOD_CTRL) {
-            if (ascii == 'a' || ascii == 'A') { cur = line_start(cur); return; }  // Home baris
-            if (ascii == 'e' || ascii == 'E') {                                  // End baris
+        uint32_t sc = scancode & 0xFF;
+        bool shift = (mods & KEY_MOD_SHIFT) != 0;
+        bool ctrl  = (mods & KEY_MOD_CTRL) != 0;
+        if (ctrl) {
+            // Ctrl+A/Ctrl+E (Home/End baris) = gaya Emacs, dipakai terminal.
+            // Notepad mendaftarkan Ctrl+A sebagai Select All lewat shortcut, jadi
+            // jalur ini tidak pernah menyentuh editor teks.
+            if (ascii == 'a' || ascii == 'A') { move_to(line_start(cur), shift); return; }
+            if (ascii == 'e' || ascii == 'E') {
                 int i = cur;
                 while (i < len && text[i] != '\n') i++;
-                cur = i; return;
+                move_to(i, shift); return;
             }
+            // Ctrl+Panah = lompat per kata; Ctrl+Home/End = awal/akhir dokumen.
+            if (sc == 0x4B) { move_to(word_left(cur), shift); return; }
+            if (sc == 0x4D) { move_to(word_right(cur), shift); return; }
+            if (sc == 0x47) { move_to(0, shift); return; }
+            if (sc == 0x4F) { move_to(len, shift); return; }
             return;
         }
-        uint32_t sc = scancode & 0xFF;
         // Terminal (enter_cb): Enter = submit ke app, bukan sisip '\n'.
         if (enter_cb && (ascii == '\n' || ascii == '\r' || sc == 0x1C)) {
             enter_cb(enter_data);
             return;
         }
         int lower = enter_cb ? line_start(len) : 0;   // edit hanya baris perintah
-        if (ascii >= 32) {                    // printable → sisip
-            if (!readonly) { insert_at(cur, (char)ascii); cur++; }
-        } else if (sc == 0x0E) {              // Backspace
-            if (!readonly && cur > lower) { delete_at(cur - 1); cur--; }
-        } else if (ascii == '\n' || ascii == '\r' || sc == 0x1C) {  // Enter
-            if (!readonly) { insert_at(cur, '\n'); cur++; }
-        } else if (sc == 0x4B) { if (cur > lower) cur--; }           // Left
-        else if (sc == 0x4D) { if (cur < len) cur++; }               // Right
-        else if (sc == 0x48 && !enter_cb) {                          // Up
+        // Semua mutasi lewat apply_replace() supaya seleksi ikut terhapus dan
+        // langkah undo tercatat satu per aksi (bukan satu per karakter buffer).
+        if (ascii >= 32) {                            // printable → sisip/timpa seleksi
+            if (!readonly) {
+                char c = (char)ascii;
+                apply_replace(sel_lo(), sel_hi() - sel_lo(), &c, 1, true);
+            }
+            return;
+        }
+        if (sc == 0x0E) {                             // Backspace
+            if (readonly) return;
+            if (has_sel()) { sel_delete(); return; }
+            if (cur > lower) apply_replace(cur - 1, 1, 0, 0, true);
+            return;
+        }
+        if (sc == 0x53) {                             // Delete
+            if (readonly) return;
+            if (has_sel()) { sel_delete(); return; }
+            if (cur < len) apply_replace(cur, 1, 0, 0, true);
+            return;
+        }
+        if (ascii == '\n' || ascii == '\r' || sc == 0x1C) {  // Enter (auto-indent)
+            if (!readonly) {
+                apply_replace(sel_lo(), sel_hi() - sel_lo(), "\n", 1, true);
+            }
+            return;
+        }
+        if (sc == 0x0F) {                             // Tab → 4 spasi (font 8x16)
+            if (!readonly) apply_replace(sel_lo(), sel_hi() - sel_lo(), "    ", 4, true);
+            return;
+        }
+        // --- navigasi (Shift = perluas seleksi) ---
+        if (sc == 0x4B) { if (cur > lower) move_to(cur - 1, shift); return; }   // Left
+        if (sc == 0x4D) { if (cur < len) move_to(cur + 1, shift); return; }     // Right
+        if (sc == 0x48 && !enter_cb) {                                          // Up
             int col = cur - line_start(cur);
             int ls = line_start(cur);
             if (ls > 0) {
                 int ps = line_start(ls - 1), pe = ps;
                 while (pe < len && text[pe] != '\n') pe++;
-                cur = ps + col; if (cur > pe) cur = pe;
-            }
-        } else if (sc == 0x50 && !enter_cb) {                         // Down
+                int t = ps + col; if (t > pe) t = pe;
+                move_to(t, shift);
+            } else if (shift) move_to(0, true);
+            return;
+        }
+        if (sc == 0x50 && !enter_cb) {                                          // Down
             int col = cur - line_start(cur);
             int le = cur;
             while (le < len && text[le] != '\n') le++;
             if (le < len) {
                 int ns = le + 1, ne = ns;
                 while (ne < len && text[ne] != '\n') ne++;
-                cur = ns + col; if (cur > ne) cur = ne;
-            }
-        } else if (sc == 0x47) { cur = enter_cb ? lower : line_start(cur); }  // Home
-        else if (sc == 0x4F) {                                        // End
-            int i = cur; while (i < len && text[i] != '\n') i++; cur = i;
-        } else if (sc == 0x49) {                                     // PgUp
-            scroll_top -= vis_lines(); clamp_scroll();
-            if (enter_cb) return;          // terminal: biarkan viewport di atas
-        } else if (sc == 0x51) {                                     // PgDn
-            scroll_top += vis_lines(); clamp_scroll();
-            if (enter_cb) return;
-        } else return;                    // tombol lain: tanpa redraw
-        ensure_cursor_visible();
+                int t = ns + col; if (t > ne) t = ne;
+                move_to(t, shift);
+            } else if (shift) move_to(len, true);
+            return;
+        }
+        if (sc == 0x47) { move_to(enter_cb ? lower : line_start(cur), shift); return; }  // Home
+        if (sc == 0x4F) {                                                       // End
+            int i = cur; while (i < len && text[i] != '\n') i++;
+            move_to(i, shift);
+            return;
+        }
+        if (sc == 0x49) {                                                       // PgUp
+            // Di editor: pindahkan kursor satu layar penuh (kursor ikut), di
+            // terminal cukup viewport-nya.
+            if (enter_cb) { scroll_top -= vis_lines(); clamp_scroll(); return; }
+            int row = 0, col = 0;
+            disp_pos(cur, &row, &col);
+            int t = row - vis_lines(); if (t < 0) t = 0;
+            move_to(disp_to_idx(t, col), shift);
+            return;
+        }
+        if (sc == 0x51) {                                                       // PgDn
+            if (enter_cb) { scroll_top += vis_lines(); clamp_scroll(); return; }
+            int row = 0, col = 0;
+            disp_pos(cur, &row, &col);
+            move_to(disp_to_idx(row + vis_lines(), col), shift);
+            return;
+        }
+        // tombol lain: tidak ada yang berubah (mark_dirty di atas tak apa).
     }
     virtual void draw(Painter& p) override {
         clamp_scroll();
-        p.rect(x, y, w, h, p.theme.button_bg);
+        // Area teks = permukaan "editor" (charcoal #1E1E1E, bukan hitam murni)
+        // + garis tepi 1px sebagai batas dari menubar/status bar.
+        p.rect(x, y, w, h, p.theme.editor);
+        p.rect(x, y, w, 1, p.theme.divider);
+        p.rect(x, y + h - 1, w, 1, p.theme.divider);
         p.set_clip(x, y, w, h);
         int colw = (w - 8) / CHAR_W;    // kolom yang muat (margin 4px)
-        int idx = 0, ln = 0;
-        while (ln < scroll_top && idx < len) {
-            if (text[idx] == '\n') ln++;
-            idx++;
+        // Lewati scroll_top baris LAYAR (bukan baris dokumen — wrap mengubahnya).
+        int idx = 0, row = 0;
+        while (row < scroll_top) {
+            int lim = row_limit(idx);
+            if (lim >= len) { idx = len; break; }
+            idx = (text[lim] == '\n') ? lim + 1 : lim;
+            row++;
         }
+        bool sel_on = has_sel();
+        int hlo = sel_on ? sel_lo() : -1;
+        int hhi = sel_on ? sel_hi() : -1;
         int vy = y;
-        while (vy < y + h && idx < len) {
+        while (vy < y + h && idx <= len) {
+            int lim = row_limit(idx);
+            if (lim > idx + colw) lim = idx + colw;   // jaga-jaga (wrap mati)
             int cx = x + 4;
-            bool ps1_here = line_has_ps1(idx);   // prompt di baris ini → prefix berwarna
-            for (int c = 0; c < colw && idx < len && text[idx] != '\n'; c++, idx++) {
-                char t[2] = { text[idx], '\0' };
+            bool ps1_here = line_has_ps1(idx);        // prompt → prefix berwarna
+            for (int c = 0; idx + c < lim; c++) {
+                int ci = idx + c;
+                // Blok seleksi digambar sebagai latar sebelum karakternya.
+                if (ci >= hlo && ci < hhi)
+                    p.rect(cx, vy, CHAR_W, LINE_H, p.theme.button_hover);
+                char t[2] = { text[ci], '\0' };
                 uint32_t col = (ps1_here && c < ps1_len) ? ps1_color : p.theme.fg;
                 p.text(t, cx, vy + 1, col);
                 cx += CHAR_W;
             }
-            if (idx < len && text[idx] == '\n') idx++;
+            // "kursor" seleksi tepat setelah karakter terakhir tidak punya sel
+            // sendiri — tapi caret tetap tergambar di bawah, jadi aman.
             vy += LINE_H;
+            if (lim >= len) break;
+            idx = (text[lim] == '\n') ? lim + 1 : lim;
         }
-        // caret — kolom/baris dari `cur`, digambar sekali
+        // caret — posisi kursor dipetakan ke baris/kolom LAYAR, digambar sekali
         if (has_focus) {
-            int crow = line_at(cur) - scroll_top;
-            if (crow * LINE_H < h) {
-                int cx = x + 4 + (cur - line_start(cur)) * CHAR_W;
+            int crow = 0, ccol = 0;
+            disp_pos(cur, &crow, &ccol);
+            crow -= scroll_top;
+            if (crow >= 0 && crow * LINE_H < h) {
+                int cx = x + 4 + ccol * CHAR_W;
                 if (cx >= x + w) cx = x + w - 1;
-                p.rect(cx, y + crow * LINE_H, 1, LINE_H, p.theme.accent);
+                p.rect(cx, y + crow * LINE_H, 2, LINE_H, p.theme.caret);
             }
         }
         p.clear_clip();
@@ -876,7 +1269,7 @@ public:
     Layout() : count(0) { for (int i = 0; i < MAX_CHILDREN; i++) children[i] = 0; }
     virtual ~Layout() { for (int i = 0; i < count; i++) delete children[i]; }
 
-    void add(Widget* c) { if (count < MAX_CHILDREN) children[count++] = c; }
+    void add(Widget* c) { if (count < MAX_CHILDREN) { c->set_owner(owner); children[count++] = c; } }
     virtual void arrange() = 0;
     // Phase 8: pindahkan anak; tandai posisi lama+baru bila berubah (reflow).
     void place(Widget* c, int nx, int ny) {
@@ -889,10 +1282,18 @@ public:
     virtual int dirty_child_count() override { return count; }
     virtual Widget* dirty_child(int i) override { return children[i]; }
     virtual void settle() override { arrange(); }
+    virtual void set_owner(Window* o) override {
+        Widget::set_owner(o);
+        for (int i = 0; i < count; i++) children[i]->set_owner(o);
+    }
 
     virtual void draw(Painter& p) override {
         arrange();
-        for (int i = 0; i < count; i++) children[i]->draw(p);
+        // Anak TERSEMBUNYI tidak digambar. arrange() sudah melewatinya saat
+        // menempatkan, jadi posisinya bisa kebetulan (0,0) — persis bug yang
+        // membuat bar cari Notepad menumpuk menubar sebelum ini.
+        for (int i = 0; i < count; i++)
+            if (children[i]->visible) children[i]->draw(p);
     }
     virtual Widget* pick(int mx, int my) override {
         if (!visible) return 0;
@@ -918,6 +1319,7 @@ public:
     virtual void arrange() override {
         int cy = y;
         for (int i = 0; i < count; i++) {
+            if (!children[i]->visible) continue;   // widget tersembunyi tidak makan tempat
             place(children[i], x, cy);
             cy += children[i]->h + spacing;
         }
@@ -936,6 +1338,7 @@ public:
         int cx = x;
         int mh = 0;
         for (int i = 0; i < count; i++) {
+            if (!children[i]->visible) continue;   // widget tersembunyi tidak makan tempat
             place(children[i], cx, y);
             cx += children[i]->w + spacing;
             if (children[i]->h > mh) mh = children[i]->h;
@@ -1490,7 +1893,13 @@ public:
 // Dialog — overlay modal tengah-window (Phase 9). Non-blocking: cb(index)
 // dipanggil saat tombol ditekan, index = -1 bila dibatalkan (ESC).
 // Klik di luar dialog diabaikan (modal memblok input latar).
+//
+// Aksen teks: baris isi yang DIAWALI prefix UI_ACCENT_PREFIX digambar dengan
+// warna theme.acc_text (amber) — aplikasi menandai baris shortcut ("Ctrl+N")
+// agar menonjol dari deskripsi fungsinya (gaya hint VS Code).
 // ------------------------------------------------------------
+#define UI_ACCENT_PREFIX "#> "
+static const int UI_ACCENT_PREFIX_LEN = 3;
 class Dialog : public Widget {
 public:
     enum { MAX_BTNS = 4 };
@@ -1528,15 +1937,18 @@ public:
         }
         int bw = 0;
         for (int i = 0; i < n_btns; i++) bw += btn_w(i) + 6;
-        if (bw - 6 + 24 > wid) wid = bw - 6 + 24;
+        if (bw - 6 + 48 > wid) wid = bw - 6 + 48;
+        // Lebar min 300: teks tidak menempel ke border (padding kiri/kanan
+        // 16px) dan judul punya ruang napas.
+        if (wid < 300) wid = 300;
         this->w = wid;
-        this->h = 12 + 16 + 4 + nlines * 16 + 12 + 28 + 12;
+        this->h = 14 + 16 + 6 + nlines * 16 + 12 + 28 + 14;
     }
     virtual ~Dialog() {
         _ui_free(title); _ui_free(text);
         for (int i = 0; i < MAX_BTNS; i++) _ui_free(btns[i]);
     }
-    int btn_row_y() const { return y + h - 40; }
+    int btn_row_y() const { return y + h - 42; }
     int btn_total() const {
         int t = 0;
         for (int i = 0; i < n_btns; i++) t += btn_w(i) + 6;
@@ -1554,20 +1966,47 @@ public:
             if (mx >= btn_x(i) && mx < btn_x(i) + btn_w(i)) return i;
         return -1;
     }
+    // Dipanggil Window saat ESC menutup dialog, SEBELUM objek ini dihapus.
+    // PromptDialog memakainya untuk mengirim "dibatalkan" ke aplikasi.
+    virtual void on_cancel() {}
     virtual void draw(Painter& p) override {
-        p.rect(x, y, w, h, p.theme.button_bg);
-        p.rect(x, y, w, 1, p.theme.fg);
-        p.rect(x, y + h - 1, w, 1, p.theme.fg);
-        p.rect(x, y, 1, h, p.theme.fg);
-        p.rect(x + w - 1, y, 1, h, p.theme.fg);
-        p.text(title, x + 12, y + 12, p.theme.button_fg);
-        p.text(text, x + 12, y + 32, p.theme.fg);
+        // Modal = permukaan "panel" (#252526) + border halus (#454545-ish) +
+        // garis aksen tipis di tepi atas (identitas dialog, senada titlebar
+        // modern) + divider di atas baris tombol.
+        p.rect(x, y, w, h, p.theme.panel);
+        p.rect(x, y, w, 2, p.theme.accent);
+        p.rect(x, y, w, 1, p.theme.mborder);
+        p.rect(x, y + h - 1, w, 1, p.theme.mborder);
+        p.rect(x, y, 1, h, p.theme.mborder);
+        p.rect(x + w - 1, y, 1, h, p.theme.mborder);
+        p.text(title, x + 16, y + 14, p.theme.button_fg);       // judul putih
+        // Isi: baris ber-prefix aksen digambar dgn warna acc_text (amber).
+        {
+            int ty = y + 36, start = 0, i = 0;
+            for (;;) {
+                if (text[i] == '\n' || text[i] == '\0') {
+                    bool acc = (_ui_strncmp(text + start, UI_ACCENT_PREFIX,
+                                            UI_ACCENT_PREFIX_LEN) == 0);
+                    char save = text[i];
+                    // p.text() menggambar sampai NUL — pinjam byte baris itu.
+                    const_cast<char*>(text)[i] = '\0';
+                    p.text(text + start, x + 16, ty,
+                           acc ? p.theme.acc_text : p.theme.fg);
+                    const_cast<char*>(text)[i] = save;
+                    if (save == '\0') break;
+                    start = i + 1;
+                    ty += 16;
+                }
+                i++;
+            }
+        }
+        p.rect(x, btn_row_y() - 8, w, 1, p.theme.divider);
         int by = btn_row_y();
         for (int i = 0; i < n_btns; i++) {
             int bx = btn_x(i);
             p.rect(bx, by, btn_w(i), 28,
-                   i == hover_btn ? p.theme.button_hover : p.theme.bg);
-            p.text(btns[i], bx + 10, by + 6, p.theme.fg);
+                   i == hover_btn ? p.theme.button_hover : p.theme.btnfill);
+            p.text(btns[i], bx + 10, by + 6, p.theme.button_fg);
         }
     }
     void mark_btn(int i) {
@@ -1588,32 +2027,103 @@ public:
 
 class Menu : public Widget {
 public:
-    struct Item { char* label; ui_click_cb cb; void* data; };
-    enum { MAX_ITEMS = 16 };
+    // Item gaya menu Windows: label kiri, accelerator rata kanan, garis
+    // pemisah, tanda centang, dan status enabled/disabled (redup).
+    struct Item {
+        char* label;
+        char* acc;          // teks shortcut rata kanan ("Ctrl+S"); 0 = tak ada
+        ui_click_cb cb;
+        void* data;
+        bool sep;           // 1 = garis pemisah (label/cb diabaikan)
+        bool checked;
+        bool disabled;
+    };
+    enum { MAX_ITEMS = 20, ROW_H = 22, SEP_H = 9 };
     Item items[MAX_ITEMS];
     int n, hover_idx;
     Window* win;
 
     Menu(Window* w) : n(0), hover_idx(-1), win(w) {
-        this->w = 140; h = 4;
+        this->w = 150; h = 4;
     }
-    virtual ~Menu() { for (int i = 0; i < n; i++) _ui_free(items[i].label); }
-    void add_item(const char* label, ui_click_cb cb, void* u) {
+    virtual ~Menu() {
+        for (int i = 0; i < n; i++) { _ui_free(items[i].label); _ui_free(items[i].acc); }
+    }
+    int row_h(int i) const { return items[i].sep ? SEP_H : ROW_H; }
+    // Y layar baris ke-i — dijumlah dari baris sebelumnya, jadi baris pemisah
+    // (tinggi berbeda) tidak merusak hit-test seperti rumus i*20.
+    int row_y(int i) const {
+        int o = 2;
+        for (int j = 0; j < i; j++) o += row_h(j);
+        return y + o;
+    }
+    // Ukuran dari isi: baris terpanjang + kolom accelerator + gutter centang.
+    void relayout() {
+        int hh = 4, need = 130;
+        for (int i = 0; i < n; i++) {
+            hh += row_h(i);
+            if (items[i].sep) continue;
+            int t = _ui_strlen(items[i].label) * 8 + 40;
+            if (items[i].acc) t += _ui_strlen(items[i].acc) * 8 + 24;
+            if (t > need) need = t;
+        }
+        h = hh;
+        w = need;
+    }
+    void add_item_acc(const char* label, const char* acc, ui_click_cb cb, void* u) {
         if (n >= MAX_ITEMS) return;
-        items[n].label = _ui_strdup(label);
+        items[n].label = _ui_strdup(label ? label : "");
+        items[n].acc = acc ? _ui_strdup(acc) : 0;
         items[n].cb = cb; items[n].data = u;
+        items[n].sep = false; items[n].checked = false; items[n].disabled = false;
         n++;
-        h = n * 20 + 4;
+        relayout();
         mark_dirty();
+    }
+    void add_item(const char* label, ui_click_cb cb, void* u) { add_item_acc(label, 0, cb, u); }
+    void add_sep() {
+        if (n >= MAX_ITEMS) return;
+        items[n].label = _ui_strdup(""); items[n].acc = 0;
+        items[n].cb = 0; items[n].data = 0;
+        items[n].sep = true; items[n].checked = false; items[n].disabled = false;
+        n++;
+        relayout();
+        mark_dirty();
+    }
+    void set_checked(int i, int on) {
+        if (i < 0 || i >= n) return;
+        items[i].checked = (on != 0);
+        mark_item(i);
+    }
+    void set_enabled(int i, int on) {
+        if (i < 0 || i >= n) return;
+        items[i].disabled = (on == 0);
+        mark_item(i);
+    }
+    // Baris di (mx,my); -1 bila di luar, baris pemisah, atau disabled.
+    int item_at(int mx, int my) const {
+        if (mx < x || mx >= x + w) return -1;
+        for (int i = 0; i < n; i++) {
+            int ry = row_y(i);
+            if (my >= ry && my < ry + row_h(i))
+                return (items[i].sep || items[i].disabled) ? -1 : i;
+        }
+        return -1;
     }
     void mark_item(int i) {
         if (i < 0 || i >= n) return;
-        mark_area(x + 1, y + 2 + i * 20, w - 2, 20);
+        mark_area(x, row_y(i), w, row_h(i));
     }
     virtual void set_hover(bool on) override { if (!on && hover_idx >= 0) { mark_item(hover_idx); hover_idx = -1; } }
     virtual bool track_hover(int mx, int my) override {
-        int i = (my - y - 2) / 20;
-        if (i < 0 || i >= n || mx < x || mx >= x + w) i = -1;
+        int i = -1;
+        for (int k = 0; k < n; k++) {
+            int ry = row_y(k);
+            if (my >= ry && my < ry + row_h(k)) {
+                if (mx >= x && mx < x + w && !items[k].sep && !items[k].disabled) i = k;
+                break;
+            }
+        }
         if (i == hover_idx) return false;
         mark_item(hover_idx);
         hover_idx = i;
@@ -1621,14 +2131,32 @@ public:
         return true;
     }
     virtual void draw(Painter& p) override {
-        p.rect(x, y, w, h, p.theme.button_bg);
-        p.rect(x, y, w, 1, p.theme.fg);
-        p.rect(x, y + h - 1, w, 1, p.theme.fg);
-        p.rect(x, y, 1, h, p.theme.fg);
-        p.rect(x + w - 1, y, 1, h, p.theme.fg);
+        // Popup menu = permukaan "panel" (lebih terang dari editor, senada
+        // modal) + border halus, bukan kotak putih kontras.
+        p.rect(x, y, w, h, p.theme.panel);
+        p.rect(x, y, w, 1, p.theme.mborder);
+        p.rect(x, y + h - 1, w, 1, p.theme.mborder);
+        p.rect(x, y, 1, h, p.theme.mborder);
+        p.rect(x + w - 1, y, 1, h, p.theme.mborder);
         for (int i = 0; i < n; i++) {
-            if (i == hover_idx) p.rect(x + 1, y + 2 + i * 20, w - 2, 20, p.theme.button_hover);
-            p.text(items[i].label, x + 6, y + 3 + i * 20, p.theme.fg);
+            int ry = row_y(i);
+            if (items[i].sep) {
+                p.rect(x + 8, ry + SEP_H / 2, w - 16, 1, p.theme.divider);
+                continue;
+            }
+            if (i == hover_idx) p.rect(x + 1, ry, w - 2, ROW_H, p.theme.button_hover);
+            // Kolom centang (View > Word Wrap) — kotak accent, bukan glyph,
+            // karena font bitmap toolkit hanya punya ASCII.
+            if (items[i].checked) p.rect(x + 8, ry + (ROW_H - 8) / 2, 8, 8, p.theme.accent);
+            uint32_t fg = items[i].disabled ? aa_shade(p.theme.fg, -55) : p.theme.fg;
+            p.text(items[i].label, x + 24, ry + (ROW_H - 16) / 2, fg);
+            if (items[i].acc) {
+                // Shortcut ("Ctrl+S") pakai warna aksen khusus agar menonjol
+                // dari deskripsi fungsinya (gaya hint kuning VS Code).
+                int aw = _ui_strlen(items[i].acc) * 8;
+                p.text(items[i].acc, x + w - aw - 12, ry + (ROW_H - 16) / 2,
+                       items[i].disabled ? fg : p.theme.acc_text);
+            }
         }
     }
     // out-of-class: butuh Window lengkap (close_popup)
@@ -1657,17 +2185,26 @@ public:
         return titles[n - 1].menu;
     }
     virtual bool is_menu_bar() override { return true; }
+    // Lebar judul mengikuti teksnya (gaya menu Windows), TIDAK dibagi rata
+    // selebar window — dulu judul berjarak lebar sehingga terlihat seperti
+    // tabel, bukan menu.
+    int title_w(int i) const { return _ui_strlen(titles[i].label) * 8 + 22; }
+    int title_x(int i) const {
+        int tx = x + 6;
+        for (int j = 0; j < i; j++) tx += title_w(j);
+        return tx;
+    }
     void mark_title(int i) {
         if (i < 0 || i >= n) return;
-        int tw = n ? w / n : w;
-        mark_area(x + i * tw, y, tw, h);
+        mark_area(title_x(i), y, title_w(i), h);
     }
     virtual void set_hover(bool on) override { if (!on && hover_idx >= 0) { mark_title(hover_idx); hover_idx = -1; } }
     int title_at(int mx) const {
-        if (n == 0 || mx < x || mx >= x + w) return -1;
-        int tw = w / n;
-        int i = (mx - x) / tw;
-        return (i >= 0 && i < n) ? i : -1;
+        for (int i = 0; i < n; i++) {
+            int tx = title_x(i);
+            if (mx >= tx && mx < tx + title_w(i)) return i;
+        }
+        return -1;
     }
     virtual bool track_hover(int mx, int my) override {
         int i = -1;
@@ -1681,6 +2218,119 @@ public:
     // out-of-class: butuh Window lengkap (popup switch/open/close)
     virtual void on_click(int mx, int my) override;
     virtual void draw(Painter& p) override;
+};
+
+// ------------------------------------------------------------
+// StatusBar — pita status di dasar window (gaya Notepad Windows):
+// garis pemisah 1px di atas, teks kiri (Ln/Col) + teks kanan (info dokumen).
+// ------------------------------------------------------------
+class StatusBar : public Widget {
+public:
+    char* left;
+    char* right;
+
+    StatusBar() : left(0), right(0) { w = 0; h = 20; }
+    virtual ~StatusBar() { _ui_free(left); _ui_free(right); }
+
+    void set_text(const char* l, const char* r) {
+        char* nl = _ui_strdup(l ? l : "");
+        if (!nl) return;
+        char* nr = (r && r[0]) ? _ui_strdup(r) : 0;   // 0 = kolom kanan kosong
+        mark_dirty();
+        _ui_free(left); _ui_free(right);
+        left = nl; right = nr;
+        mark_dirty();
+    }
+    virtual void draw(Painter& p) override {
+        // Status bar = permukaan "chrome" (senada menubar) + divider 1px di
+        // atasnya sebagai batas dari area teks.
+        p.rect(x, y, w, h, p.theme.chrome);
+        p.rect(x, y, w, 1, p.theme.divider);
+        if (left) p.text(left, x + 8, y + (h - 16) / 2, p.theme.button_fg);
+        if (right) {
+            int tw = _ui_strlen(right) * 8;
+            p.text(right, x + w - tw - 8, y + (h - 16) / 2, p.theme.button_fg);
+        }
+    }
+};
+
+// ------------------------------------------------------------
+// PromptDialog — Dialog + satu kolom input teks (pengganti file dialog:
+// File > Buka / Simpan Sebagai). Enter = OK (index 0), ESC/Batal = index 1.
+//
+// Jawaban dikirim lewat Window::close_prompt(): dialog DIHAPUS dulu, isi input
+// disalin ke buffer lokal, baru callback ui_prompt_cb dijalankan. Urutan ini
+// penting — callback bebas membuka dialog baru (mis. peringatan "belum
+// disimpan") tanpa membuat dialog ini dihapus dua kali.
+// ------------------------------------------------------------
+class PromptDialog : public Dialog {
+public:
+    enum { MAX_INPUT = 255 };
+    char input[MAX_INPUT + 1];
+    int cur;                    // posisi kursor (indeks karakter)
+    ui_prompt_cb pcb;
+    void* pdata;
+
+    PromptDialog(Window* owner_win, const char* t, const char* tx, const char* initial,
+                 ui_prompt_cb c, void* d)
+        : Dialog(owner_win, t, tx, prompt_btns(), 2, 0, 0), cur(0), pcb(c), pdata(d) {
+        input[0] = '\0';
+        if (initial) {
+            int i = 0;
+            for (; initial[i] && i < MAX_INPUT; i++) input[i] = initial[i];
+            input[i] = '\0';
+            cur = i;
+        }
+        h += 34;                 // ruang kolom input di atas baris tombol
+        // Lebar minimal agar kolom input nyaman diketik (tombol "Batal").
+        if (w < 300) w = 300;
+    }
+    static const char* const* prompt_btns() {
+        static const char* b[2] = { "OK", "Batal" };
+        return b;
+    }
+    int input_row_y() const { return btn_row_y() - 34; }
+    int input_len() const { return _ui_strlen(input); }
+
+    // Indeks kursor dari posisi x klik di kolom input.
+    int input_at(int mx) const {
+        int idx = (mx - (x + 18) + 4) / 8;
+        if (idx < 0) idx = 0;
+        int len = input_len();
+        if (idx > len) idx = len;
+        return idx;
+    }
+    void insert_ch(char ch) {
+        int len = input_len();
+        if (len >= MAX_INPUT) return;
+        for (int i = len; i >= cur; i--) input[i + 1] = input[i];
+        input[cur] = ch;
+        cur++;
+        mark_dirty();
+    }
+    void backspace() {
+        if (cur <= 0) return;
+        int len = input_len();
+        for (int i = cur - 1; i < len; i++) input[i] = input[i + 1];
+        cur--;
+        mark_dirty();
+    }
+    virtual void draw(Painter& p) override {
+        Dialog::draw(p);
+        int iy = input_row_y();
+        // Kolom input = kembali ke warna editor (paling gelap) + border halus.
+        p.rect(x + 16, iy, w - 32, 24, p.theme.editor);
+        p.rect(x + 16, iy, w - 32, 1, p.theme.mborder);
+        p.rect(x + 16, iy + 23, w - 32, 1, p.theme.mborder);
+        p.rect(x + 16, iy, 1, 24, p.theme.mborder);
+        p.rect(x + w - 17, iy, 1, 24, p.theme.mborder);
+        p.text(input, x + 22, iy + 4, p.theme.fg);
+        p.rect(x + 22 + cur * 8, iy + 4, 2, 16, p.theme.caret);   // caret cyan
+    }
+    // out-of-class: butuh Window lengkap (close_prompt / close_dialog)
+    virtual void on_cancel() override;
+    virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override;
+    virtual void on_click(int mx, int my) override;
 };
 
 // ------------------------------------------------------------
@@ -1709,12 +2359,17 @@ public:
     int drag_x, drag_y;
     int cur_cursor;        // bentuk kursor yang sudah di-set ke kernel
     struct Shortcut { uint8_t mods, key; ui_click_cb cb; void* data; };
-    Shortcut shortcuts[16];
+    Shortcut shortcuts[32];      // Phase 11: notepad punya banyak accelerator
     int n_shortcuts;
     // Phase 10: tick periodik tiap iterasi event loop. Callback return 1 =
     // ada perubahan → toolkit render (jam/task manager refresh tanpa event).
     ui_tick_cb tick_cb;
     void* tick_data;
+    // ESC global: bila callback-nya di-set, APLIKASI yang memutuskan (mis.
+    // Notepad menutup bar cari dulu, baru keluar); bila 0, ESC menutup window
+    // seperti perilaku lama.
+    ui_click_cb escape_cb;
+    void* escape_data;
     // Phase 5: dirty rect render — region yang perlu digambar ulang frame ini.
     int dirty_valid;
     int dirty_x, dirty_y, dirty_w, dirty_h;
@@ -1726,10 +2381,10 @@ public:
           dialog(0), notify_text(0), notify_until(0),
           drag_src(0), drag_payload(0), drag_x(0), drag_y(0),
           cur_cursor(UI_CURSOR_ARROW), n_shortcuts(0),
-          tick_cb(0), tick_data(0),
+          tick_cb(0), tick_data(0), escape_cb(0), escape_data(0),
           dirty_valid(0), dirty_x(0), dirty_y(0), dirty_w(0), dirty_h(0) {
         for (int i = 0; i < 4; i++) top_bars[i] = 0;
-        for (int i = 0; i < 16; i++) { shortcuts[i].cb = 0; shortcuts[i].data = 0; }
+        for (int i = 0; i < 32; i++) { shortcuts[i].cb = 0; shortcuts[i].data = 0; }
     }
 
     ~Window() {
@@ -1742,9 +2397,7 @@ public:
 
     void set_theme(const ui_theme_t* t) {
         if (!t) return;
-        theme.bg = t->bg; theme.fg = t->fg; theme.accent = t->accent;
-        theme.button_bg = t->button_bg; theme.button_fg = t->button_fg;
-        theme.button_hover = t->button_hover;
+        theme.set(t);   // sekalian hitung ulang permukaan turunan (derive())
         damage_full();   // tema mengubah warna SEMUA widget → broad by design
     }
 
@@ -1753,13 +2406,15 @@ public:
         if (n_bars >= 4) return;
         b->x = 0; b->y = bar_h;
         bar_h += b->h;
+        b->set_owner(this);
         top_bars[n_bars++] = b;
         if (root) root->y = 8 + bar_h;
     }
 
     // Root selalu VBox bermargin 8px — widget pertama sekalipun layout.
     void add(Widget* w) {
-        if (!root) { root = new VBox(8); root->x = 8; root->y = 8 + bar_h; }
+        if (!root) { root = new VBox(8); root->x = 8; root->y = 8 + bar_h; root->set_owner(this); }
+        w->set_owner(this);
         root->add(w);
     }
 
@@ -1779,6 +2434,9 @@ public:
         if (popup && popup != m) popup->set_hover(false);
         bool changed = (popup != m);
         popup = m;
+        // Popup menu terakhir (Help) bisa melewati tepi kanan window → geser.
+        if (ox + (int)m->w > (int)gw->width - 2) ox = (int)gw->width - 2 - (int)m->w;
+        if (ox < 0) ox = 0;
         m->x = ox; m->y = oy;
         if (changed) mark_menubars();
         damage_overlay(m);
@@ -1833,7 +2491,7 @@ public:
 
     // --- Shortcut (Phase 9): registry per-window, cek di KEY_PRESS. ---
     void add_shortcut(uint32_t mods, uint8_t key, ui_click_cb cb, void* u) {
-        if (n_shortcuts >= 16) return;
+        if (n_shortcuts >= 32) return;
         shortcuts[n_shortcuts].mods = (uint8_t)(mods & 0x07);
         shortcuts[n_shortcuts].key = key;
         shortcuts[n_shortcuts].cb = cb;
@@ -1875,11 +2533,26 @@ public:
         render();
     }
     void close_dialog() {
+        if (!dialog) return;
         if (hovered == dialog) hovered = 0;
         damage_overlay(dialog);   // hapus dialog + shadow
         delete dialog;
         dialog = 0;
         render();
+    }
+
+    // Selesaikan prompt: tutup dialog DULU (jadi callback bebas membuka dialog
+    // baru), isi input disalin ke buffer lokal sebelum objek dialog dihapus.
+    void close_prompt(class PromptDialog* d, int ok) {
+        if (dialog != d) return;
+        char buf[256];
+        int i = 0;
+        if (ok) { for (; d->input[i] && i < 255; i++) buf[i] = d->input[i]; }
+        buf[i] = '\0';
+        ui_prompt_cb c = d->pcb;
+        void* dd = d->pdata;
+        close_dialog();
+        if (c) c(dd, ok ? buf : 0);
     }
 
     // --- Settings (Phase 9): persist theme ke KyuzenFS "settings.ui" ---
@@ -1905,11 +2578,11 @@ public:
 
     void draw_notify(Painter& p) {
         int nx = (int)gw->width - 218, ny = 8;
-        p.rect(nx, ny, 210, 28, p.theme.button_bg);
-        p.rect(nx, ny, 210, 1, p.theme.fg);
-        p.rect(nx, ny + 27, 210, 1, p.theme.fg);
-        p.rect(nx, ny, 1, 28, p.theme.fg);
-        p.rect(nx + 209, ny, 1, 28, p.theme.fg);
+        p.rect(nx, ny, 210, 28, p.theme.panel);
+        p.rect(nx, ny, 210, 1, p.theme.mborder);
+        p.rect(nx, ny + 27, 210, 1, p.theme.mborder);
+        p.rect(nx, ny, 1, 28, p.theme.mborder);
+        p.rect(nx + 209, ny, 1, 28, p.theme.mborder);
         p.text(notify_text, nx + 8, ny + 6, p.theme.fg);
     }
     void draw_drag_ghost(Painter& p) {
@@ -2117,12 +2790,23 @@ public:
                         if (popup) close_popup();   // ESC tutup menu dulu
                         else if (dialog) {
                             ui_dialog_cb c = dialog->cb; void* d = dialog->data;
+                            // on_cancel() dijalankan SEBELUM dialog dihapus
+                            // (prompt menyalin isi input di sini).
+                            dialog->on_cancel();
                             close_dialog();
                             if (c) c(d, -1);        // -1 = batal
+                        } else if (escape_cb) {
+                            escape_cb(escape_data);   // aplikasi yang memutuskan
                         } else running = false;
                         render();
                     } else if (dialog) {
-                        render();   // modal menelan ketikan selain ESC (tak berubah)
+                        // Ketikan diteruskan ke dialog (prompt input teks).
+                        // dialog bisa terhapus di dalam on_key (Enter = OK) →
+                        // periksa dulu sebelum menyentuhnya lagi.
+                        Dialog* d = dialog;
+                        d->on_key((uint8_t)ev.param1, (uint32_t)ev.param3, (uint32_t)ev.param2);
+                        if (dialog == d) damage_overlay(d);
+                        render();
                     } else {
                         // Shortcut registry dulu, baru dispatch ke widget fokus.
                         bool handled = false;
@@ -2171,9 +2855,43 @@ void Dialog::on_click(int mx, int my) {
     if (win) win->close_dialog();   // hapus dialog dulu (delete this)
     if (c) c(d, i);                 // lalu fire cb — jangan sentuh member lagi
 }
+// Out-of-class PromptDialog (butuh Window lengkap).
+void Widget::set_visible(bool on) {
+    if (visible == on) return;
+    visible = on;
+    // Tata letak berubah → seluruh window digambar ulang (widget lain bergeser).
+    if (owner) owner->damage_full();
+}
+void PromptDialog::on_cancel() {
+    if (win) win->close_prompt(this, 0);   // ESC / tombol Batal → batal
+}
+void PromptDialog::on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) {
+    (void)mods;
+    if (ascii >= 32 && ascii < 127) { insert_ch((char)ascii); return; }
+    int len = input_len();
+    switch (scancode) {
+        case 0x0E: backspace(); break;                                  // Backspace
+        case 0x1C: if (win) win->close_prompt(this, 1); break;           // Enter = OK
+        case 0x4B: if (cur > 0) { cur--; mark_dirty(); } break;          // ←
+        case 0x4D: if (cur < len) { cur++; mark_dirty(); } break;        // →
+        case 0x47: cur = 0; mark_dirty(); break;                         // Home
+        case 0x4F: cur = len; mark_dirty(); break;                       // End
+        default: break;
+    }
+}
+void PromptDialog::on_click(int mx, int my) {
+    int i = hit_button(mx, my);
+    if (i >= 0) { if (win) win->close_prompt(this, i == 0); return; }
+    int iy = input_row_y();
+    if (my >= iy && my < iy + 24 && mx >= x + 12 && mx < x + w - 12) {
+        cur = input_at(mx);        // klik di kolom input → pindahkan kursor
+        mark_dirty();
+    }
+}
+
 void Menu::on_click(int mx, int my) {
-    int idx = (my - y - 2) / 20;
-    if (idx >= 0 && idx < n) {
+    int idx = item_at(mx, my);       // pemisah & item disabled → -1 (tak bereaksi)
+    if (idx >= 0) {
         ui_click_cb cb = items[idx].cb;
         void* d = items[idx].data;
         if (win) win->close_popup();
@@ -2181,18 +2899,22 @@ void Menu::on_click(int mx, int my) {
     }
 }
 void MenuBar::on_click(int mx, int my) {
+    (void)my;                       // judul menu satu baris; cukup x
     int i = title_at(mx);
     if (i < 0) { if (win) win->close_popup(); return; }
     if (win && win->popup == titles[i].menu) { win->close_popup(); return; }
-    if (win) win->open_popup(titles[i].menu, x + i * (n ? w / n : w), y + h);
+    if (win) win->open_popup(titles[i].menu, title_x(i), y + h);
 }
 void MenuBar::draw(Painter& p) {
-    int tw = n ? w / n : w;
+    // Menubar = permukaan "chrome" (#2D2D2D) + divider 1px di bawahnya —
+    // beda lapisan dari area teks (#1E1E1E) supaya hierarki UI terlihat.
+    p.rect(x, y, w, h, p.theme.chrome);
+    p.rect(x, y + h - 1, w, 1, p.theme.divider);
     for (int i = 0; i < n; i++) {
-        int tx = x + i * tw;
+        int tx = title_x(i), tw = title_w(i);
         bool open = win && win->popup == titles[i].menu;
-        p.rect(tx, y, tw, h, (open || i == hover_idx) ? p.theme.button_hover : p.theme.button_bg);
-        p.text(titles[i].label, tx + 8, y + 4, p.theme.button_fg);
+        if (open || i == hover_idx) p.rect(tx, y + 1, tw, h - 2, p.theme.button_hover);
+        p.text(titles[i].label, tx + 11, y + 4, p.theme.button_fg);
     }
 }
 
@@ -2360,6 +3082,13 @@ void ui_textedit_set_text(ui_widget_t* widget, const char* text) {
     }
     te->text[te->len] = '\0';
     te->cur = te->len;
+    te->scroll_top = 0;
+    te->sel_anchor = -1;
+    // Memuat berkas/membuka dokumen baru = titik awal baru: historis undo lama
+    // menunjuk isi dokumen sebelumnya, jadi dibuang (kalau tidak, undo bisa
+    // mencampur dua dokumen).
+    te->ops_clear();
+    te->ensure_cursor_visible();
     te->mark_dirty();
 }
 
@@ -2389,6 +3118,176 @@ void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, uint3
 
 void ui_textedit_clear(ui_widget_t* widget) {
     reinterpret_cast<ui::TextEdit*>(widget)->clear();
+}
+
+// --- Phase 11: API editor (dipakai notepad) ------------------------------
+
+void ui_textedit_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    te->change_cb = cb;
+    te->change_data = userdata;
+}
+
+void ui_textedit_enable_undo(ui_widget_t* widget, int ops) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    te->ops_clear();
+    te->undo_on = ops > 0;
+}
+
+int ui_textedit_undo(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->op_apply(-1) ? 1 : 0;
+}
+
+int ui_textedit_redo(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->op_apply(+1) ? 1 : 0;
+}
+
+int ui_textedit_can_undo(ui_widget_t* widget) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    return te->op_pos > 0 ? 1 : 0;
+}
+
+int ui_textedit_can_redo(ui_widget_t* widget) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    return te->op_pos < te->n_ops ? 1 : 0;
+}
+
+void ui_textedit_sel_all(ui_widget_t* widget) {
+    reinterpret_cast<ui::TextEdit*>(widget)->sel_all();
+}
+
+int ui_textedit_has_sel(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->has_sel() ? 1 : 0;
+}
+
+int ui_textedit_sel_length(ui_widget_t* widget) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    return te->has_sel() ? (te->sel_hi() - te->sel_lo()) : 0;
+}
+
+int ui_textedit_copy(ui_widget_t* widget) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (!te->has_sel()) return 0;
+    te->copy_sel();
+    return 1;
+}
+
+int ui_textedit_cut(ui_widget_t* widget) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (te->readonly || !te->has_sel()) return 0;
+    te->cut_sel();
+    return 1;
+}
+
+int ui_textedit_paste(ui_widget_t* widget) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (te->readonly) return 0;
+    const char* s = ui_clipboard_get_text();
+    if (!s || !s[0]) return 0;
+    te->paste_clip();
+    return 1;
+}
+
+int ui_textedit_delete_sel(ui_widget_t* widget) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (te->readonly || !te->has_sel()) return 0;
+    te->sel_delete();
+    return 1;
+}
+
+int ui_textedit_insert(ui_widget_t* widget, const char* text) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (te->readonly || !text || !text[0]) return 0;
+    te->insert_str(text);
+    return 1;
+}
+
+int ui_textedit_length(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->len;
+}
+
+void ui_textedit_cursor(ui_widget_t* widget, int* line, int* col) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (line) *line = te->line_at(te->cur) + 1;          // 1-based, gaya Notepad
+    if (col)  *col  = te->cur - te->line_start(te->cur) + 1;
+}
+
+void ui_textedit_set_cursor(ui_widget_t* widget, int idx) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    te->move_to(idx, false);
+}
+
+int ui_textedit_line_count(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->total_lines();
+}
+
+int ui_textedit_line_start_idx(ui_widget_t* widget, int line1) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (line1 < 1) line1 = 1;
+    int i = 0, n = 1;
+    while (n < line1 && i < te->len) {
+        if (te->text[i] == '\n') n++;
+        i++;
+    }
+    return i;
+}
+
+void ui_textedit_select(ui_widget_t* widget, int from, int to) {
+    reinterpret_cast<ui::TextEdit*>(widget)->sel_set(from, to);
+}
+
+int ui_textedit_find(ui_widget_t* widget, const char* needle, int from, int ignore_case) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (!needle || !needle[0]) return -1;
+    int n = 0; while (needle[n]) n++;
+    if (from < 0) from = 0;
+    for (int i = from; i + n <= te->len; i++) {
+        int k = 0;
+        for (; k < n; k++) {
+            char a = te->text[i + k], b = needle[k];
+            if (ignore_case) {
+                if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+                if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+            }
+            if (a != b) break;
+        }
+        if (k == n) return i;
+    }
+    return -1;
+}
+
+int ui_textedit_replace_all(ui_widget_t* widget, const char* needle, const char* with) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    if (te->readonly || !needle || !needle[0]) return 0;
+    int n = 0; while (needle[n]) n++;
+    int count = 0;
+    for (int i = 0; i + n <= te->len; ) {
+        int k = 0;
+        for (; k < n; k++) if (te->text[i + k] != needle[k]) break;
+        if (k == n) {
+            int wl = 0; if (with) while (with[wl]) wl++;
+            te->apply_replace(i, n, with, wl, true);
+            count++;
+            i += wl > 0 ? wl : 0;
+            if (wl == 0 && i > te->len) break;
+        } else i++;
+    }
+    return count;
+}
+
+void ui_textedit_set_wrap(ui_widget_t* widget, int on) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    te->wrap = on != 0;
+    te->clamp_scroll();
+    te->mark_dirty();
+}
+
+int ui_textedit_wrap(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->wrap ? 1 : 0;
+}
+
+int ui_textedit_scroll_rows(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->disp_rows();
 }
 
 ui_widget_t* ui_vbox_create(ui_window_t* win, int spacing) {
@@ -2517,6 +3416,37 @@ void ui_menu_add_item(ui_widget_t* menu, const char* label, ui_click_cb cb, void
     reinterpret_cast<ui::Menu*>(menu)->add_item(label, cb, userdata);
 }
 
+// Phase 11: item dengan kolom accelerator rata kanan ("Simpan     Ctrl+S").
+void ui_menu_add_item_acc(ui_widget_t* menu, const char* label, const char* acc,
+                          ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::Menu*>(menu)->add_item_acc(label, acc, cb, userdata);
+}
+
+// Garis pemisah antar kelompok item (gaya menu Windows).
+void ui_menu_add_sep(ui_widget_t* menu) {
+    reinterpret_cast<ui::Menu*>(menu)->add_sep();
+}
+
+void ui_menu_set_checked(ui_widget_t* menu, int index, int checked) {
+    reinterpret_cast<ui::Menu*>(menu)->set_checked(index, checked);
+}
+
+// Item disabled digambar redup & tidak bereaksi terhadap klik (gaya Windows:
+// Undo/Redo kelabu saat tidak ada historis).
+void ui_menu_set_enabled(ui_widget_t* menu, int index, int enabled) {
+    reinterpret_cast<ui::Menu*>(menu)->set_enabled(index, enabled);
+}
+
+// --- StatusBar ---
+ui_widget_t* ui_statusbar_create(ui_window_t* win) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::StatusBar());
+}
+
+void ui_statusbar_set_text(ui_widget_t* widget, const char* left, const char* right) {
+    reinterpret_cast<ui::StatusBar*>(widget)->set_text(left, right);
+}
+
 // --- Toolbar ---
 ui_widget_t* ui_toolbar_create(ui_window_t* win) {
     ui::Window* w = reinterpret_cast<ui::Window*>(win);
@@ -2556,6 +3486,29 @@ void ui_dialog_show(ui_window_t* win, const char* title, const char* text,
     ui::Window* w = reinterpret_cast<ui::Window*>(win);
     ui::Dialog* d = new ui::Dialog(w, title, text, buttons, n_buttons, cb, userdata);
     w->open_dialog(d);
+}
+
+// --- Prompt (dialog + kolom input teks) ---
+// Dipakai sebagai pengganti dialog berkas: File > Buka / Simpan Sebagai.
+// cb(userdata, text): text = isi kolom saat OK, atau 0 bila dibatalkan (ESC /
+// tombol Batal). Pointer text hanya valid selama callback.
+void ui_prompt_show(ui_window_t* win, const char* title, const char* text,
+                    const char* initial, ui_prompt_cb cb, void* userdata) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    w->open_dialog(new ui::PromptDialog(w, title, text, initial, cb, userdata));
+}
+
+// --- Tampil/sembunyi widget (layout melewati anak yang tersembunyi) ---
+void ui_widget_set_visible(ui_widget_t* widget, int visible) {
+    ui::Widget* wid = reinterpret_cast<ui::Widget*>(widget);
+    if (wid) wid->set_visible(visible != 0);
+}
+
+// --- ESC global (override perilaku default "ESC = tutup window") ---
+void ui_window_set_escape(ui_window_t* win, ui_click_cb cb, void* userdata) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    w->escape_cb = cb;
+    w->escape_data = userdata;
 }
 
 // --- Notification ---

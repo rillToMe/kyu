@@ -330,6 +330,18 @@ uint64_t pmm_get_total_pages(void) {
     return val;
 }
 
+// ============================================================
+// Getter TANPA LOCK — hanya untuk jalur panic/diagnosa.
+//
+// Alasannya sama dengan paging_is_mapped_nolock(): kalau fault terjadi di CPU
+// yang sedang memegang pmm_lock (mis. fault di tengah pmm_alloc_page), handler
+// panic yang memakai getter ber-lock akan menunggu selamanya → freeze tanpa
+// BSOD. Kedua nilai adalah integer 64-bit yang dibaca atomic; dipakai hanya
+// untuk menampilkan statistik, jadi tidak perlu konsisten sempurna.
+// ============================================================
+uint64_t pmm_get_used_pages_nolock(void)  { return used_pages; }
+uint64_t pmm_get_total_pages_nolock(void) { return total_pages; }
+
 uint64_t pmm_get_used_ram(void) {
     return pmm_get_used_pages() * PAGE_SIZE;
 }

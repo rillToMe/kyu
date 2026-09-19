@@ -147,6 +147,14 @@ int sys_spawn_argv(char* filename, int argc, char** argv) {
     return ret;
 }
 
+// sys_crash_notice (syscall 80): ringkasan crash terakhir untuk notifikasi app.
+// Return 1 = boot ini baru menerbitkan laporan crash, 0 = tidak ada.
+int sys_crash_notice(crash_notice_t* out) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(80), "b"((uint64_t)out));
+    return ret;
+}
+
 // sys_kwm_set_cursor (Phase 9): ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
 int sys_kwm_set_cursor(int kind) {
     int ret;

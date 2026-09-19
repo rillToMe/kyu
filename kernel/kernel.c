@@ -10,6 +10,11 @@
 #include "string.h"
 #include "ata.h"
 #include "kyuzenfs.h"
+#include "kyuzenfs_v4.h"   // KZFS_CRASHDUMP_SECTORS (area crashdump di ekor disk)
+#include "panic.h"          // panic_log_init/check_previous_log + crashdump_init
+#include "crashdump.h"
+#include "crash_archive.h"   // terbitkan crashdump sebagai berkas /crash-report.txt
+#include "acpi.h"
 #include "vfs.h"
 #include "task.h"
 #include "shell.h"
@@ -229,6 +234,12 @@ void kernel_main(void) {
     init_paging(0); // paging.c membaca CR3 langsung, parameter tidak dipakai
     init_heap();
 
+    // CRASH LOG PERSISTEN (kernel/panic_log.c). Halaman fisik PERTAMA yang
+    // dialokasikan PMM: alamatnya deterministik di setiap boot, jadi log dari
+    // boot sebelumnya (warm-reboot tidak menghapus DRAM) ketemu di tempat yang
+    // sama. Disiapkan di sini supaya panic paling awal pun sudah tercatat.
+    panic_log_init(pmm_alloc_page(), 4096u);
+
     // FIX_005 Tahap 4: SMEP/SMAP di BSP + pastikan CR0.WP. AP mengaktifkan
     // miliknya sendiri di smp_ap_main (CR4/CR0 per-core).
     {
@@ -307,6 +318,12 @@ void kernel_main(void) {
     extern void serial_init(void);
     serial_init();
     serial_print("\n[SERIAL] ready\n");
+
+    // Laporkan crash dari boot sebelumnya (kalau ada) ke serial + layar, lalu
+    // bersihkan flag-nya. Di sini serial & kprint sudah siap dua-duanya.
+    if (!panic_check_previous_log())
+        serial_print("[PANIC_LOG] tidak ada crash pada boot sebelumnya\n");
+
 #ifdef HEAP_WATCH_DEBUG
     // Pasang hardware watchpoint DR0 (per-CPU!) di BSP SEBELUM AP online.
     // Setiap AP memasang DR0-nya sendiri di smp_ap_main().
@@ -320,6 +337,31 @@ void kernel_main(void) {
     kfs_init();          // KyuzenFS V4: bcache + superblock + bitmap mount
     kprint_quiet = 0;
     boot_state("  OK  ", "Filesystem", "KyuzenFS V4 (extent)");
+
+    // CRASHDUMP DISK (kernel/crashdump.c): 8 sektor terakhir disk — area yang
+    // SAMA dengan yang disisihkan KyuzenFS (KZFS_CRASHDUMP_SECTORS), jadi
+    // snapshot panic tidak pernah menimpa data file. ATA polling murni.
+    {
+        uint32_t total = ata_get_total_sectors();
+        if (total > KZFS_CRASHDUMP_SECTORS) {
+            crashdump_init((uint64_t)(total - KZFS_CRASHDUMP_SECTORS), KZFS_CRASHDUMP_SECTORS);
+            serial_print("[CRASHDUMP] area siap di LBA ");
+            serial_num(total - KZFS_CRASHDUMP_SECTORS);
+            serial_print(" (+ " ); serial_num(KZFS_CRASHDUMP_SECTORS);
+            serial_print(" sektor)\n");
+        } else {
+            serial_print("[CRASHDUMP] disk terlalu kecil - dinonaktifkan\n");
+        }
+    }
+
+    // CRASH ARCHIVE: kalau boot sebelumnya panic, snapshot mentah itu diterbitkan
+    // sebagai berkas /crash-report.txt supaya bisa dibuka app GUI (fileman,
+    // viewer, notepad) — bukan hanya dibaca di serial/terminal. Idempoten:
+    // kalau isinya tidak berubah, tidak ada penulisan disk.
+    crash_archive_publish();
+
+    // ACPI minimal: hanya untuk power-off (aksi [S]) — parse FADT sekali di sini.
+    acpi_early_init();
 
     vfs_init();
     vfs_task_init(0);   // P0 Phase 2: task 0 stdio (fd 0/1/2 -> TTY)

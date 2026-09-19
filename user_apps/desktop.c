@@ -41,6 +41,23 @@
 #define ICON_TXT    0xC0C8E0
 #define APP_DEFAULT 0x37474F    // app tanpa manifest (abu netral)
 
+// --- notifikasi crash (boot setelah panic) ---
+// Kartu informasi di sudut kanan atas. Dipakai SEKALI saja: sys_crash_notice()
+// hanya mengembalikan 1 pada boot yang baru menerbitkan /crash-report.txt.
+#define NOTIF_W       520      // lebar kartu (px)
+#define NOTIF_H       100
+#define NOTIF_MARGIN  16
+#define NOTIF_MS      8000     // lama tampil, lalu hilang sendiri
+#define NOTIF_BG      0x3A1220 // latar merah tua
+#define NOTIF_EDGE    0xE06060
+#define NOTIF_TITLE   0xFF8080
+#define NOTIF_TXT     0xE8DCE0
+
+static crash_notice_t g_notice;
+static int            g_notice_on = 0;
+static uint64_t       g_notice_until = 0;
+static int            g_notice_repaint = 0;   // minta render layar penuh (hapus kartu)
+
 // --- daftar app (hasil scan runtime, bukan compile-time) ---
 #define MAX_APPS     32
 #define MAX_FILES    64
@@ -236,13 +253,99 @@ static void render_taskbar(gui_window_t* d) {
     }
 }
 
+// --- notifikasi crash ---------------------------------------------------
+// Cek sekali saat startup: hanya boot setelah panic yang mengembalikan 1.
+static void notice_probe(void) {
+    for (unsigned i = 0; i < sizeof(g_notice); i++) ((char*)&g_notice)[i] = 0;
+    if (sys_crash_notice(&g_notice) != 1 || !g_notice.pending) return;
+
+    g_notice_on    = 1;
+    g_notice_until = sys_uptime() + NOTIF_MS;
+
+    // Jejak ke konsol: berguna saat sistem diuji headless (serial COM1).
+    print((char*)"[desktop] notifikasi crash: ");
+    print(g_notice.path);
+    print((char*)" (dump ke-");
+    print_num(g_notice.crash_count);
+    print((char*)")\n");
+}
+
+// Garis teks di dalam kartu (font 8px, satu baris per panggilan).
+static void notice_line(gui_window_t* d, int x, int y, const char* s, uint32_t color) {
+    gui_draw_text(d, s, x, y, color);
+}
+
+static void render_notice(gui_window_t* d) {
+    if (!g_notice_on) return;
+    int W = (int)d->width;
+    int x = W - NOTIF_W - NOTIF_MARGIN;
+    int y = NOTIF_MARGIN;
+    if (x < 0) { x = 0; }
+
+    gui_draw_rect(d, x, y, NOTIF_W, NOTIF_H, NOTIF_BG);            // badan
+    gui_draw_rect(d, x, y, NOTIF_W, 2, NOTIF_EDGE);                // garis atas
+    gui_draw_rect(d, x, y, 2, NOTIF_H, NOTIF_EDGE);                // garis kiri
+
+    notice_line(d, x + 14, y + 12, "SISTEM PANIC pada boot sebelumnya", NOTIF_TITLE);
+
+    // Baris 2: task + jenis
+    char l2[64];
+    int n = 0;
+    const char* p = "task \"";
+    while (*p && n < 60) l2[n++] = *p++;
+    for (int i = 0; g_notice.task_name[i] && n < 60; i++) l2[n++] = g_notice.task_name[i];
+    p = g_notice.vector == 0xFFFFu ? "\"  (kernel_panic)" : "\"  exception";
+    while (*p && n < 60) l2[n++] = *p++;
+    l2[n] = '\0';
+    notice_line(d, x + 14, y + 32, l2, NOTIF_TXT);
+
+    // Baris 3: laporan + hint
+    char l3[64];
+    n = 0;
+    p = "laporan: ";
+    while (*p && n < 60) l3[n++] = *p++;
+    for (int i = 0; g_notice.path[i] && n < 60; i++) l3[n++] = g_notice.path[i];
+    l3[n] = '\0';
+    notice_line(d, x + 14, y + 50, l3, NOTIF_TXT);
+
+    notice_line(d, x + 14, y + 74,
+                "klik: tutup  -  klik kartu ini: buka File Manager", 0xA0B0D0);
+}
+
+// Tutup kartu: matikan flag + minta render penuh (wilayah kartu tidak punya
+// dirty-rect sendiri, jadi penghapusannya lewat repaint layar).
+static void notice_close(const char* trace) {
+    if (!g_notice_on) return;
+    g_notice_on = 0;
+    g_notice_repaint = 1;
+    print((char*)trace);
+}
+
+// Klik di area kartu: tutup notifikasi + buka File Manager (tempat berkasnya).
+static int notice_click(gui_window_t* d, int mx, int my) {
+    if (!g_notice_on) return 0;
+    int x = (int)d->width - NOTIF_W - NOTIF_MARGIN;
+    if (x < 0) x = 0;
+    if (mx < x || mx >= x + NOTIF_W ||
+        my < NOTIF_MARGIN || my >= NOTIF_MARGIN + NOTIF_H) return 0;
+    notice_close("[desktop] notifikasi crash ditutup (buka File Manager)\n");
+    sys_spawn((char*)"/apps/fileman.elf");
+    return 1;
+}
+
 static void render(gui_window_t* d) {
     render_wallpaper(d);
     render_taskbar(d);
+    render_notice(d);      // no-op kalau tidak ada notifikasi aktif
 }
 
 static void handle_click(gui_window_t* d, int mx, int my) {
     int H = (int)d->height;
+    if (notice_click(d, mx, my)) return;   // notifikasi dikonsumsi sendiri
+    // Klik lain (ikon/taskbar/latar) juga menutup kartu — notifikasi yang lengket
+    // sampai detik ke-8 terasa seperti bug. Kliknya TIDAK dikonsumsi: aksi
+    // normalnya tetap jalan.
+    notice_close("[desktop] notifikasi crash ditutup (klik)\n");
     // taskbar → aktivasi window
     if (my >= H - TB_H) {
         int bx = 8;
@@ -275,6 +378,7 @@ void main(void) {
     if (!d) { sys_exit(); }
 
     discover_apps();
+    notice_probe();                       // notifikasi crash (kalau boot setelah panic)
     uint64_t last_scan = sys_uptime();
 
     kyuzen_event_t ev;
@@ -295,6 +399,12 @@ void main(void) {
                 need_taskbar = 1;
             }
         }
+        // Notifikasi hilang sendiri setelah NOTIF_MS: repaint penuh sekaligus
+        // menghapus kartunya (tidak ada dirty-rect untuk wilayah kartu).
+        if (g_notice_on && sys_uptime() >= g_notice_until)
+            notice_close("[desktop] notifikasi crash ditutup (waktu habis)\n");
+        if (g_notice_repaint) { g_notice_repaint = 0; need_full = 1; }
+
         // poll window list ~10Hz (bukan callback — tanpa infra notifikasi kernel)
         if (++frame % 10 == 0) {
             if (winlist_changed()) need_taskbar = 1;   // fokus/title/daftar berubah

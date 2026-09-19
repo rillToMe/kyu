@@ -14,14 +14,16 @@
 // Canvas window = KONTEN MURNI. Frame = konten + titlebar di atasnya, semua
 // dihitung WM. Nama/ukuran didefinisikan sekali di sini; compositor + hit-test
 // KWM membacanya, jadi tidak ada angka duplikat di jalur lain.
-// Chrome netral ala desktop modern: titlebar terang, teks gelap, tombol close
-// transparan (ikon abu) yang hanya memerah saat hover.
+// Chrome ala desktop modern DARK: titlebar abu gelap, teks off-white, tombol
+// close transparan (ikon abu terang) yang hanya memerah saat hover. Warna
+// senada palet toolkit (menubar/status #2D2D2D), jadi window gelap terlihat
+// satu kesatuan, bukan kotak hitam dengan bingkai putih.
 #define KWM_TITLEBAR_H      32
 #define KWM_CLOSE_BTN_W     46
-#define KWM_TITLEBAR_COLOR  0xF5F5F5   // fokus (terang)
-#define KWM_TITLEBAR_INACT  0xEDEDED   // tidak fokus
-#define KWM_TITLE_FG        0x202124   // teks judul
-#define KWM_CTL_FG          0x3C4043   // ikon kontrol (X) normal
+#define KWM_TITLEBAR_COLOR  0x2D2D2D   // fokus (#2D2D2D)
+#define KWM_TITLEBAR_INACT  0x252526   // tidak fokus (sedikit lebih gelap)
+#define KWM_TITLE_FG        0xD4D4D4   // teks judul (off-white)
+#define KWM_CTL_FG          0xA0A0A0   // ikon kontrol (X) normal
 #define KWM_CLOSE_HOVER_BG  0xE81123   // latar close saat hover
 #define KWM_CLOSE_HOVER_FG  0xFFFFFF   // ikon close saat hover
 
@@ -34,11 +36,11 @@
 #define KWM_SHADOW_MARGIN   6
 
 // Garis tepi 1px tepat di luar frame (kiri/kanan/bawah) — pembatas tajam agar
-// konten window terang tidak menyatu dengan desktop. Ring shadow bawah baru
-// mulai ~3px di luar frame (offset blur ke bawah), jadi tepi bawah butuh garis
-// ini. Warna hitam dengan alpha: tegas di latar terang, nyaris hilang di gelap.
-#define KWM_EDGE_COLOR      0x000000
-#define KWM_EDGE_ALPHA      96
+// konten window tidak menyatu dengan desktop. Ring shadow bawah baru mulai
+// ~3px di luar frame (offset blur ke bawah), jadi tepi bawah butuh garis ini.
+// Abu terang + alpha: memisahkan window gelap dari desktop gelap.
+#define KWM_EDGE_COLOR      0x9A9A9A
+#define KWM_EDGE_ALPHA      70
 
 typedef struct {
     uint8_t active;

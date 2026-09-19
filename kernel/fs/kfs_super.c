@@ -153,6 +153,9 @@ int ibm_flush(void) {
 static int kfs_format_locked(void) {
     uint32_t total_sectors = ata_get_total_sectors();
     if (total_sectors == 0) total_sectors = 204800;   // fallback QEMU
+    // Sisihkan ekor disk untuk crashdump panic (kernel/crashdump.c).
+    if (total_sectors > KZFS_CRASHDUMP_SECTORS)
+        total_sectors -= KZFS_CRASHDUMP_SECTORS;
     uint64_t total_blocks = total_sectors / KZFS_BLOCK_SECTORS;
     layout_compute(total_blocks);
     layout_globals_load();     // PENTING: inode/bitmap write butuh ini sejak block pertama
@@ -290,6 +293,24 @@ void kfs_sync_all(void) {
     (void)sb_save();
     spinlock_unlock_irqrestore(&fs_lock, flags);
     bcache_flush_all();
+}
+
+// Padanan jalur panic (lihat include/kyuzenfs.h): semua lock dicoba tanpa
+// menunggu. Kalau fs_lock tidak bisa diambil, tidak ada yang ditulis dan kita
+// menyerah lebih awal — termasuk TIDAK memanggil bcache_flush_all_try(),
+// karena menulis block cache sambil metadata FS basi lebih membingungkan
+// daripada melewatkannya (data yang sudah ter-flush tetap utuh).
+int kfs_sync_all_try(void) {
+    if (!fs_mounted) return 0;
+
+    uint64_t flags;
+    if (!spinlock_try_lock_irqsave(&fs_lock, &flags)) return 0;
+    (void)bm_flush();
+    (void)ibm_flush();
+    (void)sb_save();
+    spinlock_unlock_irqrestore(&fs_lock, flags);
+
+    return bcache_flush_all_try();
 }
 
 void kfs_v4_cache_stats(uint64_t *hit, uint64_t *miss) {

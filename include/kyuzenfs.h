@@ -43,6 +43,12 @@ uint32_t kfs_get_used_space(void);
 // Dipanggil timer berkala (3 detik) dan sebelum poweroff/reboot.
 void kfs_sync_all(void);
 
+// Versi BEST-EFFORT untuk jalur panic: TIDAK menunggu lock FS/bcache. Kalau
+// lock sedang dipegang (termasuk oleh CPU yang fault — self-deadlock), sync
+// dilewati dan return 0. Lebih baik kehilangan beberapa block dirty daripada
+// auto-reboot yang menggantung selamanya setelah BSOD.
+int  kfs_sync_all_try(void);
+
 // Diagnostik V4.
 int  kfs_v4_is_mounted(void);
 void kfs_v4_get_stats(uint64_t* total_blocks, uint64_t* free_blocks,

@@ -175,6 +175,7 @@ On a fresh disk, Kyuzen runs a one-time setup asking you to **create the root pa
 | `apps/` | Kernel-side apps (shell, login) & userlib shims |
 | `user_apps/` | Ring-3 ELF applications (fileman, clock, calc, …) |
 | `include/` | Global headers |
+| `libs/color/` | Library warna bersama: `color_t` RGBA, blending, HSL/HSV, utility UI (zero-alloc, kernel + app) |
 | `third_party/net/lwip/` | lwIP TCP/IP stack (vendored) |
 | `DOCUMENTATION/` | Design docs, troubleshooting post-mortems, screenshots |
 | `limine/` | Pre-built bootloader binaries |

@@ -17,4 +17,13 @@ typedef struct {
 static inline uint64_t spinlock_lock_irqsave(spinlock_t* l) { (void)l; return 0; }
 static inline void spinlock_unlock_irqrestore(spinlock_t* l, uint64_t f) { (void)l; (void)f; }
 
+// Jalur panic/shutdown memakai varian try-lock (lihat include/spinlock.h).
+// Di host selalu "berhasil" — tidak ada CPU lain yang bisa memegang lock.
+static inline int spinlock_try_lock(spinlock_t* l) { (void)l; return 1; }
+static inline int spinlock_try_lock_irqsave(spinlock_t* l, uint64_t* f) {
+    (void)l;
+    if (f) *f = 0;
+    return 1;
+}
+
 #endif

@@ -113,24 +113,46 @@ void ata_write_sector(uint32_t lba, uint8_t* buffer) {
 }
 
 // Fungsi untuk menanyakan ukuran asli Hard Disk ke Hardware QEMU via ATA IDENTIFY
+//
+// CATATAN PROTOKOL (ini pernah salah dan bikin crashdump/format dianggap
+// "disk terlalu kecil"): setelah memilih drive WAJIB tunggu 400ns sebelum
+// mengirim IDENTIFY, dan setelah perintah WAJIB 400ns lagi sebelum membaca
+// status. Tanpa itu status pertama terbaca 0x00 (drive belum menjawab) dan
+// fungsi ini salah melaporkan "tidak ada drive" padahal baca/tulis sektor
+// normal jalan. Polling juga memakai helper yang memeriksa ERR/DF, bukan
+// while() tanpa batas (bisa menggantung di hardware nyata).
+#define ATA_IDENTIFY_WORDS 256u
+#define ATA_WORD_SUPPORTED_LBA48 83u
+#define ATA_WORD_LBA28_LO        60u
+#define ATA_WORD_LBA48_LO        100u
+
 uint32_t ata_get_total_sectors(void) {
-    outb(0x1F6, 0xE0); // Pilih Drive Master (LBA mode)
-    outb(0x1F7, 0xEC); // Kirim perintah ATA IDENTIFY
-    
-    uint8_t status = inb(0x1F7);
-    if (status == 0) return 0; // Drive tidak terdeteksi
-    
-    while ((inb(0x1F7) & 0x80) != 0); // Tunggu sampai disk tidak sibuk (BSY hilang)
-    while ((inb(0x1F7) & 0x08) == 0); // Tunggu Data Request (DRQ) siap
-    
-    uint16_t buffer[256];
-    for (int i = 0; i < 256; i++) {
-        buffer[i] = inw(0x1F0); // Baca 256 word data informasi hardware
+    ata_wait_bsy();                       // drive harus tidak sibuk dulu
+    outb(ATA_DRIVE_PORT, 0xE0);           // Master, LBA mode
+    ata_delay_400ns();                    // drive select settle
+    outb(ATA_COMMAND_PORT, 0xEC);         // IDENTIFY DEVICE
+    ata_delay_400ns();
+
+    uint8_t status = inb(ATA_STATUS_PORT);
+    if (status == 0x00 || status == 0xFF) return 0;   // tidak ada drive
+    if (ata_wait_drq() != 0) return 0;                // ERR/DF/timeout
+
+    uint16_t buffer[ATA_IDENTIFY_WORDS];
+    for (uint32_t i = 0; i < ATA_IDENTIFY_WORDS; i++) buffer[i] = inw(ATA_DATA_PORT);
+
+    // LBA48 (kalau didukung dan dilaporkan) lebih tepat daripada LBA28.
+    if ((buffer[ATA_WORD_SUPPORTED_LBA48] & 0x0400u) &&
+        (buffer[ATA_WORD_LBA48_LO + 2u] | buffer[ATA_WORD_LBA48_LO + 3u])) {
+        uint64_t lba48 = (uint64_t)buffer[ATA_WORD_LBA48_LO] |
+                         ((uint64_t)buffer[ATA_WORD_LBA48_LO + 1u] << 16) |
+                         ((uint64_t)buffer[ATA_WORD_LBA48_LO + 2u] << 32) |
+                         ((uint64_t)buffer[ATA_WORD_LBA48_LO + 3u] << 48);
+        // API ini 32-bit (LBA28); clamp supaya pemanggil tidak overflow.
+        return (lba48 > 0xFFFFFFFFull) ? 0xFFFFFFFFu : (uint32_t)lba48;
     }
-    
-    // Total kapasitas sektor (LBA28) berada di index 60 dan 61
-    uint32_t total_sectors = *((uint32_t*)&buffer[60]);
-    return total_sectors;
+
+    return (uint32_t)buffer[ATA_WORD_LBA28_LO] |
+           ((uint32_t)buffer[ATA_WORD_LBA28_LO + 1u] << 16);
 }
 
 // =====================================================================

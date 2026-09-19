@@ -1,21 +1,28 @@
-// test/panic_test.c — host test BSOD (kernel/panic.c).
+// test/panic_test.c — host test BSOD + crash safety (kernel/panic.c dkk).
 //
 // Jalankan:            make test-panic
 // Periksa tata letak:  ./test/panic_test --dump
 //
-// Cara kerja: kernel/panic.c di-include langsung dengan -DPANIC_HOST_TEST,
-// jadi instruksi privileged (cli/sti/hlt/lidt/CR2/CR3/outb) menjadi no-op dan
-// jam diganti g_panic_test_ms (tiap pembacaan countdown maju 1 detik). Semua
-// dependensi kernel di-mock di sini. Yang diverifikasi:
-//   * verdict/petunjuk untuk beragam fault (PENYEBAB harus menjawab, bukan
-//     hanya dump angka),
-//   * lockdown -> panic_is_locked() (compositor/mouse/timer memakai ini),
-//   * countdown 10 detik yang TIDAK menggambar ulang baris penuh (anti-flicker),
-//   * urutan flush FS -> reboot, dan hook reboot host.
+// Cara kerja: kernel/panic.c, kernel/panic_log.c, kernel/crashdump.c dan
+// drivers/acpi.c di-include LANGSUNG dengan -DPANIC_HOST_TEST. Instruksi
+// privileged (cli/hlt/CR2/CR3/in-out) menjadi no-op, jam diganti
+// g_panic_test_ms, dan tombol dikendalikan g_panic_test_key. Semua dependensi
+// kernel (framebuffer, heap-free serial, ATA, task table) di-mock di sini.
+//
+// Yang diverifikasi:
+//   * verdict/petunjuk untuk beragam fault (PENYEBAB harus menjawab),
+//   * lockdown -> panic_is_locked(),
+//   * tanpa auto-reboot: sistem berhenti di BSOD dan menunggu tombol operator,
+//   * urutan flush FS -> reboot, dan hook reboot host,
+//   * INPUT TANPA IRQ: [R] reboot / [S] shutdown / [D] freeze via polling PS/2
+//     (scancode set-1, prefix 0xE0 dan release code diabaikan),
+//   * PERSISTENSI RAM: crash log terbaca saat "boot berikutnya" lalu dibersihkan,
+//   * CRASHDUMP DISK: header + payload + checksum di ekor disk, dump_count naik,
+//     dan GUARD PANIC BERSARANG (I/O dump memicu fault -> dump dibatalkan),
+//   * ACPI: parser FADT murni (port PM1a/PM1b, tolak rev 1.0 / checksum rusak).
 //
 // Layar BSOD diperiksa dengan men-decode framebuffer kembali menjadi teks
-// memakai font8x16 asli — jadi hierarki/alignment ikut teruji, bukan hanya
-// "fungsi ini dipanggil".
+// memakai font8x16 asli — jadi hierarki/alignment ikut teruji.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -23,16 +30,18 @@
 #include <string.h>
 
 // Font asli: dipakai panic.c untuk menggambar dan test untuk men-decode balik.
-// (header memakai nama makro FONT8x16_IMPLEMENTATION — huruf x kecil.)
 #define FONT8x16_IMPLEMENTATION
 #include "font8x16.h"
 
 #include "display.h"
 #include "task.h"
 #include "panic.h"
+#include "crashdump.h"
+#include "acpi.h"
+#include "ata.h"
 
 // =====================================================================
-// MOCK
+// MOCK: framebuffer + display
 // =====================================================================
 #define FB_W 1024
 #define FB_H 768
@@ -44,8 +53,10 @@ uint32_t* fb_ptr = FB;
 static display_mode_t g_mode = { FB_W, FB_H, FB_PITCH, 32, 0 };
 const display_mode_t* display_get_mode(void) { return &g_mode; }
 
-// --- serial: ditampung untuk diperiksa ---
-#define SER_MAX 65536
+// =====================================================================
+// MOCK: serial (COM1 mirror) + konsol kprint
+// =====================================================================
+#define SER_MAX 131072
 static char SER[SER_MAX];
 static size_t ser_len = 0;
 
@@ -54,8 +65,84 @@ void serial_print(const char* s) {
     SER[ser_len] = '\0';
 }
 
-// --- paging: hanya area yang benar-benar kita alokasikan yang "ter-map",
-//     supaya backtrace aman dibaca oleh proses host ---
+// Jalur panic membatasi TX UART (lihat include/serial.h). Di host tidak ada
+// UART, jadi stub ini hanya membuktikan ketergantungannya ikut ter-link.
+static int g_serial_panic_mode = 0;
+void serial_enter_panic_mode(void) { g_serial_panic_mode = 1; }
+
+void serial_dec(uint64_t v) {
+    char b[24];
+    int n = 0;
+    if (v == 0) b[n++] = '0';
+    while (v) { b[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    while (n) { char s[2]; s[0] = b[--n]; s[1] = '\0'; serial_print(s); }
+}
+
+// =====================================================================
+// MOCK: KyuzenFS (satu berkas) untuk kernel/crash_archive.c
+// =====================================================================
+static char     g_fs_path[64];
+static char     g_fs_data[8192];
+static uint32_t g_fs_size = 0;
+static int      g_fs_exists = 0;
+static int      g_fs_creates = 0;
+static int      g_fs_deletes = 0;
+
+static void mock_fs_reset(void) {
+    g_fs_path[0] = '\0';
+    g_fs_size = 0;
+    g_fs_exists = 0;
+    g_fs_creates = 0;
+    g_fs_deletes = 0;
+}
+
+int kfs_exists(char* path) {
+    return (g_fs_exists && path && strcmp(path, g_fs_path) == 0) ? 1 : 0;
+}
+uint32_t kfs_get_file_size(char* path) { return kfs_exists(path) ? g_fs_size : 0; }
+
+int kfs_read_to_buffer(char* path, char* out, uint32_t cap) {
+    if (!kfs_exists(path) || !out || cap <= g_fs_size) return 0;
+    memcpy(out, g_fs_data, g_fs_size);
+    out[g_fs_size] = '\0';
+    return 1;
+}
+
+int kfs_create_file(char* path, char* data, uint32_t size) {
+    if (g_fs_exists || !path || !data || size >= sizeof(g_fs_data)) return 0;
+    strncpy(g_fs_path, path, sizeof(g_fs_path) - 1);
+    memcpy(g_fs_data, data, size);
+    g_fs_size = size;
+    g_fs_data[size] = '\0';
+    g_fs_exists = 1;
+    g_fs_creates++;
+    return 1;
+}
+
+void kfs_delete_file(char* path) {
+    if (kfs_exists(path)) { g_fs_exists = 0; g_fs_size = 0; g_fs_deletes++; }
+}
+
+// Pencarian mulai dari offset — dipakai untuk memeriksa URUTAN penanda tahap
+// ("[P2] layar" harus muncul SEBELUM "[P3] persist").
+static size_t ser_mark(const char* needle, size_t from) {
+    const char* p = strstr((from < SER_MAX ? SER + from : SER), needle);
+    return p ? (size_t)(p - SER) : (size_t)-1;
+}
+
+#define KP_MAX 8192
+static char KP[KP_MAX];
+static size_t kp_len = 0;
+
+// panic_log.c mencetak laporannya ke konsol juga (bukan hanya COM1).
+void kprint(const char* s) {
+    while (s && *s && kp_len + 1 < KP_MAX) KP[kp_len++] = *s++;
+    KP[kp_len] = '\0';
+}
+
+// =====================================================================
+// MOCK: paging (hanya area yang benar-benar kita alokasikan yang "ter-map")
+// =====================================================================
 static uint64_t g_fake_stack[1024];
 
 int paging_is_mapped(uint64_t a) {
@@ -64,7 +151,15 @@ int paging_is_mapped(uint64_t a) {
     return a >= s && a < e;
 }
 
-// --- SMP / task / PMM ---
+// Jalur panic memakai varian tanpa lock (lihat include/paging.h). Di host tidak
+// ada CPU lain, jadi hasilnya identik — tetapi mock ini WAJIB ada supaya
+// ketergantungan jalur panic terhadap versi ber-lock langsung kelihatan saat
+// link (itu penyebab "freeze tanpa BSOD" di QEMU).
+int paging_is_mapped_nolock(uint64_t a) { return paging_is_mapped(a); }
+
+// =====================================================================
+// MOCK: SMP / task / PMM / syscall terakhir / FS
+// =====================================================================
 static int g_test_task = 2;
 static uint64_t g_cpu_index = 1;
 
@@ -75,37 +170,81 @@ int      smp_current_task_id(void)   { return g_test_task; }
 uint64_t pmm_get_used_pages(void)  { return 25216; }
 uint64_t pmm_get_total_pages(void) { return 259893; }
 
+// Varian jalur panic (tanpa lock) — lihat include/pmm.h.
+uint64_t pmm_get_used_pages_nolock(void)  { return pmm_get_used_pages(); }
+uint64_t pmm_get_total_pages_nolock(void) { return pmm_get_total_pages(); }
+
 int task_count = 3;
 task_t tasks[MAX_TASKS];
 
 volatile uint64_t g_last_syscall_num  = 4;
 volatile int32_t  g_last_syscall_task = 1;
 
-// --- FS flush: urutan flush -> reboot diperiksa ---
 static int g_flushes = 0;
+static int g_sync_try_ok = 1;      // 0 = simulasi lock FS sedang dipakai (skip)
 void kfs_sync_all(void) { g_flushes++; }
+int  kfs_sync_all_try(void) { if (!g_sync_try_ok) return 0; g_flushes++; return 1; }
 
 uint64_t timer_get_ms(void) { return 0; }
+uint64_t hhdm_offset = 0;      // dibutuhkan drivers/acpi.c
 
-// --- reboot hook (dipasang lewat panic_set_reboot_hook) ---
-static int g_reboot_hook_calls = 0;
-static int g_flushes_at_reboot = -1;
+// =====================================================================
+// MOCK: disk ATA (polling) — 32MB, 8 sektor terakhir = area crashdump
+// =====================================================================
+#define DISK_SECTORS 65536u
+#define CRASH_LBA    (DISK_SECTORS - 8u)
+static uint8_t DISK[512u * DISK_SECTORS];
 
-static void test_reboot_hook(void) {
-    g_reboot_hook_calls++;
-    g_flushes_at_reboot = g_flushes;   // harus >= 1 (FS sudah diflush)
+// Seam uji guard panic bersarang: kalau dipasang, tulis sektor pertama akan
+// memicu fault baru di tengah penulisan crashdump.
+void exception_handler(registers_t* r);    // dari kernel/panic.c (di-include di bawah)
+
+static int g_nested_armed = 0;
+static int g_nested_fired = 0;
+static registers_t g_nested_regs;
+
+void ata_read_sector(uint32_t lba, uint8_t* buf) {
+    if (lba < DISK_SECTORS) memcpy(buf, DISK + (size_t)lba * 512u, 512u);
+    else memset(buf, 0, 512u);
 }
 
+// URUTAN (screen-first): saat persistensi menulis ke disk, layar BSOD harus
+// SUDAH tergambar. Kalau penulisan disk dijalankan lebih dulu (bug lama),
+// kegagalan/macet di jalur itu membuat sistem tampak "freeze tanpa panic" —
+// desktop tetap terpampang dan layar panic tidak pernah muncul. Nilai -1 =
+// belum diukur, 0 = framebuffer masih kosong, 1 = BSOD sudah ada.
+static int g_persist_saw_screen = -1;
+
+static int fb_has_bsod_ink(void) {
+    for (size_t i = 0; i < (size_t)FB_W * FB_H; i++)
+        if (FB[i] != 0u && FB[i] != 0x001144u) return 1;   // != C_BG panic.c
+    return 0;
+}
+
+void ata_write_sector(uint32_t lba, uint8_t* buf) {
+    if (lba < DISK_SECTORS) memcpy(DISK + (size_t)lba * 512u, buf, 512u);
+    if (g_persist_saw_screen < 0) g_persist_saw_screen = fb_has_bsod_ink();
+    if (g_nested_armed && !g_nested_fired) {
+        g_nested_fired = 1;
+        exception_handler(&g_nested_regs);   // panic saat menulis dump
+    }
+}
+
+uint32_t ata_get_total_sectors(void) { return DISK_SECTORS; }
+
 // =====================================================================
-// panic.c (function/variabel static-nya juga jadi milik TU ini)
+// MODUL YANG DIUJI (include langsung; static-nya jadi milik TU ini)
+//   Urutan tidak penting: semuanya lewat prototype di header.
 // =====================================================================
+#include "../kernel/panic_log.c"
+#include "../kernel/crashdump.c"
+#include "../kernel/crash_archive.c"
+#include "../drivers/acpi.c"
 #include "../kernel/panic.c"
 
 // =====================================================================
 // DECODE FRAMEBUFFER -> TEKS (untuk memeriksa tata letak)
 // =====================================================================
-// Tabel glyph: prefix 2 baris pertama -> char. Ambigu (2 glyph dengan prefix
-// sama) ditandai -2 dan diselesaikan dengan pencarian linear.
 static int glyph_by_prefix[256][256];
 static int glyph_table_ready = 0;
 
@@ -151,9 +290,6 @@ static int cell_glyph(uint32_t x, uint32_t y, int* ink) {
     if (!any) return ' ';
 
     // Garis aturan (p_rule/p_hline): 1-3 baris piksel penuh selebar sel.
-    // Sel seperti ini bukan glyph — kembalikan '#' supaya tidak dihitung
-    // sebagai glyph maupun sebagai kegagalan (kalau tidak, baris label akan
-    // "kalah" dari baris garis saat pemilihan alignment).
     int full_rows = 0, partial = 0;
     for (int r = 0; r < 16; r++) {
         if (bits[r] == 0xFF) full_rows++;
@@ -187,9 +323,6 @@ static void row_decode(uint32_t xoff, uint32_t y, char* out, uint32_t cap, row_s
 
 // Teks BSOD digambar mulai PANIC_X=50 px: 50 % 8 = 2, jadi sel font TIDAK
 // jatuh pada kelipatan 8. Cari offset x (0..7) yang paling banyak cocok.
-// Catatan: sampel TIDAK boleh dibatasi pada baris yang "ber-tinta" saja —
-// baris atas glyph umumnya kosong, jadi offset yang benar justru muncul pada
-// baris yang belum ber-tinta (jendela 16 px menggeser glyph ke bawah).
 static int best_xoff(void) {
     int best = 0;
     int best_score = -1000000;
@@ -206,8 +339,6 @@ static int best_xoff(void) {
     return best;
 }
 
-// Kumpulkan baris teks pada layar: cari offset y yang paling cocok dengan
-// glyph (teks digambar per 18px, jadi offset tetangga hampir tidak cocok).
 static void fb_text(char* out, size_t cap, int verbose) {
     static int matched[FB_H];
     char tmp[FB_W / 8u + 1];
@@ -262,6 +393,7 @@ static const char* fb_all(void) {
 
 static int fb_find(const char* needle) { return strstr(fb_all(), needle) != NULL; }
 static int ser_find(const char* needle) { return strstr(SER, needle) != NULL; }
+static int kp_find(const char* needle) { return strstr(KP, needle) != NULL; }
 
 // =====================================================================
 // HARNESS
@@ -272,14 +404,29 @@ static void check(int cond, const char* msg) {
     if (!cond) g_fails++;
 }
 
+// --- reboot hook: urutan flush FS -> reboot diperiksa ---
+static int g_reboot_hook_calls = 0;
+static int g_flushes_at_reboot = -1;
+
+static void test_reboot_hook(void) {
+    g_reboot_hook_calls++;
+    g_flushes_at_reboot = g_flushes;   // harus >= 1 (FS sudah diflush)
+}
+
 static void scenario_begin(int task_id, const char* task_name, uint8_t kind) {
     panic_host_test_reset();
     panic_set_reboot_hook(test_reboot_hook);
     ser_len = 0; SER[0] = '\0';
+    kp_len = 0;  KP[0] = '\0';
     g_flushes = 0; g_reboot_hook_calls = 0; g_flushes_at_reboot = -1;
+    g_sync_try_ok = 1;
     g_fb_cached = 0;
     g_test_task = task_id;
     g_cpu_index = 1;
+    g_nested_armed = 0;
+    g_nested_fired = 0;
+    g_persist_saw_screen = -1;
+    g_serial_panic_mode = 0;
     memset(FB, 0, sizeof(FB));
     memset(tasks, 0, sizeof(tasks));
     if (task_id >= 0 && task_id < MAX_TASKS) {
@@ -304,13 +451,17 @@ static registers_t make_regs(uint64_t int_num, uint64_t err, uint64_t rip, uint6
     return r;
 }
 
+static registers_t user_pf(void) {           // PF user: P=0 W=1 U=1
+    g_panic_test_cr2 = 0x00000000BFBFFCB8ull;
+    return make_regs(14, 0x6, 0x41E6B24, 0x23);
+}
+
 // =====================================================================
-// SKENARIO
+// SKENARIO — diagnostik & tata letak layar
 // =====================================================================
 static void test_pf_user_unmapped_write(void) {
     scenario_begin(2, "control-center", TASK_KIND_SPAWNED);
-    g_panic_test_cr2 = 0x00000000BFBFFCB8ull;               // kanonik, belum termap
-    registers_t r = make_regs(14, 0x6, 0x41E6B24, 0x23);    // P=0 W=1 U=1
+    registers_t r = user_pf();
 
     exception_handler(&r);
 
@@ -323,12 +474,12 @@ static void test_pf_user_unmapped_write(void) {
           "PF user: DI MANA memuat nama task & CPU");
     check(fb_find("CR2") && fb_find("OP: WRITE") && fb_find("REGISTERS"),
           "PF user: DETAIL memuat CR2, arah akses, register");
-    check(g_panic_test_reboots == 1 && g_reboot_hook_calls == 1,
-          "PF user: auto-reboot terjadi sekali");
-    check(g_flushes >= 1 && g_flushes_at_reboot >= 1,
-          "PF user: FS diflush SEBELUM reboot");
-    check(g_panic_test_redraws >= 8 && g_panic_test_redraws <= 12,
-          "PF user: countdown menimpa sel digit saja (anti-flicker)");
+    check(g_panic_test_reboots == 0 && g_reboot_hook_calls == 0,
+          "PF user: TIDAK ada reboot otomatis (menunggu operator)");
+    check(g_flushes >= 1 && g_flushes_at_reboot == -1,
+          "PF user: FS disinkronkan best-effort saat panic, bukan saat reboot");
+    check(fb_find("TIDAK ada reboot otomatis") && !fb_find("AUTO-REBOOT"),
+          "PF user: layar tanpa baris countdown sama sekali");
     check(ser_find("KERNEL PANIC (serial dump)") && ser_find("CR2:"),
           "PF user: mirror serial memuat dump lengkap");
 }
@@ -345,7 +496,7 @@ static void test_pf_kernel_write_ro(void) {
     check(fb_find("KERNEL TEXT"), "PF kernel: RIP diklasifikasikan KERNEL TEXT");
     check(!fb_find("catatan: paging_is_mapped()"),
           "PF kernel: tanpa catatan TLB/CR3 saat bit P cocok");
-    check(g_panic_test_reboots == 1, "PF kernel: auto-reboot terjadi");
+    check(g_panic_test_reboots == 0, "PF kernel: tidak ada reboot otomatis");
 }
 
 static void test_pf_kernel_wild_pointer(void) {
@@ -374,14 +525,13 @@ static void test_pf_non_canonical(void) {
     check(fb_find("ALAMAT NON-KANONIKAL"), "PF non-kanonik: verdict alamat mustahil");
     check(fb_find("NON-KANONIKAL (alamat mustahil)"),
           "PF non-kanonik: baris TARGET menandai CR2 non-kanonik");
-    check(g_panic_test_reboots == 1, "PF non-kanonik: auto-reboot terjadi");
+    check(g_panic_test_reboots == 0, "PF non-kanonik: tidak ada reboot otomatis");
 }
 
 static void test_repeat_panic(void) {
     scenario_begin(2, "desktop", TASK_KIND_SPAWNED);
-    g_panic_test_cr2 = 0x00000000BFBFFCB8ull;
-    registers_t r = make_regs(14, 0x6, 0x41E6B24, 0x23);
 
+    registers_t r = user_pf();
     exception_handler(&r);                     // panic pertama
     g_fb_cached = 0;
     check(!fb_find("PANIC BERULANG"), "panic pertama: banner tanpa penanda berulang");
@@ -389,7 +539,7 @@ static void test_repeat_panic(void) {
     exception_handler(&r);                     // panic kedua (lockdown masih aktif)
     g_fb_cached = 0;
     check(fb_find("PANIC BERULANG"), "panic kedua: banner menandai PANIC BERULANG");
-    check(g_panic_test_reboots == 2, "panic kedua: reboot tetap dipicu");
+    check(g_panic_test_reboots == 0, "panic kedua: tetap tidak ada reboot otomatis");
 }
 
 static void test_kernel_panic_manual(void) {
@@ -402,18 +552,518 @@ static void test_kernel_panic_manual(void) {
           "kernel_panic: DETAIL memuat CODE & pemakaian memori");
     check(ser_find("REASON: HEAP CORRUPTION") && ser_find("CODE:"),
           "kernel_panic: mirror serial memuat REASON/CODE");
-    check(g_panic_test_reboots == 1 && g_flushes_at_reboot >= 1,
-          "kernel_panic: flush FS lalu reboot");
+    check(g_panic_test_reboots == 0 && g_flushes >= 1,
+          "kernel_panic: flush FS best-effort, tidak reboot sendiri");
+}
+
+static void test_hint_row_present(void) {
+    scenario_begin(2, "settings", TASK_KIND_SPAWNED);
+    registers_t r = user_pf();
+    exception_handler(&r);
+
+    check(fb_find("[R] reboot") && fb_find("[S] shutdown"),
+          "layar: petunjuk tombol [R]/[S] ada di baris paling bawah");
+    check(!fb_find("[D]"), "layar: tombol [D] sudah tidak ditawarkan lagi");
+    check(fb_find("TIDAK ada reboot otomatis"),
+          "layar: baris info menegaskan tidak ada reboot otomatis");
+    check(!fb_find("AUTO-REBOOT"), "layar: teks countdown lama sudah tidak dipakai");
+}
+
+// =====================================================================
+// SKENARIO — input tombol tanpa IRQ (polling PS/2)
+// =====================================================================
+// Jalur panic TIDAK boleh menggantung saat lock FS dipegang CPU lain (mis.
+// CPU yang fault sedang memegang fs_lock/bcache_lock): sync dilewati, dicatat,
+// dan sistem tetap menunggu tombol — bukan spin menunggu lock.
+static void test_sync_skip_when_locked(void) {
+    scenario_begin(2, "fileman", TASK_KIND_SPAWNED);
+    g_sync_try_ok = 0;                        // simulasi fs_lock/bcache_lock dipakai
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(g_flushes == 0, "lock sibuk: tidak menunggu lock FS (tanpa kfs_sync_all blocking)");
+    check(ser_find("sync FS dilewati"), "lock sibuk: dilewatinya sync dicatat di serial");
+    check(fb_find("sync FS dilewati (lock dipakai)"),
+          "lock sibuk: layar memberi tahu sync dilewati");
+    check(g_panic_test_reboots == 0 && g_panic_test_waits > 0,
+          "lock sibuk: sistem menunggu tombol (bukan reboot/ menggantung)");
+
+    // [R] harus tetap bisa reboot walau sync FS tadi dilewati.
+    scenario_begin(2, "fileman", TASK_KIND_SPAWNED);
+    g_sync_try_ok = 0;
+    g_panic_test_key = 0x13;                  // R
+    registers_t r2 = user_pf();
+    exception_handler(&r2);
+    check(g_reboot_hook_calls == 1 && g_panic_test_reboots == 1 && g_flushes == 0,
+          "lock sibuk + [R]: reboot tetap dijalankan tanpa menunggu lock FS");
+    g_sync_try_ok = 1;
+}
+
+static void test_key_translate_table(void) {
+    g_key_ext = 0;
+    check(panic_key_translate(0x13) == 'r', "PS/2: scancode 0x13 -> R");
+    check(panic_key_translate(0x1F) == 's', "PS/2: scancode 0x1F -> S");
+    check(panic_key_translate(0x1E) == 0,  "PS/2: tombol lain (A) diabaikan");
+    g_key_ext = 0;
+    check(panic_key_translate(0x20) == 0,  "PS/2: D sudah tidak dipakai lagi");
+    g_key_ext = 0;
+    check(panic_key_translate(0x93) == 0, "PS/2: release code (0x93) diabaikan");
+    g_key_ext = 0;
+    check(panic_key_translate(0xE0) == 0 && g_key_ext == 1,
+          "PS/2: prefix extended 0xE0 disimpan");
+    check(panic_key_translate(0x33) == 0 && g_key_ext == 0,
+          "PS/2: make code setelah prefix extended diabaikan");
+    check(panic_key_translate(0x13) == 'r', "PS/2: state prefix tidak bocor ke tombol berikutnya");
+}
+
+// Regresi: byte MOUSE di output buffer 8042 tidak boleh menyandera tombol.
+// Di QEMU, "gerakkan mouse di layar BSOD lalu tekan R" membuat [R]/[S] mati
+// total karena byte AUX tidak pernah dibaca sehingga OBF tetap penuh.
+static void test_mouse_bytes_do_not_block_keys(void) {
+    // Byte mouse mengantre di depan, baru scancode 'R'.
+    panic_host_test_reset();
+    g_panic_test_aux = 3;
+    g_panic_test_key = 0x13;
+    check(panic_read_key() == 'r',
+          "PS/2: 3 byte mouse di depan tidak menghalangi scancode R");
+    check(g_panic_test_aux == 0, "PS/2: seluruh byte mouse ikut dikonsumsi");
+
+    // Sama, tapi untuk [S].
+    panic_host_test_reset();
+    g_panic_test_aux = 7;
+    g_panic_test_key = 0x1F;
+    check(panic_read_key() == 's', "PS/2: byte mouse juga tidak menghalangi S");
+
+    // Hanya byte mouse (tanpa tombol): tidak ada aksi, tidak menggantung.
+    panic_host_test_reset();
+    g_panic_test_aux = 5;
+    check(panic_read_key() == 0, "PS/2: hanya byte mouse -> tidak ada aksi");
+
+    // Lewat jalur penuh: panic lalu R walau mouse bergerak lebih dulu.
+    scenario_begin(2, "desktop", TASK_KIND_SPAWNED);
+    g_panic_test_aux = 4;
+    g_panic_test_key = 0x13;
+    registers_t r = user_pf();
+    exception_handler(&r);
+    check(g_panic_test_reboots == 1 && g_reboot_hook_calls == 1,
+          "[R] tetap bereaksi walau ada byte mouse di antrean PS/2");
+}
+
+static void test_key_reboot(void) {
+    scenario_begin(2, "terminal", TASK_KIND_SPAWNED);
+    g_panic_test_key = 0x13;                  // tombol R ditekan
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(g_reboot_hook_calls == 1 && g_panic_test_reboots == 1, "[R]: reboot dipicu");
+    check(g_panic_test_waits == 0,
+          "[R]: langsung bertindak (tidak menunggu sama sekali)");
+    check(g_flushes >= 1 && g_flushes_at_reboot >= 1, "[R]: FS disinkronkan sebelum reset");
+    check(ser_find("[R] reboot diminta pengguna"), "[R]: tercatat di serial");
+    check(fb_find("REBOOT diminta - menyimpan data lalu reset"),
+          "[R]: umpan balik tampil di baris status layar");
+}
+
+static void test_key_shutdown(void) {
+    scenario_begin(2, "calc", TASK_KIND_SPAWNED);
+    g_panic_test_key = 0x1F;                  // tombol S
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(g_panic_test_shutdowns == 1, "[S]: power-off dipanggil");
+    check(g_reboot_hook_calls == 0 && g_panic_test_reboots == 0, "[S]: TIDAK reboot");
+    check(g_flushes >= 1, "[S]: FS disinkronkan sebelum daya dimatikan");
+    check(ser_find("[S] shutdown diminta pengguna"), "[S]: tercatat di serial");
+}
+
+// [D] sudah dihapus: menekan D tidak boleh melakukan apa pun (loop tetap
+// menunggu, layar BSOD tetap tampil).
+static void test_key_d_is_gone(void) {
+    scenario_begin(2, "viewer", TASK_KIND_SPAWNED);
+    g_panic_test_key = 0x20;                  // bekas tombol D
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(g_panic_test_freezes == 0, "D: tidak membekukan sistem lagi");
+    check(g_reboot_hook_calls == 0 && g_panic_test_reboots == 0 && g_panic_test_shutdowns == 0,
+          "D: tidak reboot / tidak shutdown");
+    check(ser_find("freeze") == 0, "D: tidak ada aksi freeze yang dicatat di serial");
+    check(g_panic_test_waits > 0, "D: sistem tetap menunggu tombol lain");
+}
+
+static void test_key_release_does_not_trigger(void) {
+    scenario_begin(2, "taskmgr", TASK_KIND_SPAWNED);
+    g_panic_test_key = 0x93;                  // release code R (bukan penekanan)
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(g_reboot_hook_calls == 0 && g_panic_test_freezes == 0 && g_panic_test_shutdowns == 0,
+          "PS/2: release code tidak memicu aksi apa pun");
+    check(g_panic_test_waits == 3 && g_panic_test_reboots == 0,
+          "tanpa input: loop menunggu tombol (host: 3 slice) dan TIDAK reboot");
+}
+
+// =====================================================================
+// SKENARIO — log RAM persisten (bertahan lintas warm-reboot)
+// =====================================================================
+static uint8_t LOG_AREA[4096];
+
+static void test_persistent_log(void) {
+    scenario_begin(3, "taskmgr", TASK_KIND_SPAWNED);
+    g_panic_test_cr2 = 0x0000000012345000ull;
+    registers_t r = make_regs(14, 0x6, 0x41E6B24, 0x23);
+    exception_handler(&r);
+
+    panic_log_t* l = (panic_log_t*)LOG_AREA;
+    check(l->signature == PANIC_LOG_SIGNATURE, "log RAM: record tersimpan dengan signature valid");
+    check(l->exception_vector == 14 && l->rip == 0x41E6B24 && l->cr2 == 0x12345000ull,
+          "log RAM: vector/rip/cr2 ikut tersimpan");
+    check(strcmp(l->task_name, "taskmgr") == 0, "log RAM: nama task tersimpan");
+
+    ser_len = 0; SER[0] = '\0';
+    kp_len = 0;  KP[0] = '\0';
+
+    check(panic_check_previous_log() == 1, "log RAM: crash boot sebelumnya terdeteksi");
+    check(ser_find("crash pada boot sebelumnya terdeteksi"), "log RAM: dilaporkan ke COM1");
+    check(ser_find("PAGE FAULT") && ser_find("taskmgr"),
+          "log RAM: jenis exception + nama task ikut dilaporkan");
+    check(kp_find("crash pada boot sebelumnya terdeteksi"), "log RAM: dicetak juga ke konsol");
+    check(panic_check_previous_log() == 0, "log RAM: flag dibersihkan (tidak dilaporkan berulang)");
+    check(l->signature == PANIC_LOG_CONSUMED, "log RAM: signature ditandai consumed");
+}
+
+// =====================================================================
+// SKENARIO — crashdump ke disk (raw sector, polling, tanpa IRQ)
+// =====================================================================
+static const crashdump_hdr_t* crash_hdr(void) {
+    return (const crashdump_hdr_t*)(const void*)(DISK + (size_t)CRASH_LBA * 512u);
+}
+
+static uint32_t fnv1a(const uint8_t* p, uint32_t n) {
+    uint32_t s = 0x811C9DC5u;
+    for (uint32_t i = 0; i < n; i++) { s ^= p[i]; s *= 16777619u; }
+    return s;
+}
+
+// Fitur "crashdump sebagai berkas": snapshot mentah di ekor disk diterbitkan
+// jadi berkas teks biasa supaya bisa dibuka app GUI, bukan cuma terminal.
+// Sifat yang dikunci: (1) dump valid -> berkas dibuat, (2) boot berikutnya
+// dengan isi sama TIDAK menulis ulang disk, (3) dump rusak/kosong -> tidak ada
+// berkas sampah.
+// Notifikasi ke aplikasi: SELAMA boot belum menerbitkan laporan, syscall-nya
+// harus bilang "tidak ada" — kalau tidak, desktop akan memunculkan notifikasi
+// crash di setiap startup.
+static void test_crash_notice_before_publish(void) {
+    crash_notice_t n;
+    for (unsigned i = 0; i < sizeof(n); i++) ((char*)&n)[i] = 0xFF;
+    check(crash_archive_notice(&n) == 0 && n.pending == 0,
+          "notice: sebelum ada laporan baru -> pending 0 (tanpa notifikasi)");
+}
+
+static void test_crash_archive_publish(void) {
+    scenario_begin(2, "control-center", TASK_KIND_SPAWNED);
+    g_panic_test_cr2 = 0x00000000BFBFFCB8ull;
+    registers_t r = make_regs(14, 0x6, 0x41E6B24, 0x23);
+    exception_handler(&r);                 // tulis snapshot ke area ekor disk
+
+    mock_fs_reset();
+    crash_archive_publish();
+
+    check(g_fs_creates == 1 && strcmp(g_fs_path, "/crash-report.txt") == 0,
+          "arsip: dump valid diterbitkan sebagai /crash-report.txt");
+    check(strstr(g_fs_data, "KyuzenOS - laporan crashdump") != NULL &&
+          strstr(g_fs_data, "rip        : 0x00000000041E6B24") != NULL &&
+          strstr(g_fs_data, "cr2        : 0x00000000BFBFFCB8") != NULL,
+          "arsip: berkas memuat header ringkas (rip/cr2 terbaca)");
+    check(strstr(g_fs_data, "control-center") != NULL,
+          "arsip: nama task ikut tersimpan di berkas");
+    check(strstr(g_fs_data, "APLIKASI user mengakses alamat BELUM TERMAP") != NULL,
+          "arsip: payload (verdict + register) ikut masuk ke berkas");
+    check(strstr(g_fs_data, "raw        : LBA ") != NULL,
+          "arsip: lokasi dump mentah dicantumkan (LBA + jumlah sektor)");
+
+    // Notifikasi yang dibaca aplikasi (syscall 80) harus lengkap isinya.
+    crash_notice_t n;
+    check(crash_archive_notice(&n) == 1 && n.pending == 1,
+          "notice: setelah laporan baru diterbitkan -> pending 1 (notifikasi tampil)");
+    check(strcmp(n.path, "/crash-report.txt") == 0 && n.crash_count >= 1u,
+          "notice: path laporan + nomor dump diisi");
+    check(strcmp(n.task_name, "control-center") == 0 && n.vector == 14u,
+          "notice: task & vektor exception diisi (untuk isi notifikasi)");
+
+    // Boot berikutnya dengan isi identik: idempoten, tanpa penulisan ulang.
+    int creates = g_fs_creates, deletes = g_fs_deletes;
+    crash_archive_publish();
+    check(g_fs_creates == creates && g_fs_deletes == deletes,
+          "arsip: isi sama -> tidak menulis ulang berkas (idempoten)");
+    check(strstr(SER, "arsip sudah terbaru") != NULL,
+          "arsip: kondisi idempoten dilaporkan ke serial");
+
+    // Area dump dikosongkan (disk tanpa crash): tidak boleh menulis apa pun.
+    mock_fs_reset();
+    for (int i = 0; i < 512; i++) DISK[(size_t)CRASH_LBA * 512u + (size_t)i] = 0;
+    crash_archive_publish();
+    check(g_fs_creates == 0 && !g_fs_exists,
+          "arsip: tanpa dump valid -> tidak ada berkas yang dibuat");
+    check(strstr(SER, "tidak ada dump valid") != NULL,
+          "arsip: ketiadaan dump dilaporkan (bukan diam-diam gagal)");
+}
+
+static void test_crashdump_snapshot(void) {
+    scenario_begin(2, "notepad", TASK_KIND_SPAWNED);
+    g_panic_test_cr2 = 0x00000000BFBFFCB8ull;
+    registers_t r = make_regs(14, 0x6, 0x41E6B24, 0x23);
+
+    exception_handler(&r);
+
+    const crashdump_hdr_t* h = crash_hdr();
+    const uint8_t* pay = (const uint8_t*)h + sizeof(crashdump_hdr_t);
+
+    check(h->magic == CRASHDUMP_MAGIC && h->version == CRASHDUMP_VERSION,
+          "crashdump: header tertulis di area ekor disk");
+    check(h->exception_vector == 14 && h->rip == 0x41E6B24 && h->cr2 == 0xBFBFFCB8ull,
+          "crashdump: vector/rip/cr2 sesuai fault");
+    check(strcmp(h->task_name, "notepad") == 0, "crashdump: nama task tersimpan");
+    check(h->sectors >= 1u && h->sectors <= CRASHDUMP_SECTORS,
+          "crashdump: ukuran <= 8 sektor (4KB)");
+    check(fnv1a(pay, h->length) == h->checksum, "crashdump: checksum payload cocok");
+
+    int has_title = (strstr((const char*)pay, "KyuzenOS panic snapshot") != NULL);
+    int has_verdict = (strstr((const char*)pay, "verdict: APLIKASI user mengakses alamat BELUM TERMAP") != NULL);
+    int has_regs = (strstr((const char*)pay, "rax   :") != NULL) &&
+                   (strstr((const char*)pay, "lastsc:") != NULL);
+    check(has_title && has_verdict && has_regs,
+          "crashdump: payload memuat judul + verdict + register/backtrace");
+
+    uint32_t c1 = h->dump_count;
+    exception_handler(&r);                    // panic kedua
+    check(crash_hdr()->dump_count == c1 + 1u, "crashdump: dump_count bertambah tiap crash");
+}
+
+// Fault dari ring 3 (aplikasi user) meninggalkan RSP/RBP di alamat USER.
+// Membacanya dari ring 0 dengan SMAP aktif = #PF kedua -> panic bersarang ->
+// layar BSOD terpotong persis di baris BACKTRACE lalu sistem freeze (ini yang
+// terjadi di QEMU: control-center, CS=0x23, RSP=0x0BFBFFB8). Regresi ini
+// mematikan dua-duanya: jalur gambar (p_backtrace) dan buffer crashdump
+// (panic_bt_collect).
+static void test_user_fault_never_reads_user_memory(void) {
+    scenario_begin(2, "control-center", TASK_KIND_SPAWNED);
+    registers_t r = make_regs(14, 0x6, 0x41E6B24, 0x23);   // RING-3
+    r.rsp = 0x000000000BFBFFB8ull;                         // stack USER
+    r.rbp = 1;                                             // sampah khas user
+    g_panic_test_cr2 = 0x000000000BFBFFC8ull;
+
+    exception_handler(&r);                                 // (dulu: segfault host / #PF kedua di QEMU)
+
+    check(fb_find("BACKTRACE") && fb_find("konteks user"),
+          "user fault: backtrace dilewati dengan catatan, bukan membaca stack user");
+    check(!fb_find("KERNEL+0x"),
+          "user fault: tidak ada frame KERNEL+ yang diklaim (stack user tidak dibaca)");
+    check(fb_find("REGISTERS") && fb_find("MEM"),
+          "user fault: layar tetap lengkap sampai MEM (tidak terpotong di BACKTRACE)");
+    check(g_panic_test_reboots == 0 && g_panic_test_waits == 3,
+          "user fault: tanpa panic bersarang, handler selesai normal lalu menunggu tombol");
+
+    const crashdump_hdr_t* h = crash_hdr();
+    const uint8_t* pay = (const uint8_t*)h + sizeof(crashdump_hdr_t);
+    check(h->magic == CRASHDUMP_MAGIC,
+          "user fault: crashdump tetap tersimpan (persistensi tidak berhenti)");
+    check(strstr((const char*)pay, "bt    : (tidak ada frame valid)") != NULL,
+          "user fault: payload crashdump juga tidak mengklaim frame user");
+}
+
+// Layar BSOD WAJIB sudah tergambar sebelum persistensi menyentuh disk, dan
+// penanda tahap di serial harus urut: [P2] layar -> [P3] persist -> [P4] loop.
+// Ini yang membedakan "panic terlihat lalu di-persist" dari "persist dulu,
+// kalau macet sistem tampak freeze tanpa panic".
+static void test_screen_drawn_before_persist(void) {
+    scenario_begin(2, "notepad", TASK_KIND_SPAWNED);
+    g_sync_try_ok = 1;
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(g_serial_panic_mode == 1,
+          "serial: mode panic diaktifkan (TX UART dibatasi, tidak bisa menggantung)");
+    check(g_persist_saw_screen == 1,
+          "urutan: layar BSOD sudah tergambar SEBELUM persistensi menulis disk");
+
+    size_t p1 = ser_mark("[P1] lockdown", 0);
+    size_t p2 = ser_mark("[P2] layar BSOD", 0);
+    size_t p3 = ser_mark("[P3] persist selesai", 0);
+    size_t p4 = ser_mark("[P4] loop", 0);
+    check(p1 != (size_t)-1 && p2 != (size_t)-1 &&
+          p3 != (size_t)-1 && p4 != (size_t)-1,
+          "serial: keempat penanda tahap panic ada ([P1]..[P4])");
+    check(p1 < p2 && p2 < p3 && p3 < p4,
+          "serial: urutan tahap benar (lockdown -> layar -> persist -> loop)");
+    check(fb_find("PENYEBAB") && fb_find("TIDAK ada reboot otomatis"),
+          "urutan: layar BSOD lengkap (penyebab + baris info) tetap utuh");
+    check(g_panic_test_reboots == 0 && g_reboot_hook_calls == 0,
+          "urutan: persistensi selesai tanpa memicu reboot");
+}
+
+// Panic bersarang tidak boleh membekukan sistem secara SENYAP: selain dicatat
+// ke serial, layar harus memberi tanda (layar panic pertama tetap berlaku).
+static void test_nested_panic_banner(void) {
+    scenario_begin(2, "widget_demo", TASK_KIND_SPAWNED);
+    g_nested_armed = 1;
+    g_nested_regs = make_regs(14, 0x2, 0x0000000000001000ull, 0x08);
+
+    registers_t r = user_pf();
+    exception_handler(&r);
+    g_nested_armed = 0;
+
+    g_fb_cached = 0;
+    check(fb_find("PANIC BERSARANG"),
+          "bersarang: pita peringatan digambar di layar (bukan freeze senyap)");
+    check(fb_find("PENYEBAB"),
+          "bersarang: layar panic pertama tetap terbaca di bawah pita");
+    check(g_panic_test_freezes == 1,
+          "bersarang: sistem tetap dibekukan (mode debug) untuk dibaca");
+}
+
+static void test_crashdump_recursion_guard(void) {
+    scenario_begin(2, "widget_demo", TASK_KIND_SPAWNED);
+    g_nested_armed = 1;                        // tulis dump -> fault baru
+    g_nested_regs = make_regs(14, 0x2, 0x0000000000001000ull, 0x08);
+
+    registers_t r = user_pf();
+    exception_handler(&r);
+    g_nested_armed = 0;
+
+    check(g_panic_test_freezes == 1,
+          "guard: panic bersarang -> sistem dibekukan (bukan menggambar ulang)");
+    check(ser_find("panic BERSARANG - crashdump dibatalkan"),
+          "guard: dicatat bahwa crashdump dibatalkan");
+    check(ser_find("DIBATALKAN (panic bersarang)"),
+          "guard: penulisan dump pertama melaporkan pembatalan");
+    check(g_reboot_hook_calls == 0 && g_panic_test_waits == 3,
+          "guard: setelah dump dibatalkan, jalur normal (persist -> loop tombol) tetap lanjut");
+    g_fb_cached = 0;
+    check(fb_find("PENYEBAB"), "guard: layar BSOD hanya digambar sekali (tidak ditimpa)");
+}
+
+// =====================================================================
+// SKENARIO — ACPI (parser FADT murni, dipakai aksi [S])
+// =====================================================================
+static uint8_t ACPI[4096];
+
+static void set_checksum(uint8_t* p, uint32_t len, uint32_t off) {
+    p[off] = 0;
+    uint8_t s = 0;
+    for (uint32_t i = 0; i < len; i++) s = (uint8_t)(s + p[i]);
+    p[off] = (uint8_t)(0u - (uint32_t)s);
+}
+
+// Bangun RSDP(0x100) -> XSDT(0x200) -> FADT(0x400) di dalam ACPI[].
+static void acpi_build(int rev, uint16_t pm1a, uint16_t pm1b) {
+    memset(ACPI, 0, sizeof(ACPI));
+    uint8_t* rsdp = ACPI + 0x100;
+    uint8_t* xsdt = ACPI + 0x200;
+    uint8_t* fadt = ACPI + 0x400;
+
+    memcpy(xsdt, "XSDT", 4);
+    *(uint32_t*)(xsdt + 4) = 44;              // header 36 + 1 entri 8 byte
+    *(uint8_t*)(xsdt + 8) = 1;
+    *(uint64_t*)(xsdt + 36) = 0x400;          // -> FADT
+    set_checksum(xsdt, 44, 9);
+
+    memcpy(fadt, "FACP", 4);
+    *(uint32_t*)(fadt + 4) = 96;              // >= 0x5A (harus memuat 0x59)
+    *(uint8_t*)(fadt + 8) = (uint8_t)rev;
+    *(uint32_t*)(fadt + 0x40) = pm1a;         // PM1a_CNT_BLK
+    *(uint32_t*)(fadt + 0x44) = pm1b;         // PM1b_CNT_BLK
+    *(uint8_t*)(fadt + 0x59) = 4;             // PM1_CNT_LEN
+    set_checksum(fadt, 96, 9);
+
+    memcpy(rsdp, "RSD PTR ", 8);
+    *(uint8_t*)(rsdp + 15) = 2;               // revisi RSDP 2.0
+    *(uint32_t*)(rsdp + 16) = 0;              // RSDT tidak dipakai
+    *(uint32_t*)(rsdp + 20) = 36;             // panjang RSDP 2.0
+    *(uint64_t*)(rsdp + 24) = 0x200;          // -> XSDT
+    // RSDP punya DUA checksum (spesifikasi ACPI): checksum lama (offset 8, 20
+    // byte pertama) dan extended checksum (offset 32, seluruh 36 byte). Parser
+    // menolak tabel yang gagal salah satunya.
+    set_checksum(rsdp, 20, 8);
+    set_checksum(rsdp, 36, 32);
+}
+
+static uint64_t acpi_base(void) { return (uint64_t)(uintptr_t)ACPI; }
+
+// BUG YANG PERNAH TERJADI (QEMU BIOS, boot langsung BSOD #GP di byte pertama
+// RSDP): alamat dari Limine sudah virtual, jadi menambah hhdm_offset lagi
+// menghasilkan 0xFFFF0000_000F52E0 (non-kanonik). Test ini mengunci perilaku
+// resolver supaya tidak berubah lagi.
+static void test_acpi_rsdp_pointer(void) {
+    const uint64_t hhdm = 0xFFFF800000000000ull;
+
+    check(acpi_resolve_rsdp((void*)0xFFFF8000000F52E0ull, hhdm) ==
+              (const void*)0xFFFF8000000F52E0ull,
+          "ACPI: alamat virtual dari Limine dipakai APA ADANYA (tanpa +hhdm)");
+    check(acpi_resolve_rsdp((void*)0x00000000000F52E0ull, hhdm) ==
+              (const void*)0xFFFF8000000F52E0ull,
+          "ACPI: alamat fisik (kalau ada) tetap ditambah hhdm_offset");
+    check(acpi_resolve_rsdp(0, hhdm) == 0, "ACPI: alamat NULL -> NULL");
+}
+
+static void test_acpi_parse(void) {
+    acpi_pm_t pm;
+
+    acpi_build(2, 0x0600, 0x0B00);
+    memset(&pm, 0, sizeof(pm));
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 1,
+          "ACPI: RSDP -> XSDT -> FADT terparse");
+    check(pm.pm1a_cnt == 0x0600 && pm.pm1b_cnt == 0x0B00,
+          "ACPI: port PM1a & PM1b terbaca dari FADT");
+    check(pm.slp_typa == 5, "ACPI: SLP_TYP S5 = 5 (konvensi)");
+
+    acpi_build(2, 0x0600, 0);
+    memset(&pm, 0, sizeof(pm));
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 1 && pm.pm1b_cnt == 0,
+          "ACPI: PM1b tidak ada -> dilaporkan 0 (bukan port sampah)");
+
+    acpi_build(1, 0x0600, 0);
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 0,
+          "ACPI: FADT rev 1.0 dilewati (offset blok PM berbeda)");
+
+    acpi_build(2, 0x0600, 0);
+    ACPI[0x400 + 0x30] ^= 0xFF;               // rusak isi FADT
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 0,
+          "ACPI: FADT dengan checksum rusak ditolak");
+
+    acpi_build(2, 0x0060, 0);                 // port tidak masuk akal
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 0,
+          "ACPI: port PM1a tidak wajar (< 0x400) ditolak");
+
+    acpi_build(2, 0x0600, 0);
+    ACPI[0x100] = 'X';                        // rusak signature RSDP
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 0,
+          "ACPI: signature RSDP salah ditolak");
+
+    check(acpi_pm1a_cnt_port() == 0,
+          "ACPI: sebelum acpi_early_init() tidak ada port yang diklaim");
+    check(acpi_poweroff_raw() == 0,
+          "ACPI: power-off tanpa FADT = gagal rapi (fallback port emulator)");
 }
 
 // =====================================================================
 // MAIN
 // =====================================================================
 int main(int argc, char** argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);   // crash tidak boleh menghilangkan jejak uji
+    // Area log RAM + area crashdump disk, sekali untuk seluruh sesi uji.
+    panic_log_init((uint64_t)(uintptr_t)LOG_AREA, sizeof(LOG_AREA));
+    crashdump_init(CRASH_LBA, CRASHDUMP_SECTORS);
+
     if (argc > 1 && strcmp(argv[1], "--dump") == 0) {
         scenario_begin(2, "control-center", TASK_KIND_SPAWNED);
-        g_panic_test_cr2 = 0x00000000BFBFFCB8ull;
-        registers_t r = make_regs(14, 0x6, 0x41E6B24, 0x23);
+        registers_t r = user_pf();
         exception_handler(&r);
         printf("\n");
         fb_text(g_fb_text, sizeof(g_fb_text), 1);
@@ -421,13 +1071,43 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    printf("=== test panic handler (host) ===\n");
-    test_pf_user_unmapped_write();
-    test_pf_kernel_write_ro();
-    test_pf_kernel_wild_pointer();
-    test_pf_non_canonical();
-    test_repeat_panic();
-    test_kernel_panic_manual();
+    printf("=== test panic handler + crash safety (host) ===\n");
+// Counter aksi/countdown per skenario — memudahkan melihat efek tiap skenario
+// (freezes/reboots/shutdowns + berapa slice countdown yang dijalani).
+#define RUN(fn) do { printf("[run] %s\n", #fn); fn(); \
+    printf("      [ctr] freezes=%u reboots=%u shutdowns=%u waits=%u flush=%d\n", \
+           g_panic_test_freezes, g_panic_test_reboots, g_panic_test_shutdowns, \
+           g_panic_test_waits, g_flushes); } while (0)
+    RUN(test_pf_user_unmapped_write);
+    RUN(test_pf_kernel_write_ro);
+    RUN(test_pf_kernel_wild_pointer);
+    RUN(test_pf_non_canonical);
+    RUN(test_repeat_panic);
+    RUN(test_kernel_panic_manual);
+    RUN(test_hint_row_present);
+
+    RUN(test_sync_skip_when_locked);
+    RUN(test_key_translate_table);
+    RUN(test_mouse_bytes_do_not_block_keys);
+    RUN(test_key_reboot);
+    RUN(test_key_shutdown);
+    RUN(test_key_d_is_gone);
+    RUN(test_key_release_does_not_trigger);
+
+    RUN(test_persistent_log);
+
+    RUN(test_user_fault_never_reads_user_memory);
+    RUN(test_screen_drawn_before_persist);
+    RUN(test_nested_panic_banner);
+
+    RUN(test_crash_notice_before_publish);
+    RUN(test_crash_archive_publish);
+    RUN(test_crashdump_snapshot);
+    RUN(test_crashdump_recursion_guard);
+
+    RUN(test_acpi_rsdp_pointer);
+    RUN(test_acpi_parse);
+#undef RUN
 
     printf("\n%d skenario gagal\n", g_fails);
     return g_fails ? 1 : 0;

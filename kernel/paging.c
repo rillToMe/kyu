@@ -398,6 +398,29 @@ int paging_map_region(uint64_t vaddr) {
 //
 // pml4_phys == PHYS_NULL → kernel PML4 (current_pml4). SMP-safe.
 // ============================================================
+// Penelusuran tabel MURNI (tanpa lock). Dipakai oleh paging_is_mapped_into()
+// (dengan lock) dan paging_is_mapped_nolock() (jalur panic, tanpa lock).
+static int walk_is_mapped(uint64_t* check_pml4, uint64_t vaddr) {
+    if (!check_pml4) return 0;
+
+    uint64_t pml4_idx = PML4_IDX(vaddr);
+    if (!(check_pml4[pml4_idx] & 1)) return 0;
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(check_pml4[pml4_idx] & PAGE_MASK);
+
+    uint64_t pdpt_idx = PDPT_IDX(vaddr);
+    if (!(pdpt[pdpt_idx] & 1)) return 0;
+    if (pdpt[pdpt_idx] & (1ULL << 7)) return 1;   // 1GB huge page "mapped"
+    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[pdpt_idx] & PAGE_MASK);
+
+    uint64_t pd_idx = PD_IDX(vaddr);
+    if (!(pd[pd_idx] & 1)) return 0;
+    if (pd[pd_idx] & (1ULL << 7)) return 1;       // 2MB huge page "mapped"
+    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[pd_idx] & PAGE_MASK);
+
+    uint64_t pt_idx = PT_IDX(vaddr);
+    return (pt[pt_idx] & 1) ? 1 : 0;
+}
+
 int paging_is_mapped_into(uint64_t vaddr, phys_addr_t pml4_phys) {
     uint64_t* check_pml4 = (pml4_phys != PHYS_NULL)
                          ? (uint64_t*)PHYS_TO_VIRT(pml4_phys)
@@ -405,39 +428,7 @@ int paging_is_mapped_into(uint64_t vaddr, phys_addr_t pml4_phys) {
     if (!check_pml4) return 0;
 
     uint64_t irq = spinlock_lock_irqsave(&paging_lock);
-
-    uint64_t pml4_idx = PML4_IDX(vaddr);
-    if (!(check_pml4[pml4_idx] & 1)) {
-        spinlock_unlock_irqrestore(&paging_lock, irq);
-        return 0;
-    }
-    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(check_pml4[pml4_idx] & PAGE_MASK);
-
-    uint64_t pdpt_idx = PDPT_IDX(vaddr);
-    if (!(pdpt[pdpt_idx] & 1)) {
-        spinlock_unlock_irqrestore(&paging_lock, irq);
-        return 0;
-    }
-    if (pdpt[pdpt_idx] & (1ULL << 7)) {
-        spinlock_unlock_irqrestore(&paging_lock, irq);
-        return 1; // 1GB huge page is "mapped"
-    }
-    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[pdpt_idx] & PAGE_MASK);
-
-    uint64_t pd_idx = PD_IDX(vaddr);
-    if (!(pd[pd_idx] & 1)) {
-        spinlock_unlock_irqrestore(&paging_lock, irq);
-        return 0;
-    }
-    if (pd[pd_idx] & (1ULL << 7)) {
-        spinlock_unlock_irqrestore(&paging_lock, irq);
-        return 1; // 2MB huge page is "mapped"
-    }
-    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[pd_idx] & PAGE_MASK);
-
-    uint64_t pt_idx = PT_IDX(vaddr);
-    int result = (pt[pt_idx] & 1) ? 1 : 0;
-
+    int result = walk_is_mapped(check_pml4, vaddr);
     spinlock_unlock_irqrestore(&paging_lock, irq);
     return result;
 }
@@ -447,6 +438,23 @@ int paging_is_mapped_into(uint64_t vaddr, phys_addr_t pml4_phys) {
 // ============================================================
 int paging_is_mapped(uint64_t vaddr) {
     return paging_is_mapped_into(vaddr, PHYS_NULL);
+}
+
+// ============================================================
+// paging_is_mapped_nolock — HANYA UNTUK JALUR PANIC
+//
+// Sama seperti paging_is_mapped() tetapi TIDAK mengambil paging_lock.
+//
+// Kenapa wajib: kalau fault terjadi di CPU yang SEDANG memegang paging_lock
+// (mis. fault saat kernel memetakan halaman untuk aplikasi), maka handler
+// panic yang memakai versi ber-lock akan menunggu lock itu SELAMANYA
+// (self-deadlock) — gejalanya: sistem membeku, layar BSOD TIDAK PERNAH
+// muncul, dan tidak ada reboot. Pembacaan tabel tanpa lock aman di sini:
+// tiap entri dibaca sebagai 8 byte atomic dan hasilnya hanya dipakai untuk
+// diagnosa, bukan untuk mengubah pemetaan.
+// ============================================================
+int paging_is_mapped_nolock(uint64_t vaddr) {
+    return walk_is_mapped(current_pml4, vaddr);
 }
 
 // ============================================================

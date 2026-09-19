@@ -39,7 +39,7 @@ $(shell mkdir -p $(OUT_DIR))
 # --- Flags Compiler 64-bit ---
 # -MMD -MP: header dependency tracking (pola Makefile top-level) — perubahan
 # include/*.h (mis. kyuzen_event_t di userlib.h) memaksa recompile semua app.
-CFLAGS_COMMON = --target=x86_64-pc-none-elf -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INC_DIR)
+CFLAGS_COMMON = --target=x86_64-pc-none-elf -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INC_DIR) -I$(ROOT_DIR)/libs/color/include
 CFLAGS_APP    = $(CFLAGS_COMMON) -O0
 CFLAGS_LIB    = $(CFLAGS_COMMON) -O2
 
@@ -67,6 +67,7 @@ SHELLCORE_OBJ = shell_core.o # shell engine bersama (parser/registry/built-in)
 LIBGUI_OBJ  = libgui.o
 LIBUI_OBJ   = libui.o   # Widget Toolkit Modern C++ (apps/libui.cpp)
 PNG_OBJ     = png.o     # Dekoder PNG bersama (apps/png.c, stb_image)
+COLOR_OBJS  = color_blend.o color_space.o color_utils.o   # libs/color (dipakai kernel & app)
 
 # --- Target ELF Akhir ---
 FILEMAN_ELF = $(OUT_DIR)/fileman.elf
@@ -145,6 +146,25 @@ $(LIBUI_OBJ): $(APPS_DIR)/libui.cpp
 $(PNG_OBJ): $(APPS_DIR)/png.c
 	@echo "[CC] Mengompilasi png.c (stb_image decode)..."
 	$(CC) $(CFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
+
+# ==========================================================
+# COMPILE COLOR — libs/color bersama (header tersedia via CFLAGS_COMMON)
+# App yang memakai fungsi out-of-line (blend/space/utils) menambahkan
+# $(COLOR_OBJS) ke baris link-nya.
+# ==========================================================
+COLOR_DIR = $(ROOT_DIR)/libs/color/src
+
+color_blend.o: $(COLOR_DIR)/color_blend.c
+	@echo "[CC] Mengompilasi color_blend.c (libs/color)..."
+	$(CC) $(CFLAGS_LIB) -c $< -o $@
+
+color_space.o: $(COLOR_DIR)/color_space.c
+	@echo "[CC] Mengompilasi color_space.c (libs/color)..."
+	$(CC) $(CFLAGS_LIB) -c $< -o $@
+
+color_utils.o: $(COLOR_DIR)/color_utils.c
+	@echo "[CC] Mengompilasi color_utils.c (libs/color)..."
+	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
 # ==========================================================
 # FILEMAN — File Manager (virtual 0x4000000, phys by OS)
@@ -423,5 +443,5 @@ clean:
 	@echo "[CLEAN] Selesai."
 
 # --- Semua objek + header deps (harus sebelum -include) ---
-APP_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o desktop.o terminal.o settings.o procinfo.o exit_test.o kill_test.o fd_test.o echo.o cat.o pipe_test.o fork_test.o
+APP_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) $(COLOR_OBJS) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o desktop.o terminal.o settings.o procinfo.o exit_test.o kill_test.o fd_test.o echo.o cat.o pipe_test.o fork_test.o
 -include $(APP_OBJS:.o=.d)

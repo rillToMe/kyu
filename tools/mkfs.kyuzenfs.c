@@ -28,6 +28,11 @@
 #define KZFS_NAME_MAX       255u
 #define KZFS_NUM_DIRECT_EXTENTS 4u
 
+// Ekor disk yang disisihkan untuk crashdump panic (harus sama dengan
+// include/kyuzenfs_v4.h & kernel/fs/kfs_super.c). Tool ini sengaja standalone,
+// jadi konstantanya diduplikasi seperti konstanta layout lain di atas.
+#define KZFS_CRASHDUMP_SECTORS 8u
+
 #define FLAG_DIR  0x02
 
 struct kzfs_extent {
@@ -108,6 +113,11 @@ int main(int argc, char **argv) {
     if (size_mb > 2048) size_mb = 2048; // LBA28 guard (alamat sektor 32-bit)
 
     uint64_t total_sectors = size_mb * 1024 * 1024 / 512;
+    // Ekor disk disisihkan untuk crashdump panic (kernel/crashdump.c) — sama
+    // seperti format di kernel (kernel/fs/kfs_super.c). Keduanya memakai
+    // KZFS_CRASHDUMP_SECTORS dari include/kyuzenfs_v4.h.
+    if (total_sectors > KZFS_CRASHDUMP_SECTORS)
+        total_sectors -= KZFS_CRASHDUMP_SECTORS;
     uint64_t total_blocks  = total_sectors / KZFS_BLOCK_SECTORS;
 
     // --- Layout (identik layout_compute di kernel) ---

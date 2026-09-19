@@ -232,5 +232,21 @@ void bcache_flush_all(void) {
     spinlock_unlock_irqrestore(&bcache_lock, f);
 }
 
+// Versi jalur panic: tidak boleh menunggu lock. Kalau lock tidak bisa diambil
+// sekarang, langsung menyerah (return 0) — pemanggil (panic.c) mencatatnya ke
+// serial dan tetap melanjutkan reboot/freeze, bukan menggantung di spinlock.
+int bcache_flush_all_try(void) {
+    uint64_t f;
+    if (!spinlock_try_lock_irqsave(&bcache_lock, &f)) return 0;
+    for (struct block_buffer *b = lru_head; b; b = b->lru_next) {
+        if (b->dirty) {
+            (void)ata_write_block4k(b->block_num, b->data);
+            b->dirty = BCACHE_CLEAN;
+        }
+    }
+    spinlock_unlock_irqrestore(&bcache_lock, f);
+    return 1;
+}
+
 uint64_t bcache_hit_count(void)  { return stat_hit; }
 uint64_t bcache_miss_count(void) { return stat_miss; }

@@ -28,6 +28,11 @@ int  paging_map_region(uint64_t vaddr);
 // Check if virtual address has a mapping (SMP-safe)
 int  paging_is_mapped(uint64_t vaddr);
 
+// Sama seperti di atas tetapi TANPA mengambil paging_lock. HANYA untuk jalur
+// panic / diagnosa: CPU yang fault bisa jadi sedang memegang lock itu, dan
+// menunggunya = freeze tanpa BSOD (self-deadlock).
+int  paging_is_mapped_nolock(uint64_t vaddr);
+
 // --- ADDRESS SPACE MANAGEMENT ---
 
 // Create a new PML4 with kernel mappings cloned.

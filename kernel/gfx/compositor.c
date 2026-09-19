@@ -527,7 +527,7 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
                                   ccx + 5, ccy + 5, ico, r);
                     titlebar_line(backbuffer, pitch4, ccx + 5, ccy - 5,
                                   ccx - 5, ccy + 5, ico, r);
-                    // Judul: padding kiri 12px, vertikal tengah, teks gelap.
+                    // Judul: padding kiri 12px, vertikal tengah, teks off-white.
                     if (kwm_windows[w].title[0])
                         titlebar_text(backbuffer, pitch4, win_x + 12,
                                       win_y + ((int)KWM_TITLEBAR_H - 16) / 2,

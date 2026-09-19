@@ -74,6 +74,10 @@ void ui_window_focus(ui_window_t* win, ui_widget_t* widget);
 typedef int (*ui_tick_cb)(void* userdata);
 void ui_window_set_tick(ui_window_t* win, ui_tick_cb cb, void* userdata);
 
+// ESC global. Bila cb di-set, APLIKASI yang menentukan arti ESC (mis. Notepad:
+// tutup bar cari dulu, baru keluar); bila tidak di-set, ESC menutup window.
+void ui_window_set_escape(ui_window_t* win, ui_click_cb cb, void* userdata);
+
 // --- Label ---
 // text di-copy oleh toolkit — caller boleh pakai stack buffer.
 ui_widget_t* ui_label_create(ui_window_t* win, const char* text);
@@ -139,7 +143,48 @@ void ui_textedit_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 // "user@kyuzen:~$ " kontras terhadap output.
 void ui_textedit_set_prompt_style(ui_widget_t* widget, const char* prefix, uint32_t color);
 
+// --- TextEdit: API editor (Phase 11 — dipakai notepad) ---
+// Semua mutasi lewat satu jalur (apply_replace) sehingga undo selalu konsisten.
+// Aplikasi editor memakai shortcut (ui_window_add_shortcut) untuk Ctrl+A/C/X/V/Z/Y;
+// widget sendiri yang menangani seleksi mouse-drag + Shift+panah/Home/End/PgUp/PgDn.
+// Callback dipanggil setiap isi teks berubah (modified flag + status bar).
+void ui_textedit_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+// Aktifkan undo/redo historis operasi (0 = mati). Wajib dipanggil sebelum edit.
+void ui_textedit_enable_undo(ui_widget_t* widget, int ops);
+int  ui_textedit_undo(ui_widget_t* widget);       // 1 = teks berubah
+int  ui_textedit_redo(ui_widget_t* widget);       // 1 = teks berubah
+int  ui_textedit_can_undo(ui_widget_t* widget);
+int  ui_textedit_can_redo(ui_widget_t* widget);
+// Seleksi (blok teks): drag mouse / Shift+navigasi mengisinya sendiri.
+void ui_textedit_sel_all(ui_widget_t* widget);
+void ui_textedit_select(ui_widget_t* widget, int from, int to);
+int  ui_textedit_has_sel(ui_widget_t* widget);
+int  ui_textedit_sel_length(ui_widget_t* widget);
+int  ui_textedit_delete_sel(ui_widget_t* widget);   // 1 = ada yang dihapus
+// Clipboard (ui_clipboard_*): 1 = berhasil.
+int  ui_textedit_copy(ui_widget_t* widget);
+int  ui_textedit_cut(ui_widget_t* widget);
+int  ui_textedit_paste(ui_widget_t* widget);
+int  ui_textedit_insert(ui_widget_t* widget, const char* text);   // di kursor
+// Info untuk status bar (line/col 1-based, gaya Notepad).
+int  ui_textedit_length(ui_widget_t* widget);
+int  ui_textedit_line_count(ui_widget_t* widget);
+int  ui_textedit_line_start_idx(ui_widget_t* widget, int line1);
+void ui_textedit_cursor(ui_widget_t* widget, int* line, int* col);
+void ui_textedit_set_cursor(ui_widget_t* widget, int idx);
+// Cari/ganti: index (-1 = tidak ketemu). ignore_case != 0 = abaikan besar-kecil.
+int  ui_textedit_find(ui_widget_t* widget, const char* needle, int from, int ignore_case);
+int  ui_textedit_replace_all(ui_widget_t* widget, const char* needle, const char* with);
+// Word wrap (Format → Word Wrap): memperpendek baris panjang di layar.
+void ui_textedit_set_wrap(ui_widget_t* widget, int on);
+int  ui_textedit_wrap(ui_widget_t* widget);
+int  ui_textedit_scroll_rows(ui_widget_t* widget);   // jumlah baris LAYAR
+
 // --- Layout ---
+// Tampil/sembunyi widget tanpa menghapusnya. VBox/HBox MELEWATI anak yang
+// tersembunyi (tidak makan ruang), jadi baris opsional (bar cari Notepad)
+// bisa muncul-hilang tanpa menulis ulang tata letak.
+void ui_widget_set_visible(ui_widget_t* widget, int visible);
 // VBox: susun anaknya vertikal (masing-masing setinggi ukurannya,
 // diberi spacing pixel). Win disediakan agar API seragam tapi
 // widget hasilnya milik caller (bukan window).
@@ -188,10 +233,26 @@ ui_widget_t* ui_tab_create(ui_window_t* win, int w, int h);
 void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel);
 
 // --- MenuBar + Menu ---
-// MenuBar = bar full-width; ui_menubar_add_menu membuka dropdown (Menu).
+// MenuBar = bar full-width dengan judul berlebar mengikuti teksnya (gaya menu
+// aplikasi Windows), bukan dibagi rata selebar window.
 ui_widget_t* ui_menubar_create(ui_window_t* win);
 ui_widget_t* ui_menubar_add_menu(ui_widget_t* bar, const char* title);  // return Menu
 void ui_menu_add_item(ui_widget_t* menu, const char* label, ui_click_cb cb, void* userdata);
+// Item + kolom accelerator rata kanan ("Simpan          Ctrl+S").
+void ui_menu_add_item_acc(ui_widget_t* menu, const char* label, const char* acc,
+                          ui_click_cb cb, void* userdata);
+// Garis pemisah antar kelompok item.
+void ui_menu_add_sep(ui_widget_t* menu);
+// Tanda centang di gutter kiri (View > Word Wrap).
+void ui_menu_set_checked(ui_widget_t* menu, int index, int checked);
+// Item redup & tidak bereaksi klik (Undo/Redo saat tidak ada historis).
+void ui_menu_set_enabled(ui_widget_t* menu, int index, int enabled);
+
+// --- StatusBar ---
+// Pita status di dasar window: teks kiri ("Ln 1, Col 1") + teks kanan
+// ("0 karakter  |  Teks biasa  |  100%"). Ukuran di-set lewat ui_widget_set_size.
+ui_widget_t* ui_statusbar_create(ui_window_t* win);
+void ui_statusbar_set_text(ui_widget_t* widget, const char* left, const char* right);
 
 // --- Toolbar ---
 // Bar tombol full-width di bawah MenuBar.
@@ -225,6 +286,15 @@ typedef void (*ui_dialog_cb)(void* userdata, int index);
 void ui_dialog_show(ui_window_t* win, const char* title, const char* text,
                     const char* const* buttons, int n_buttons,
                     ui_dialog_cb cb, void* userdata);
+
+// --- Prompt (dialog + satu kolom input teks) ---
+// Pengganti dialog berkas: File > Buka / Simpan Sebagai.
+// cb(userdata, text): text = isi kolom saat OK, 0 bila dibatalkan (ESC/Batal).
+// Pointer text hanya valid selama callback (toolkit menyalinnya ke buffer
+// internal sebelum memanggil, lalu buffer itu dilepas setelah callback).
+typedef void (*ui_prompt_cb)(void* userdata, const char* text);
+void ui_prompt_show(ui_window_t* win, const char* title, const char* text,
+                    const char* initial, ui_prompt_cb cb, void* userdata);
 
 // --- Notification (toast) ---
 // Kotak kecil di pojok kanan-atas window; auto-expire setelah `ms` ms

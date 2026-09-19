@@ -50,8 +50,7 @@ int ata_write_block4k(uint64_t block_num, const void *buf) {
     return 0;
 }
 
-// --- kprint mock ---
-static int kprint_silent = 1;
+// --- kprint mock (diam: log KFS tidak perlu tampil di output test) ---
 void kprint(const char* s) { (void)s; }
 void serial_print(const char* s) { (void)s; }
 int  g_serial_ready = 0;
@@ -70,7 +69,12 @@ int  g_serial_ready = 0;
 #include "../kernel/fs/kfs_vnode.c"
 #include "../kernel/fs/kfs_shim.c"
 
-static uint32_t total_blocks_expected = DISK_SEC / 8;
+// Total block yang dikelola FS = seluruh disk DIKURANGI ekor crashdump yang
+// disisihkan panic handler (KZFS_CRASHDUMP_SECTORS, lihat include/kyuzenfs_v4.h).
+// Diperiksa di test_format_mount: area panic tidak boleh menggeser/menabrak
+// area data file user.
+static uint32_t total_blocks_expected =
+    (uint32_t)((DISK_SEC - KZFS_CRASHDUMP_SECTORS) / 8u);
 
 // ---- helpers ----
 static void write_file_via_shim(const char* path, const char* data, uint32_t size) {
@@ -101,7 +105,13 @@ static void test_format_mount(void) {
     assert(kfs_resolve_dir((char*)"/", NULL) == 1);
     assert(kfs_resolve_dir((char*)"/apps", NULL) == 1);
     assert(kfs_resolve_dir((char*)"/nope", NULL) == 0);
-    printf("PASS format/mount\n");
+
+    // Layout: FS berhenti sebelum area crashdump di ekor disk.
+    uint64_t tb = 0, fb = 0; uint32_t ti = 0, fi = 0;
+    kfs_v4_get_stats(&tb, &fb, &ti, &fi);
+    assert(tb == total_blocks_expected);
+    assert(ti > 0 && fi < ti);
+    printf("PASS format/mount (+ area crashdump disisihkan)\n");
 }
 
 static void test_file_crud(void) {

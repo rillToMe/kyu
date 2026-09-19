@@ -19,7 +19,7 @@ QEMU = qemu-system-x86_64.exe
 
 # Direktori sumber kernel (Ring 0)
 SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs kernel/fs apps \
-           graphics graphics/backend graphics/memory drivers/graphics/hw
+           graphics graphics/backend graphics/memory drivers/graphics/hw libs/color/src
 
 # ==========================================
 # lwIP Network Stack
@@ -79,7 +79,7 @@ $(shell mkdir -p $(BUILD_DIR))
 # header (mis. task.h) memicu rebuild semua .c yang meng-includenya. Tanpa
 # ini, object basi membaca struct dengan layout lama (pernah menggigit:
 # task_t tambah field, scheduler membaca tasks[] dengan stride basi).
-CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw
+CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw -Ilibs/color/include
 
 # Flags compiler untuk unit lwIP:
 #   - Mewarisi semua flag kernel (freestanding, mcmodel, mno-red-zone, dll.)
@@ -109,7 +109,7 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
-                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c,\
+                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c,\
                         $(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
@@ -190,6 +190,7 @@ compile_commands:
 # struct biasa di memori. TIDAK ikut build kernel (terkecualikan dari
 # C_SOURCES, jalankan eksplisit: make test-virtqueue).
 HOSTCC = clang
+HOSTCXX = clang++
 .PHONY: test-virtqueue
 test-virtqueue: test/virtqueue_test
 	./test/virtqueue_test
@@ -269,6 +270,23 @@ test-fork: test/fork_test
 test/fork_test: test/fork_test.c include/proc.h include/cred.h include/task.h include/vfs.h
 	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/fork_test.c -Iinclude
 
+# --- Host-side unit test: libs/color (tipe, blend, ruang warna, utility UI) ---
+# Sumber library asli dikompilasi di host (integer murni → tak butuh QEMU);
+# header dicek juga sebagai C++ (app userspace C++ memakainya).
+# Jalankan: make test-color
+COLOR_SRCS = libs/color/src/color_blend.c libs/color/src/color_space.c \
+             libs/color/src/color_utils.c
+COLOR_HDRS = libs/color/include/color_types.h libs/color/include/color_blend.h \
+             libs/color/include/color_space.h libs/color/include/color_utils.h
+
+.PHONY: test-color
+test-color: test/color_test
+	./test/color_test
+
+test/color_test: test/color_test.c test/color_cxx_check.cpp $(COLOR_SRCS) $(COLOR_HDRS)
+	$(HOSTCC) -O2 -Wall -Wextra -Ilibs/color/include -o $@ test/color_test.c $(COLOR_SRCS)
+	$(HOSTCXX) -std=c++17 -Wall -Wextra -fsyntax-only -Ilibs/color/include test/color_cxx_check.cpp
+
 # --- Host-side unit test: KyuzenFS V4 (bcache + extent engine + direktori) ---
 # test/kyuzenfs_v4_test.c meng-include kernel/fs/bcache.c dan modul
 # kfs_*.c langsung; ATA/heap/spinlock di-mock ke RAM.
@@ -296,7 +314,7 @@ mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 
 clean-tool:
 	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
-	      test/panic_test.exe testimg.img
+	      test/panic_test.exe test/color_test test/color_test.exe testimg.img
 
 # --- Cross-check: image buatan mkfs host harus termount oleh parser kernel ---
 # Target memformat testimg.img via ./mkfs.kyuzenfs lalu menjalankan test host
@@ -319,8 +337,31 @@ test/kyuzenfs_xcheck: test/kyuzenfs_xcheck.c $(KFS4_HDRS) $(KFS4_SRCS)
 test-panic: test/panic_test
 	./test/panic_test
 
-test/panic_test: test/panic_test.c kernel/panic.c include/panic.h include/display.h include/task.h include/timer.h
+test/panic_test: test/panic_test.c kernel/panic.c kernel/panic_log.c kernel/crashdump.c drivers/acpi.c \
+                 include/panic.h include/crashdump.h include/acpi.h include/display.h include/task.h include/timer.h
 	$(HOSTCC) -DPANIC_HOST_TEST -O1 -Wall -iquote test -iquote include -o $@ test/panic_test.c
+
+# TextEdit host test: apps/libui.cpp di-link apa adanya, syscall+libgui di-stub
+# (20 symbol). Menguji logika editor yang dipakai notepad: undo/redo per operasi,
+# seleksi + clipboard, find/replace_all, dan aritmetika baris LAYAR word wrap.
+# Jalankan: make test-textedit
+.PHONY: test-textedit
+test-textedit: test/textedit_test
+	./test/textedit_test
+
+test/textedit_test: test/textedit_test.cpp apps/libui.cpp include/libui.h include/libgui.h
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote include -o $@ test/textedit_test.cpp apps/libui.cpp
+
+# Desktop host test: desktop.c di-include langsung dengan syscall FS di-stub.\
+# Menguji discover_apps()/manifest DAN siklus notifikasi crash (kartu harus\
+# bisa ditutup oleh klik/waktu habis, bukan menempel selamanya).\
+# Jalankan: make test-desktop
+.PHONY: test-desktop
+test-desktop: test/desktop_manifest_test
+	./test/desktop_manifest_test
+
+test/desktop_manifest_test: test/desktop_manifest_test.c user_apps/desktop.c include/userlib.h include/libgui.h
+	$(HOSTCC) -O1 -Wall -iquote include -o $@ test/desktop_manifest_test.c
 
 # --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
 # Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer
@@ -418,12 +459,18 @@ $(BUILD_DIR)/boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png log
 	./limine/limine.exe bios-install $(BUILD_DIR)/boot_image.iso
 
 # Tahap 4: Boot up QEMU (Dengan Fitur Debugging 64-bit)
+# COM1 selalu diarahkan ke serial.log: kalau sistem membeku / panic, jejaknya
+# sudah ada di file itu tanpa perlu mengubah cara menjalankan (dan tanpa
+# menutup jendela QEMU lebih dulu).
 run: boot_image.iso
+	-rm -f serial.log
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
 		-smp 8 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
 		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
-		-nic user,model=e1000
+		-nic user,model=e1000 \
+		-serial file:serial.log
+	@echo "Jejak COM1 ada di serial.log (ekor file = kejadian terakhir)."
 
 # run + serial stdio: tangkap panic dump ke terminal (bukan cuma framebuffer BSOD)
 .PHONY: run-serial
