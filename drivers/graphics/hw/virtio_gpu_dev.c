@@ -183,7 +183,10 @@ static void serial_log_hex32(uint32_t v);   // fwd (definisi di bawah)
 // --- Setup kedua virtqueue ---
 // queue_size 32: present async butuh sampai 8 chain (4 rect x transfer+flush)
 // = 16 descriptor, plus headroom command sinkron (SET_SCANOUT). QEMU menawarkan
-// 64 untuk controlq — 32 memberi margin tanpa memboroskan ring.
+// 64 untuk controlq — 32 memberi margin tanpa memboroskan ring. Angka ini
+// hanya PERMINTAAN: virtq_init() menulisnya ke common_cfg lalu memakai hasil
+// baca-balik (device boleh mempertahankan ukurannya sendiri), jadi yang
+// dipakai driver dan device selalu sama.
 static int setup_queues(void) {
     int r = virtq_init(&g_vgpu.controlq, 0, 32, g_vgpu.common, g_vgpu.notify_base,
                        g_vgpu.notify_off_multiplier);
@@ -198,6 +201,8 @@ static int setup_queues(void) {
     serial_log_hex32((uint32_t)((uint8_t*)g_vgpu.cursorq.notify_addr - (uint8_t*)g_vgpu.notify_base));
     serial_log(" mult=");
     serial_log_hex32(g_vgpu.notify_off_multiplier);
+    serial_log(" qsize=");
+    serial_log_hex32((uint32_t)g_vgpu.controlq.queue_size);
     serial_log("\n");
     if (g_vgpu.controlq.queue_size > VGPU_FENCE_MAX_HEADS) {
         serial_log("[vgpu] queue_size melebihi tabel fence\n");
@@ -272,6 +277,33 @@ int virtio_gpu_dev_probe(void) {
         return -1;
     }
 
+    // Pool buffer async (A): satu pasang per batch in-flight. Gagal =
+    // probe gagal (present async butuh pool) → ghal jatuh ke software.
+    g_vgpu.async_ready = 0;
+    for (uint32_t i = 0; i < VGPU_ASYNC_PAIRS; i++) {
+        if (gpu_alloc_page(&g_vgpu.async_cmd[i][0]) != 0) break;
+        if (gpu_alloc_page(&g_vgpu.async_cmd[i][1]) != 0) {
+            gpu_free_pages(&g_vgpu.async_cmd[i][0], 1);
+            break;
+        }
+    }
+    {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < VGPU_ASYNC_PAIRS; i++)
+            if (g_vgpu.async_cmd[i][1].virt != NULL) n++;
+        if (n != VGPU_ASYNC_PAIRS) {
+            for (uint32_t i = 0; i < VGPU_ASYNC_PAIRS; i++) {
+                if (g_vgpu.async_cmd[i][0].virt != NULL)
+                    gpu_free_pages(&g_vgpu.async_cmd[i][0], 1);
+                if (g_vgpu.async_cmd[i][1].virt != NULL)
+                    gpu_free_pages(&g_vgpu.async_cmd[i][1], 1);
+            }
+            serial_log("[vgpu] async pool alloc failed\n");
+            return -1;
+        }
+    }
+    g_vgpu.async_ready = 1;
+
     // Phase 2C §9.4 — halaman cursorq. Gagal = non-fatal: cursor_command
     // return -1 dan compositor fallback ke software cursor.
     g_vgpu.cursor_lock.locked = 0;
@@ -326,8 +358,7 @@ static void dev_on_reap(uint32_t head) {
 
     uint8_t slot = g_vgpu.slot_of_head[head];
     g_vgpu.slot_of_head[head] = 0;
-    if (slot != 0 && g_vgpu.resp_page.virt != NULL) {
-        uint32_t type = 0;
+    if (slot != 0 && g_vgpu.resp_page.virt != NULL) {        uint32_t type = 0;
         memcpy(&type,
                (uint8_t*)g_vgpu.resp_page.virt + VGPU_RESP_SYNC_MAX + (uint32_t)slot * VGPU_RESP_SLOT,
                sizeof(type));
@@ -336,6 +367,18 @@ static void dev_on_reap(uint32_t head) {
             serial_log("[vgpu] async cmd error resp type=");
             serial_log_hex32(type);
             serial_log("\n");
+        }
+    }
+
+    // Kembalikan pasangan buffer async batch ini. Kedua chain batch
+    // menghitung mundur; nol = pasangan bebas dipinjam lagi.
+    {
+        uint8_t p = g_vgpu.pair_of_head[head];
+        g_vgpu.pair_of_head[head] = 0;
+        if (p != 0) {
+            uint8_t pi = (uint8_t)(p - 1);
+            if (pi < VGPU_ASYNC_PAIRS && g_vgpu.async_outstanding[pi] > 0)
+                g_vgpu.async_outstanding[pi]--;
         }
     }
 }
@@ -388,8 +431,10 @@ static uint8_t vgpu_next_slot(void) {
 // Wait memakai reap-loop virtq_poll (bukan virtq_wait) supaya chain async
 // yang selesai lebih dulu ikut tercatat di tabel fence — chain FIFO device
 // berarti completion fence bisa terjadi di tengah wait command sinkron.
-int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
-                           void* out, uint32_t out_len) {
+// try_lock=1: ambil cmd_lock TANPA menunggu (jalur panic, lihat
+// virtio_gpu_dev_command_try). Sisanya identik dengan jalur normal.
+static int dev_command_impl(const void* cmd, uint32_t cmd_len,
+                            void* out, uint32_t out_len, int try_lock) {
     if (!g_vgpu.initialized) return -1;
     if (cmd_len == 0) return -1;
 
@@ -397,7 +442,12 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
     if (cmd_pages > g_vgpu.cmd_pages_n) return -1;
 
     // IRQ-safe: buffer pre-alokasi dipakai ulang, dilindungi lock.
-    uint64_t lock_flags = spinlock_lock_irqsave(&g_vgpu.cmd_lock);
+    uint64_t lock_flags;
+    if (try_lock) {
+        if (!spinlock_try_lock_irqsave(&g_vgpu.cmd_lock, &lock_flags)) return -1;
+    } else {
+        lock_flags = spinlock_lock_irqsave(&g_vgpu.cmd_lock);
+    }
     g_vgpu.stats.cmd_count++;
     g_vgpu.stats.cmd_bytes += cmd_len;
 
@@ -443,6 +493,7 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
     if ((uint32_t)head < VGPU_FENCE_MAX_HEADS) {
         g_vgpu.fence_of_head[head] = 0;   // command sinkron — tanpa fence
         g_vgpu.slot_of_head[head] = 0;
+        g_vgpu.pair_of_head[head] = 0;    // sinkron tidak pakai pool async
     }
     g_vgpu.stats.notify_count++;
     virtq_notify(&g_vgpu.controlq);
@@ -461,6 +512,20 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
     return done;
 }
 
+int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
+                           void* out, uint32_t out_len) {
+    return dev_command_impl(cmd, cmd_len, out, out_len, 0);
+}
+
+// Varian jalur panic: satu command sinkron TANPA response, memakai cmd_lock
+// secara try-lock. Kalau CPU yang fault ternyata SEDANG memegang cmd_lock
+// (fault di dalam jalur command itu sendiri), menunggu lock di sini berarti
+// deadlock permanen — BSOD tidak akan pernah tergambar. Lebih baik command
+// dilewati: pemanggil (panic) mencobanya lagi di kesempatan berikutnya.
+int virtio_gpu_dev_command_try(const void* cmd, uint32_t cmd_len) {
+    return dev_command_impl(cmd, cmd_len, NULL, 0, 1);
+}
+
 // ------------------------------------------------------------
 // Phase 2C §9.1/§9.2 — batch submit + fence async present
 // ------------------------------------------------------------
@@ -475,7 +540,7 @@ uint64_t virtio_gpu_dev_submit2(const void* cmd1, uint32_t cmd1_len,
     if (!g_vgpu.initialized) return 0;
     if (cmd1_len == 0 || cmd2_len == 0) return 0;
     if (cmd1_len > 4096 || cmd2_len > 4096) return 0;
-    if (g_vgpu.cmd_pages_n < 2) return 0;
+    if (!g_vgpu.async_ready) return 0;
 
     // Dua chain x 2 descriptor. Bila freelist mepet, coba reap dulu —
     // completion frame sebelumnya mungkin belum pernah di-poll.
@@ -496,15 +561,31 @@ uint64_t virtio_gpu_dev_submit2(const void* cmd1, uint32_t cmd1_len,
     }
 
     uint64_t lock_flags = spinlock_lock_irqsave(&g_vgpu.cmd_lock);
+
+    // Pinjam satu pasang buffer eksklusif untuk batch ini. Tanpa pasangan
+    // bebas tidak ada submit (bukan timpa buffer outstanding — itulah wedge
+    // yang diperbaiki). Pool >= controlq penuh, jadi ini murni berarti
+    // device tidak me-reap.
+    int pair = -1;
+    for (uint32_t i = 0; i < VGPU_ASYNC_PAIRS; i++) {
+        if (g_vgpu.async_outstanding[i] == 0) { pair = (int)i; break; }
+    }
+    if (pair < 0) {
+        serial_log("[vgpu] submit2: async pool habis\n");
+        spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
+        return 0;
+    }
+    g_vgpu.async_outstanding[pair] = 2;   // dua chain; reap menghitung mundur
+
     g_vgpu.stats.cmd_count += 2;
     g_vgpu.stats.cmd_bytes += (uint64_t)cmd1_len + cmd2_len;
 
-    memcpy(g_vgpu.cmd_pages[0].virt, cmd1, cmd1_len);
-    memcpy(g_vgpu.cmd_pages[1].virt, cmd2, cmd2_len);
+    memcpy(g_vgpu.async_cmd[pair][0].virt, cmd1, cmd1_len);
+    memcpy(g_vgpu.async_cmd[pair][1].virt, cmd2, cmd2_len);
 
     uint64_t fence = ++g_vgpu.fence_counter;
-    virtio_gpu_ctrl_hdr_t* ch1 = (virtio_gpu_ctrl_hdr_t*)g_vgpu.cmd_pages[0].virt;
-    virtio_gpu_ctrl_hdr_t* ch2 = (virtio_gpu_ctrl_hdr_t*)g_vgpu.cmd_pages[1].virt;
+    virtio_gpu_ctrl_hdr_t* ch1 = (virtio_gpu_ctrl_hdr_t*)g_vgpu.async_cmd[pair][0].virt;
+    virtio_gpu_ctrl_hdr_t* ch2 = (virtio_gpu_ctrl_hdr_t*)g_vgpu.async_cmd[pair][1].virt;
     ch1->flags |= VIRTIO_GPU_FLAG_FENCE;
     ch1->fence_id = fence;
     ch2->flags |= VIRTIO_GPU_FLAG_FENCE;
@@ -519,21 +600,23 @@ uint64_t virtio_gpu_dev_submit2(const void* cmd1, uint32_t cmd1_len,
     uint32_t lens[2];
     uint16_t flags[2];
 
-    addrs[0] = g_vgpu.cmd_pages[0].phys; lens[0] = cmd1_len; flags[0] = 0;
+    addrs[0] = g_vgpu.async_cmd[pair][0].phys; lens[0] = cmd1_len; flags[0] = 0;
     addrs[1] = resp1; lens[1] = VGPU_RESP_SLOT; flags[1] = VIRTQ_DESC_F_WRITE;
     int head1 = virtq_submit(&g_vgpu.controlq, addrs, lens, flags, 2);
 
-    addrs[0] = g_vgpu.cmd_pages[1].phys; lens[0] = cmd2_len;
+    addrs[0] = g_vgpu.async_cmd[pair][1].phys; lens[0] = cmd2_len;
     addrs[1] = resp2;
     int head2 = (head1 >= 0) ? virtq_submit(&g_vgpu.controlq, addrs, lens, flags, 2) : -1;
 
     if (head1 >= 0) {
         g_vgpu.fence_of_head[head1] = fence;
         g_vgpu.slot_of_head[head1] = s1;
+        g_vgpu.pair_of_head[head1] = (uint8_t)(pair + 1);
     }
     if (head2 >= 0) {
         g_vgpu.fence_of_head[head2] = fence;
         g_vgpu.slot_of_head[head2] = s2;
+        g_vgpu.pair_of_head[head2] = (uint8_t)(pair + 1);
     }
 
     if (head1 >= 0 && head2 >= 0) {
@@ -547,10 +630,18 @@ uint64_t virtio_gpu_dev_submit2(const void* cmd1, uint32_t cmd1_len,
     // apa yang sudah masuk avail tetap di-notify supaya chain tidak
     // menggantung di ring, tapi batch dianggap gagal — caller skip present
     // rect ini (semantik §8.10: frame dilewati, dirty state dipertahankan).
+    // outstanding pasangan disesuaikan dengan chain yang benar-benar masuk:
+    // 0 = pasangan bebas lagi, 1 = reap head1 nanti membebaskannya.
     serial_log("[vgpu] submit2 partial submit\n");
     g_vgpu.stats.notify_count++;
     g_vgpu.stats.err_count++;
     virtq_notify(&g_vgpu.controlq);
+    if (head1 >= 0) {
+        // Satu chain masuk: reap-nya nanti yang membebaskan pasangan.
+        g_vgpu.async_outstanding[pair] = 1;
+    } else {
+        g_vgpu.async_outstanding[pair] = 0;
+    }
     if (head1 >= 0) { uint32_t l; dev_wait_head((uint32_t)head1, &l); }
     spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
     return 0;
@@ -558,6 +649,19 @@ uint64_t virtio_gpu_dev_submit2(const void* cmd1, uint32_t cmd1_len,
 
 int virtio_gpu_dev_poll_fences(void) {
     if (!g_vgpu.initialized) return -1;
+    // Wedge detector (C): device yang minta RESET/FAILED mematikan SEMUA
+    // queue — tanpa cek ini gejalanya hanya "timeout di mana-mana" yang
+    // butuh menitan untuk disimpulkan. Di-log sekali; submit tetap dicoba
+    // (fail-open) supaya recovery device tidak dikunci driver.
+    if (!g_vgpu.dev_wedged && g_vgpu.common != NULL) {
+        uint8_t st = g_vgpu.common->device_status;
+        if (st & (VIRTIO_STATUS_DEVICE_NEEDS_RESET | VIRTIO_STATUS_FAILED)) {
+            g_vgpu.dev_wedged = 1;
+            serial_log("[vgpu] device NEEDS_RESET/FAILED status=");
+            serial_log_hex32((uint32_t)st);
+            serial_log("\n");
+        }
+    }
     int n = 0;
     for (;;) {
         uint32_t h = 0, l = 0;
@@ -607,8 +711,17 @@ int virtio_gpu_dev_cursor_command(const void* cmd, uint32_t cmd_len) {
     if (!g_vgpu.initialized) return -1;
     if (cmd_len == 0 || cmd_len > 512) return -1;
     if (g_vgpu.cursor_page.virt == NULL) return -1;   // alloc probe gagal
+    if (g_vgpu.cursor_dead) return -1;   // cursorq tak pernah selesai — hw off
 
     uint64_t lock_flags = spinlock_lock_irqsave(&g_vgpu.cursor_lock);
+    // Command sebelumnya masih outstanding: jangan timpa cursor_page
+    // (hazard yang sama dengan pool async — satu buffer, satu pemilik).
+    // Caller (move per-frame) cukup melewatkan frame ini.
+    if (g_vgpu.cursor_busy) {
+        spinlock_unlock_irqrestore(&g_vgpu.cursor_lock, lock_flags);
+        return -1;
+    }
+    g_vgpu.cursor_busy = 1;
     g_vgpu.stats.cmd_count++;
     g_vgpu.stats.cmd_bytes += cmd_len;
 
@@ -625,6 +738,7 @@ int virtio_gpu_dev_cursor_command(const void* cmd, uint32_t cmd_len) {
     int head = virtq_submit(&g_vgpu.cursorq, addrs, lens, flags, 2);
     if (head < 0) {
         serial_log("[vgpu] cursorq submit penuh\n");
+        g_vgpu.cursor_busy = 0;
         spinlock_unlock_irqrestore(&g_vgpu.cursor_lock, lock_flags);
         return -1;
     }
@@ -637,11 +751,12 @@ int virtio_gpu_dev_cursor_command(const void* cmd, uint32_t cmd_len) {
     uint64_t t0;
     stats_wait_begin(&t0);
     uint32_t iter = 0;
+    uint32_t written = 0;
     int r = -1;
     for (;;) {
         uint32_t h = 0, l = 0;
         if (virtq_poll(&g_vgpu.cursorq, &h, &l) == 0) {
-            if (h == (uint32_t)head) { r = 0; break; }
+            if (h == (uint32_t)head) { r = 0; written = l; break; }
             continue;   // chain lama selesai lebih dulu — direclaim oleh poll
         }
         if (++iter > VIRTQ_POLL_MAX_ITER) {
@@ -651,8 +766,30 @@ int virtio_gpu_dev_cursor_command(const void* cmd, uint32_t cmd_len) {
         __asm__ volatile("pause");
     }
     stats_wait_end(t0);
+    g_vgpu.cursor_busy = 0;
 
-    if (r == 0) {
+    // Timeout beruntun = cursorq mati (device wedge / queue tak diproses).
+    // Dinyatakan dead supaya move per-frame berikutnya gagal CEPAT (tanpa
+    // timeout 10 jt iterasi di TIMER IRQ) dan compositor memakai software
+    // cursor. Sukses sekali me-reset hitungan (transien dimaafkan).
+    if (r != 0) {
+        g_vgpu.cursor_timeouts++;
+        if (g_vgpu.cursor_timeouts >= VGPU_CURSOR_MAX_TIMEOUTS &&
+            !g_vgpu.cursor_dead) {
+            g_vgpu.cursor_dead = 1;
+            serial_log("[vgpu] cursorq dead — hw cursor off\n");
+        }
+    } else {
+        g_vgpu.cursor_timeouts = 0;
+    }
+
+    // Cursorq TIDAK punya response body di QEMU: virtio_gpu_handle_cursor()
+    // hanya virtqueue_push(vq, elem, 0) — tidak ada virtio_gpu_ctrl_response()
+    // seperti controlq. Jadi chain selesai dengan written==0 = SUKSES, dan
+    // isi byte di rbase+512 hanyalah sisa buffer kita (0) — bukan error
+    // device. Validasi hanya kalau device benar-benar menulis payload
+    // (device lain/virtio-gpu 3D boleh jadi mengirim header).
+    if (r == 0 && written >= sizeof(uint32_t)) {
         uint32_t type = 0;
         memcpy(&type, rbase + 512, sizeof(type));
         if (type != VIRTIO_GPU_RESP_OK_NODATA) {

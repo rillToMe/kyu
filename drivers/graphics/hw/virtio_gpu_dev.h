@@ -35,6 +35,18 @@
 // diminta setup_queues; diverifikasi saat probe.
 #define VGPU_FENCE_MAX_HEADS 64
 
+// Phase 2C §9.1 — pool pasangan buffer command untuk submit ASYNC.
+// Bug yang diperbaiki: submit2 memakai ulang 2 halaman statis (cmd_pages)
+// sementara batch lama masih outstanding → device membaca command korup →
+// wedge permanen (controlq+cursorq mati, tiap flush = timeout penuh).
+// Tiap batch in-flight PINJAM satu pasang eksklusif; reap mengembalikannya.
+// 8 pasang x 4 desc = 32 = controlq penuh — pool tak pernah lebih sempit
+// dari queue, jadi "pool habis" murni berarti device tidak me-reap.
+#define VGPU_ASYNC_PAIRS 8
+
+// Batas timeout cursor beruntun sebelum HW cursor dinyatakan mati.
+#define VGPU_CURSOR_MAX_TIMEOUTS 3
+
 // --- Phase 2C §9.6 — statistik per-frame GPU (driver core) ---
 // Semua counter kumulatif sejak boot; konsumen (syscall/shell/settings)
 // mengambil dua sampel dan menghitung delta per-frame sendiri.
@@ -97,6 +109,27 @@ typedef struct {
     uint8_t  slot_of_head[VGPU_FENCE_MAX_HEADS];  // response slot async per head
     uint32_t async_slot_seq;                      // round-robin alokasi slot
 
+    // Pool buffer command async (lihat VGPU_ASYNC_PAIRS): satu pasang per
+    // batch in-flight. outstanding[i] = chain belum selesai (0 = bebas).
+    // pair_of_head[head] = index pasang+1 (0 = chain sinkron / tidak ada).
+    gpu_page_t async_cmd[VGPU_ASYNC_PAIRS][2];
+    uint8_t  async_outstanding[VGPU_ASYNC_PAIRS];
+    uint8_t  pair_of_head[VGPU_FENCE_MAX_HEADS];
+    int      async_ready;   // 1 = pool teralokasi, submit2 boleh jalan
+
+    // Cursor: busy = command outstanding (jangan timpa cursor_page);
+    // timeouts beruntun >= VGPU_CURSOR_MAX_TIMEOUTS = device tak pernah
+    // menyelesaikan cursorq → dead, semua cursor_command gagal cepat dan
+    // compositor jatuh ke software cursor.
+    int      cursor_busy;
+    uint32_t cursor_timeouts;
+    int      cursor_dead;
+
+    // Wedge detector (C): 1 = device pernah lapor NEEDS_RESET/FAILED.
+    // Di-log sekali; submit baru tetap dicoba (fail-open) supaya recovery
+    // QEMU (mis. re-enable) tidak dikunci mati oleh driver.
+    int      dev_wedged;
+
     // Display info (dari GET_DISPLAY_INFO)
     uint32_t scanout_width;
     uint32_t scanout_height;
@@ -118,6 +151,11 @@ int virtio_gpu_dev_probe(void);
 // `out` = buffer response (harus ada ruang). Return 0 sukses, <0 error.
 int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
                            void* out, uint32_t out_len);
+
+// Jalur panic/BSOD: satu command sinkron tanpa response, cmd_lock diambil
+// TRY-LOCK (tidak pernah menunggu). Return 0 sukses, -1 bila device belum init
+// / lock dipegang CPU lain (kemungkinan besar CPU yang fault) / timeout.
+int virtio_gpu_dev_command_try(const void* cmd, uint32_t cmd_len);
 
 // --- Phase 2C §9.1/§9.2: batching + fence async present ---
 // Kirim DUA command sebagai DUA chain terpisah (spec: satu command per

@@ -74,17 +74,18 @@ int main(void) {
     memset(&g_common, 0, sizeof(g_common));
     memset(g_notify_reg, 0xAA, sizeof(g_notify_reg));
     g_common.queue_size = 8;        // tawaran device
-    g_common.queue_notify_off = 0;
+    g_common.queue_notify_off = 1;
 
     printf("virtqueue test (multi-chain Phase 2C)\n");
 
     virtq_t vq;
-    int r = virtq_init(&vq, 0 /*controlq*/, 8, &g_common, g_notify_reg, sizeof(uint16_t));
+    int r = virtq_init(&vq, 0 /*controlq*/, 8, &g_common, g_notify_reg, 4);
     CHECK(r == 0, "init sukses");
+    CHECK(vq.notify_addr == &g_notify_reg[2], "notify offset uses bytes: 1 * 4 = 4");
     CHECK(vq.queue_size == 8, "queue_size = tawaran device");
     CHECK(vq.num_free == 8 && vq.free_head == 0, "freelist penuh, head=0");
     CHECK(vq.avail->idx == 0 && vq.used->idx == 0, "avail/used di-nolkan");
-    CHECK(g_notify_reg[0] == 0xAAAA, "notify belum tertulis sebelum submit");
+    CHECK(*vq.notify_addr == 0xAAAA, "notify belum tertulis sebelum submit");
 
     // --- dua chain outstanding (deferred kick §9.1) ---
     uint64_t a1[2] = {0xAAAA0000, 0xBBBB0000};
@@ -108,7 +109,7 @@ int main(void) {
 
     // SATU notify untuk dua chain.
     virtq_notify(&vq);
-    CHECK(g_notify_reg[0] == 0, "notify menulis queue_index 0");
+    CHECK(*vq.notify_addr == 0, "notify menulis queue_index 0");
 
     // --- completion OUT-OF-ORDER: chain#2 selesai dulu ---
     device_complete(&vq, (uint32_t)head2, 128);

@@ -32,8 +32,10 @@ void virtio_gpu_cmd_attach_backing(virtio_gpu_resource_attach_backing_t* c,
                                    uint32_t resource_id,
                                    uint32_t nr_entries);
 
-// Build RESOURCE_DETACH_BACKING.
-void virtio_gpu_cmd_detach_backing(virtio_gpu_ctrl_hdr_t* hdr,
+// Build RESOURCE_DETACH_BACKING (command 32 byte: hdr + resource_id +
+// padding — mengirim hanya header membuat device menolak "command data size
+// incorrect" dan DETACH jadi no-op).
+void virtio_gpu_cmd_detach_backing(virtio_gpu_resource_detach_backing_t* c,
                                    uint32_t resource_id);
 
 // Build SET_SCANOUT.
@@ -48,11 +50,15 @@ void virtio_gpu_cmd_resource_flush(virtio_gpu_resource_flush_t* c,
                                    uint32_t x, uint32_t y,
                                    uint32_t w, uint32_t h);
 
-// Build TRANSFER_TO_HOST_2D.
+// Build TRANSFER_TO_HOST_2D. `pitch_bytes` = lebar satu baris backing
+// (resource linear = width * 4). Command membawa offset = y*pitch + x*4 —
+// device memakai offset itu sebagai awal baris sumber, jadi jangan diisi 0
+// untuk rect yang tidak mulai di (0,0).
 void virtio_gpu_cmd_transfer_to_host(virtio_gpu_transfer_to_host_2d_t* c,
                                      uint32_t resource_id,
                                      uint32_t x, uint32_t y,
-                                     uint32_t w, uint32_t h);
+                                     uint32_t w, uint32_t h,
+                                     uint32_t pitch_bytes);
 
 // Build UPDATE_CURSOR (set gambar + posisi kursor; resource 64x64).
 void virtio_gpu_cmd_update_cursor(virtio_gpu_update_cursor_t* c,

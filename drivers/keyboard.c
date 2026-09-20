@@ -1,6 +1,7 @@
 #include "io.h"
 #include <stdint.h>
 #include "spinlock.h"
+#include "panic.h"   // panic_is_locked() — lihat guard di keyboard_handler()
 
 // Phase 5B: event dikirim per-task — KWM menentukan tujuan (routing).
 extern void push_event_to(int task_id, uint32_t type, int32_t p1, int32_t p2, int32_t p3, int32_t win_id);
@@ -68,6 +69,22 @@ void pic_remap() {
 }
 
 void keyboard_handler() {
+    // PANIC LOCKDOWN: saat layar BSOD aktif, INPUT dipegang loop panic
+    // (polling PS/2 di kernel/panic/panic_hw.c) dan bukannya IRQ ini.
+    //
+    // Kenapa harus di-guard: jalur panic hanya `cli` di CPU yang fault, jadi
+    // IRQ1 masih dilayani CPU lain — dan handler ini MEMBACA port 0x60, artinya
+    // ia menelan scancode yang seharusnya dibaca loop panic. Gejalanya: tombol
+    // [R] reboot / [S] shutdown di layar BSOD tidak pernah terdeteksi.
+    //
+    // EOI tetap dikirim supaya state PIC/APIC konsisten, tapi port data TIDAK
+    // disentuh — byte-nya tetap di output buffer 8042 sampai loop panic
+    // membacanya.
+    if (panic_is_locked()) {
+        outb(0x20, 0x20);   // End of Interrupt
+        return;
+    }
+
     uint8_t status = inb(0x64);
 
     // Tambahkan pelindung: JANGAN BACA jika Bit 5 (Mouse) menyala!

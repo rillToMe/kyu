@@ -32,6 +32,7 @@ bin/
 out/
 /graphify-out
 
+stdlib/llvm-project
 
 #file
 run.md

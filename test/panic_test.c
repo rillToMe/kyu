@@ -54,6 +54,50 @@ static display_mode_t g_mode = { FB_W, FB_H, FB_PITCH, 32, 0 };
 const display_mode_t* display_get_mode(void) { return &g_mode; }
 
 // =====================================================================
+// MOCK: jalur scanout darurat GHAL (graphics/ghal.h)
+// =====================================================================
+// panic.c menggambar ke scanout device lebih dulu (virtio-gpu: resource milik
+// compositor; menulis fb Limine tidak lagi terlihat) dan hanya fallback ke
+// framebuffer kalau scanout itu tidak ada. Mock ini bisa menyalakan/mematikan
+// ketersediaannya, plus menolak kiriman (cmd_lock dipegang CPU lain), supaya
+// KETIGA sifat itu teruji.
+#define SCANOUT_W 1024
+#define SCANOUT_H 768
+static uint32_t SCANOUT[SCANOUT_W * SCANOUT_H];
+static int g_scanout_ok = 0;             // 0 = backend tanpa scanout (software)
+static int g_scanout_refused = 0;        // 1 = device/lock sibuk → flush ditolak
+static int g_scanout_flushes = 0;        // kiriman yang diterima device
+static int g_scanout_full_seen = 0;      // ada kiriman menutup seluruh layar
+static int g_scanout_small_seen = 0;     // ada kiriman sebagian (bukan full)
+static int g_scanout_oversize = 0;       // rect keluar batas scanout (harus 0)
+static uint32_t g_scanout_last[4];
+
+int ghal_scanout_map(uint32_t** pixels, uint32_t* width, uint32_t* height,
+                     uint32_t* pitch_px) {
+    if (!g_scanout_ok || !pixels || !width || !height || !pitch_px) return -1;
+    *pixels = SCANOUT;
+    *width = SCANOUT_W; *height = SCANOUT_H; *pitch_px = SCANOUT_W;
+    return 0;
+}
+
+int ghal_scanout_flush(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    g_scanout_last[0] = x; g_scanout_last[1] = y;
+    g_scanout_last[2] = w; g_scanout_last[3] = h;
+    if (g_scanout_refused) return -1;
+    g_scanout_flushes++;
+    if (x + w > SCANOUT_W || y + h > SCANOUT_H) g_scanout_oversize = 1;
+    if (w == SCANOUT_W && h == SCANOUT_H) g_scanout_full_seen = 1;
+    else g_scanout_small_seen = 1;
+    return 0;
+}
+
+static int scanout_has_ink(void) {
+    for (size_t i = 0; i < (size_t)SCANOUT_W * SCANOUT_H; i++)
+        if (SCANOUT[i] != 0u && SCANOUT[i] != 0x001144u) return 1;   // != C_BG
+    return 0;
+}
+
+// =====================================================================
 // MOCK: serial (COM1 mirror) + konsol kprint
 // =====================================================================
 #define SER_MAX 131072
@@ -197,7 +241,7 @@ static uint8_t DISK[512u * DISK_SECTORS];
 
 // Seam uji guard panic bersarang: kalau dipasang, tulis sektor pertama akan
 // memicu fault baru di tengah penulisan crashdump.
-void exception_handler(registers_t* r);    // dari kernel/panic.c (di-include di bawah)
+void exception_handler(registers_t* r);    // dari kernel/panic/panic.c (di-include di bawah)
 
 static int g_nested_armed = 0;
 static int g_nested_fired = 0;
@@ -235,12 +279,18 @@ uint32_t ata_get_total_sectors(void) { return DISK_SECTORS; }
 // =====================================================================
 // MODUL YANG DIUJI (include langsung; static-nya jadi milik TU ini)
 //   Urutan tidak penting: semuanya lewat prototype di header.
+//   kernel/panic/ dipecah empat (orchestrator, gambar, hardware, diagnostik);
+//   keempatnya di-include di sini karena kernel biasanya mengompilasi mereka
+//   terpisah (lihat SRC_DIRS di Makefile).
 // =====================================================================
 #include "../kernel/panic_log.c"
 #include "../kernel/crashdump.c"
 #include "../kernel/crash_archive.c"
 #include "../drivers/acpi.c"
-#include "../kernel/panic.c"
+#include "../kernel/panic/panic_hw.c"
+#include "../kernel/panic/panic_draw.c"
+#include "../kernel/panic/panic_explain.c"
+#include "../kernel/panic/panic.c"
 
 // =====================================================================
 // DECODE FRAMEBUFFER -> TEKS (untuk memeriksa tata letak)
@@ -414,7 +464,15 @@ static void test_reboot_hook(void) {
 }
 
 static void scenario_begin(int task_id, const char* task_name, uint8_t kind) {
-    panic_host_test_reset();
+    panic_host_test_reset();       // termasuk reset target gambar panic
+    g_scanout_ok = 0;              // default: tanpa scanout device (fallback fb)
+    g_scanout_refused = 0;
+    g_scanout_flushes = 0;
+    g_scanout_full_seen = 0;
+    g_scanout_small_seen = 0;
+    g_scanout_oversize = 0;
+    memset(g_scanout_last, 0, sizeof(g_scanout_last));
+    memset(SCANOUT, 0, sizeof(SCANOUT));
     panic_set_reboot_hook(test_reboot_hook);
     ser_len = 0; SER[0] = '\0';
     kp_len = 0;  KP[0] = '\0';
@@ -908,6 +966,77 @@ static void test_screen_drawn_before_persist(void) {
           "urutan: persistensi selesai tanpa memicu reboot");
 }
 
+// Layar BSOD memakai scanout device (virtio-gpu) bila tersedia: piksel harus
+// mendarat di memori scanout DAN dikirim ke device — bukan ditulis ke
+// framebuffer Limine, yang pada backend itu tidak lagi terlihat di layar.
+static void test_bsod_uses_device_scanout(void) {
+    scenario_begin(2, "notepad", TASK_KIND_SPAWNED);
+    g_scanout_ok = 1;
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(scanout_has_ink() == 1,
+          "scanout: layar BSOD digambar ke memori scanout device");
+    check(fb_has_bsod_ink() == 0,
+          "scanout: framebuffer Limine TIDAK ditulis (satu target, bukan dua)");
+    check(g_scanout_flushes == 2,
+          "scanout: layar + baris informasi dikirim ke device (2 kiriman)");
+    check(g_scanout_full_seen == 1,
+          "scanout: kiriman pertama menutup seluruh layar (BSOD utuh, bukan per baris)");
+    check(g_scanout_small_seen == 1,
+          "scanout: perubahan berikutnya dikirim sebagian (baris info), bukan layar penuh");
+    check(g_scanout_oversize == 0,
+          "scanout: rect yang dikirim selalu di dalam batas scanout");
+    check(ser_find("scanout device") && !ser_find("FALLBACK framebuffer"),
+          "scanout: laporan serial menyebut target scanout device");
+    check(g_panic_test_reboots == 0 && g_reboot_hook_calls == 0,
+          "scanout: tanpa tombol tetap tidak ada reboot otomatis");
+}
+
+// Tanpa scanout device (backend software / panic sebelum compositor init)
+// layar BSOD harus tetap muncul lewat framebuffer: jalur lama tidak boleh
+// hilang, dan tidak ada kiriman ke device yang dicoba.
+static void test_bsod_falls_back_to_framebuffer(void) {
+    scenario_begin(2, "terminal", TASK_KIND_SPAWNED);
+    g_scanout_ok = 0;
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(fb_has_bsod_ink() == 1,
+          "fallback: BSOD digambar ke framebuffer bila scanout device tidak ada");
+    check(scanout_has_ink() == 0 && g_scanout_flushes == 0,
+          "fallback: memori scanout device tidak disentuh sama sekali");
+    g_fb_cached = 0;
+    check(fb_find("PENYEBAB") && fb_find("TIDAK ada reboot otomatis"),
+          "fallback: layar BSOD tetap lengkap seperti sebelumnya");
+    check(ser_find("FALLBACK framebuffer"),
+          "fallback: alasan fallback dilaporkan ke serial");
+}
+
+// Kiriman ke device bisa ditolak (cmd_lock sedang dipegang CPU lain — bisa
+// jadi CPU yang fault). Kotak kotor harus dipertahankan supaya percobaan
+// berikutnya mengirimnya ulang, bukan menganggap layar sudah sampai.
+static void test_scanout_flush_retried_after_refusal(void) {
+    scenario_begin(2, "viewer", TASK_KIND_SPAWNED);
+    g_scanout_ok = 1;
+    g_scanout_refused = 1;      // device sibuk selama panic menggambar
+    registers_t r = user_pf();
+
+    exception_handler(&r);
+
+    check(g_scanout_flushes == 0,
+          "scanout: kiriman yang ditolak tidak dihitung sebagai terkirim");
+    g_scanout_refused = 0;      // device kembali siap
+    p_flush();                  // = percobaan berikutnya di loop BSOD
+    check(g_scanout_flushes == 1 && g_scanout_full_seen == 1,
+          "scanout: kotak kotor dipertahankan & dikirim ulang setelah ditolak");
+    p_flush();
+    check(g_scanout_flushes == 1,
+          "scanout: setelah terkirim, flush berikutnya tidak mengirim lagi (no-op)");
+}
+
 // Panic bersarang tidak boleh membekukan sistem secara SENYAP: selain dicatat
 // ke serial, layar harus memberi tanda (layar panic pertama tetap berlaku).
 static void test_nested_panic_banner(void) {
@@ -996,6 +1125,41 @@ static void acpi_build(int rev, uint16_t pm1a, uint16_t pm1b) {
 
 static uint64_t acpi_base(void) { return (uint64_t)(uintptr_t)ACPI; }
 
+// Bangun DSDT di ACPI+0x800 berisi satu Name _S5 dengan 2 elemen yang
+// diberikan sebagai bytecode AML mentah (bentuk umum: {7,7} di UEFI).
+static void dsdt_build(const uint8_t* body, uint32_t body_len) {
+    memset(ACPI + 0x800, 0, 256);
+    uint8_t* d = ACPI + 0x800;
+    memcpy(d, "DSDT", 4);
+    uint32_t tlen = 36u + body_len;
+    *(uint32_t*)(d + 4) = tlen;
+    *(uint8_t*)(d + 8) = 2;
+    memcpy(d + 36, body, body_len);
+    set_checksum(d, tlen, 9);
+}
+
+// FADT panjang (244 byte) dengan pointer DSDT + RESET_REG generik, untuk
+// menguji wiring _S5 dan reset register (acpi_build() di atas sengaja
+// pendek/tanpa DSDT — itu mengunci jalur fallback).
+static void acpi_build_x(uint16_t pm1a, uint32_t dsdt32, uint64_t xdsdt,
+                         uint16_t rport, uint8_t rval) {
+    acpi_build(2, pm1a, 0);
+    uint8_t* fadt = ACPI + 0x400;
+    memset(fadt, 0, 256);
+    memcpy(fadt, "FACP", 4);
+    *(uint32_t*)(fadt + 4) = 244;
+    *(uint8_t*)(fadt + 8) = 2;
+    *(uint32_t*)(fadt + 0x40) = pm1a;
+    *(uint32_t*)(fadt + 0x28) = dsdt32;       // DSDT 32-bit
+    *(uint8_t*)(fadt + 0x59) = 2;             // PM1_CNT_LEN
+    *(uint8_t*)(fadt + 0x74) = 1;             // RESET_REG: SystemIO
+    *(uint8_t*)(fadt + 0x75) = 8;             // ... 8-bit
+    *(uint64_t*)(fadt + 0x78) = rport;        // ... alamat port
+    *(uint8_t*)(fadt + 0x80) = rval;          // RESET_VALUE
+    *(uint64_t*)(fadt + 0x8C) = xdsdt;        // X_DSDT
+    set_checksum(fadt, 244, 9);
+}
+
 // BUG YANG PERNAH TERJADI (QEMU BIOS, boot langsung BSOD #GP di byte pertama
 // RSDP): alamat dari Limine sudah virtual, jadi menambah hhdm_offset lagi
 // menghasilkan 0xFFFF0000_000F52E0 (non-kanonik). Test ini mengunci perilaku
@@ -1050,6 +1214,82 @@ static void test_acpi_parse(void) {
           "ACPI: sebelum acpi_early_init() tidak ada port yang diklaim");
     check(acpi_poweroff_raw() == 0,
           "ACPI: power-off tanpa FADT = gagal rapi (fallback port emulator)");
+    check(acpi_reset_raw() == 0,
+          "ACPI: reset tanpa FADT = gagal rapi (lanjut rantai reboot)");
+}
+
+static void test_acpi_s5(void) {
+    uint8_t a = 0, b = 0;
+
+    // Bentuk umum UEFI: Name _S5, Package {Byte 7, Byte 7}.
+    const uint8_t s5_77[] = { 0x08,'_','S','5','_', 0x12,0x05,0x02,
+                              0x0A,0x07, 0x0A,0x07 };
+    dsdt_build(s5_77, sizeof(s5_77));
+    a = b = 0;
+    check(acpi_parse_s5(ACPI + 0x800, 48, &a, &b) == 1 && a == 7 && b == 7,
+          "ACPI: _S5 {7,7} ByteConst terparse");
+
+    // Varian encoding: ZeroOp + OneOp.
+    const uint8_t s5_01[] = { 0x08,'_','S','5','_', 0x12,0x03,0x02, 0x00,0x01 };
+    dsdt_build(s5_01, sizeof(s5_01));
+    a = b = 0xFF;
+    check(acpi_parse_s5(ACPI + 0x800, 64, &a, &b) == 1 && a == 0 && b == 1,
+          "ACPI: _S5 ZeroOp/OneOp terparse");
+
+    // Tanpa _S5 (DSDT valid tapi tak berisi Name itu) -> gagal rapi.
+    const uint8_t nos5[] = { 0x08,'_','S','0','_', 0x12,0x03,0x02, 0x00,0x01 };
+    dsdt_build(nos5, sizeof(nos5));
+    check(acpi_parse_s5(ACPI + 0x800, 40, &a, &b) == 0,
+          "ACPI: DSDT tanpa _S5 = tidak ketemu (fallback 5)");
+
+    // Signature salah / panjang rusak -> tolak.
+    dsdt_build(s5_77, sizeof(s5_77));
+    ACPI[0x800] = 'X';
+    check(acpi_parse_s5(ACPI + 0x800, 48, &a, &b) == 0,
+          "ACPI: DSDT signature salah ditolak");
+    dsdt_build(s5_77, sizeof(s5_77));
+    check(acpi_parse_s5(ACPI + 0x800, 10, &a, &b) == 0,
+          "ACPI: DSDT terpotong ditolak");
+    // Package terpotong di tengah elemen -> tolak (tak ada baca liar).
+    const uint8_t s5_cut[] = { 0x08,'_','S','5','_', 0x12,0x05,0x02, 0x0A };
+    dsdt_build(s5_cut, sizeof(s5_cut));
+    check(acpi_parse_s5(ACPI + 0x800, 44, &a, &b) == 0,
+          "ACPI: _S5 terpotong ditolak");
+}
+
+static void test_acpi_reset_and_s5_wiring(void) {
+    acpi_pm_t pm;
+
+    // DSDT32 + RESET_REG generik (0xCF9=0x06): SLP_TYP dari _S5, bukan 5.
+    // (FADT dulu, DSDT kemudian — acpi_build_x me-memset seluruh area uji.)
+    const uint8_t s5_77[] = { 0x08,'_','S','5','_', 0x12,0x05,0x02,
+                              0x0A,0x07, 0x0A,0x07 };
+    acpi_build_x(0x0600, 0x800, 0, 0xCF9, 0x06);
+    dsdt_build(s5_77, sizeof(s5_77));
+    memset(&pm, 0, sizeof(pm));
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 1,
+          "ACPI: FADT panjang + DSDT32 terparse");
+    check(pm.slp_typa == 7 && pm.slp_typb == 7,
+          "ACPI: SLP_TYP diambil dari _S5 DSDT (7, bukan fallback 5)");
+    check(pm.has_reset == 1 && pm.reset_port == 0xCF9 && pm.reset_value == 0x06,
+          "ACPI: RESET_REG SystemIO 8-bit + RESET_VALUE terparse");
+
+    // X_DSDT diutamakan bila DSDT32 nol.
+    acpi_build_x(0x0600, 0, 0x800, 0xCF9, 0x06);
+    dsdt_build(s5_77, sizeof(s5_77));
+    memset(&pm, 0, sizeof(pm));
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 1 &&
+          pm.slp_typa == 7,
+          "ACPI: X_DSDT dipakai bila DSDT32 nol");
+
+    // RESET_REG bukan SystemIO (mis. MemoryMapped) -> dilewati, bukan dipakai.
+    acpi_build_x(0x0600, 0x800, 0, 0xCF9, 0x06);
+    ACPI[0x400 + 0x74] = 0;                       // SpaceId = SystemMemory
+    set_checksum(ACPI + 0x400, 244, 9);
+    memset(&pm, 0, sizeof(pm));
+    check(acpi_parse_rsdp(ACPI + 0x100, acpi_base(), &pm) == 1 &&
+          pm.has_reset == 0,
+          "ACPI: RESET_REG non-IO dilewati (tanpa MMIO di modul ini)");
 }
 
 // =====================================================================
@@ -1098,6 +1338,9 @@ int main(int argc, char** argv) {
 
     RUN(test_user_fault_never_reads_user_memory);
     RUN(test_screen_drawn_before_persist);
+    RUN(test_bsod_uses_device_scanout);
+    RUN(test_bsod_falls_back_to_framebuffer);
+    RUN(test_scanout_flush_retried_after_refusal);
     RUN(test_nested_panic_banner);
 
     RUN(test_crash_notice_before_publish);
@@ -1107,6 +1350,8 @@ int main(int argc, char** argv) {
 
     RUN(test_acpi_rsdp_pointer);
     RUN(test_acpi_parse);
+    RUN(test_acpi_s5);
+    RUN(test_acpi_reset_and_s5_wiring);
 #undef RUN
 
     printf("\n%d skenario gagal\n", g_fails);

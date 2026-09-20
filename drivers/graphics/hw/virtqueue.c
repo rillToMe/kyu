@@ -26,6 +26,19 @@ int virtq_init(virtq_t* vq, uint16_t queue_index, uint16_t queue_size,
     if (queue_size > dev_size) queue_size = dev_size;
     if (queue_size > VG_VQ_MAX_SIZE) queue_size = VG_VQ_MAX_SIZE;
 
+    // Ukuran ring harus DISEPAKATI, bukan diasumsikan. Kalau guest tidak
+    // menulis queue_size, device tetap memakai ukuran bawaannya (QEMU: 64
+    // untuk controlq) sedangkan driver memakai angka di atas (32) → rumus
+    // slot `avail->ring[idx % N]` / `used->ring[idx % N]` beda modulus dan
+    // completion/fence nyantol ke chain yang salah begitu idx melewati N.
+    // Tulis nilai final, lalu baca balik: apa pun yang device pegang
+    // (menghormati tulis kita, atau mengabaikannya) itulah yang dipakai
+    // driver sehingga kedua sisi selalu sinkron.
+    common->queue_size = queue_size;
+    __asm__ volatile("" ::: "memory");
+    uint16_t negotiated = common->queue_size;
+    if (negotiated >= 2 && negotiated <= VG_VQ_MAX_SIZE) queue_size = negotiated;
+
     gpu_page_t desc_pg, avail_pg, used_pg;
     if (gpu_alloc_page(&desc_pg) != 0) return -1;
     if (gpu_alloc_page(&avail_pg) != 0) { gpu_free_pages(&desc_pg, 1); return -1; }
@@ -69,7 +82,9 @@ int virtq_init(virtq_t* vq, uint16_t queue_index, uint16_t queue_size,
     __asm__ volatile("" ::: "memory");
 
     uint16_t notify_off = common->queue_notify_off;
-    vq->notify_addr = notify_base + (uint32_t)notify_off * notify_off_multiplier;
+    // PCI notify offsets are bytes, not uint16_t register indices.
+    vq->notify_addr = (volatile uint16_t*)((volatile uint8_t*)notify_base +
+                         (uint32_t)notify_off * notify_off_multiplier);
 
     return 0;
 }

@@ -1,5 +1,6 @@
 #include "pci.h"
 #include "io.h"
+#include "acpi.h"   // acpi_poweroff_raw()/acpi_reset_raw() (FADT asli)
 
 // Pinjam fungsi kprint dari kernel untuk nge-log ke layar
 extern void kprint(const char* str);
@@ -80,17 +81,29 @@ void acpi_poweroff(void) {
     extern void kfs_sync_all(void);
     kfs_sync_all();
 
-    // Tembak perintah power-off ke port standar ACPI emulator (QEMU, Bochs, VirtualBox)
+    // 1. ACPI S5 dari FADT asli (hardware nyata: SLP_TYP dari _S5 + PM1_CNT
+    //    dari firmware). Kalau mesin mati di sini, tidak ada yang kembali.
+    (void)acpi_poweroff_raw();
+
+    // 2. Port standar ACPI emulator (QEMU, Bochs, VirtualBox).
     outw(0xB004, 0x2000); // Bochs / versi QEMU lama
     outw(0x604, 0x2000);  // QEMU modern
     outw(0x4004, 0x3400); // VirtualBox
-    
-    // Jika gagal mati (misal jalan di PC fisik yang ACPI-nya belum dimapping OS), bekukan mesin.
+
+    // Jika gagal mati (misal FADT tak terparse di PC fisik), bekukan mesin.
     __asm__ volatile("cli; hlt");
     while(1);
 }
 
 // Fungsi Sakti untuk Restart PC (Reboot)
+//
+// Rantai reset standar industri (setiap tahap jatuh ke berikutnya bila mesin
+// masih hidup — reset yang berhasil tidak pernah kembali):
+//   1. RESET_REG FADT (nilai generik firmware, biasanya 0xCF9=0x06)
+//   2. Chipset Reset Control 0xCF9 (0x02 lalu 0x06 = SYS_RST|RST_CPU)
+//   3. Keyboard controller 8042 (0xFE), tunggu BERBATAS (laptop tanpa 8042
+//      membaca 0xFF selamanya — tanpa batas = hang sebelum triple fault)
+//   4. Triple fault (IDT kosong + int3)
 void system_reboot(void) {
     kprint("\nMerestart OS...\n");
 
@@ -98,21 +111,30 @@ void system_reboot(void) {
     extern void kfs_sync_all(void);
     kfs_sync_all();
 
-    // 1. Cara Standar: Memaksa CPU reset via PS/2 Keyboard Controller
-    uint8_t temp;
-    do {
-        temp = inb(0x64);
-        if ((temp & 0x01) != 0) inb(0x60); // Kosongkan buffer input jika ada
-    } while ((temp & 0x02) != 0); // Tunggu sampai controller siap
+    // 1. Cara standar ACPI (lihat drivers/acpi.c untuk asal nilai).
+    (void)acpi_reset_raw();
+
+    // 2. Chipset Reset Control Register.
+    outb(0xCF9, 0x02);
+    for (volatile uint32_t d = 0; d < 1000u; d++) (void)inb(0x80); // ~1ms
+    outb(0xCF9, 0x06);
+    for (volatile uint32_t d = 0; d < 1000u; d++) (void)inb(0x80);
+
+    // 3. Keyboard controller 8042 — kuras BERBATAS lalu tembak 0xFE.
+    for (uint32_t guard = 0; guard < 100000u; guard++) {
+        uint8_t temp = inb(0x64);
+        if ((temp & 0x01) != 0) (void)inb(0x60);
+        if ((temp & 0x02) == 0) break;
+    }
     outb(0x64, 0xFE); // Tembak perintah Reset!
 
-    // 2. Cara Kasar (Fallback): Jika cara pertama gagal, pancing "Triple Fault"
+    // 4. Cara Kasar (Fallback): pancing "Triple Fault"
     // Ini akan sengaja membuat error fatal pada CPU sehingga CPU otomatis me-reboot PC.
     __asm__ volatile ("cli"); // Matikan interupsi
     struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idtr = {0, 0};
     __asm__ volatile ("lidt %0" : : "m"(idtr)); // Hancurkan tabel interupsi (IDT)
     __asm__ volatile ("int $3"); // Pancing interupsi
-    
+
     // Bekukan jika masih gagal
     while (1) __asm__ volatile("hlt");
 }

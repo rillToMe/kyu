@@ -14,6 +14,8 @@
 #include "virtio_gpu_cmd.h"
 #include "gpu_alloc.h"
 #include "heap.h"
+#include "display.h"
+#include "serial.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -32,6 +34,20 @@ struct ghal_surface {
 };
 
 static int g_virtio_active = 0;
+
+// Resolusi output yang dipakai compositor. pmodes[0] host hanyalah salah satu
+// masukan — lihat negosiasi di virtio_init(). Resource virtio linear → pitch
+// selalu width*4.
+static uint32_t g_pref_width  = 0;
+static uint32_t g_pref_height = 0;
+
+// Scanout aktif (dibuat compositor lewat ghal_surface_create_scanout). Dipakai
+// jalur panic/BSOD: menggambar langsung ke backing resource ini — bukan ke
+// framebuffer Limine, yang tidak lagi tampil sejak device punya scanout.
+static ghal_surface_t* g_scanout_surface = NULL;
+
+// Didefinisikan di bawah (butuh surface_create), dipakai virtio_init().
+static int virtio_probe_scanout(uint32_t w, uint32_t h);
 
 // Mode yang diiklankan device (GET_DISPLAY_INFO pmodes[]). pmodes[0] yang
 // enabled = scanout aktif. Resource virtio linear → pitch = width*4.
@@ -76,6 +92,42 @@ static int virtio_init(void) {
     if (g_pmode_count == 0) return -1;
     g_vgpu.scanout_width  = g_pmodes[0].width;
     g_vgpu.scanout_height = g_pmodes[0].height;
+    g_pref_width  = g_vgpu.scanout_width;
+    g_pref_height = g_vgpu.scanout_height;
+
+    // --- Negosiasi resolusi ---
+    // pmodes[0] = ukuran yang dilaporkan host SAAT QUERY. Di QEMU angka itu
+    // hanya mencerminkan ukuran window host (di setup -device
+    // virtio-vga,xres=1920,yres=1080 sering tetap 640x480), sehingga
+    // mempercayainya apa adanya membuat layar tampak "kotak" meski firmware
+    // sudah menyetel mode besar.
+    //
+    // VirtIO-GPU v1 tidak punya command mode-set guest, TAPI rect SET_SCANOUT
+    // bebas: device (QEMU) menyesuaikan console/window ke ukuran surface
+    // scanout. Jadi resolusi dinegosiasikan SEKALI di sini — sebelum
+    // display_sync_from_backend()/display_alloc_buffers() mengunci mode dan
+    // mengalokasi buffer — dengan resource probe: device terbukti menerima
+    // ukuran besar baru mode itu dipakai. Salah menebak = desktop tidak pernah
+    // tampil, jadi tebakan tidak boleh dipakai tanpa bukti.
+    const display_mode_t* boot = display_get_mode();
+    if (boot && boot->width && boot->height &&
+        boot->width <= GHAL_MAX_DIM && boot->height <= GHAL_MAX_DIM &&
+        (uint64_t)boot->width * boot->height >
+            (uint64_t)g_pref_width * g_pref_height) {
+        if (virtio_probe_scanout(boot->width, boot->height) == 0) {
+            g_pref_width  = boot->width;
+            g_pref_height = boot->height;
+        } else {
+            serial_print("[vgpu] mode boot ");
+            serial_dec(boot->width); serial_print("x"); serial_dec(boot->height);
+            serial_print(" ditolak device — tetap di mode host\n");
+        }
+    }
+    serial_print("[vgpu] mode host=");
+    serial_dec(g_vgpu.scanout_width); serial_print("x"); serial_dec(g_vgpu.scanout_height);
+    serial_print(" guest=");
+    serial_dec(g_pref_width); serial_print("x"); serial_dec(g_pref_height);
+    serial_print("\n");
 
     g_virtio_active = 1;
     return 0;
@@ -153,20 +205,16 @@ static ghal_surface_t* virtio_surface_create(uint32_t w, uint32_t h, ghal_format
         return NULL;
     }
 
-    // SET_SCANOUT: surface full-screen (== resolusi scanout) jadi output.
-    if (w == g_vgpu.scanout_width && h == g_vgpu.scanout_height) {
-        virtio_gpu_set_scanout_t so;
-        virtio_gpu_cmd_set_scanout(&so, 0, s->resource_id, 0, 0, w, h);
-        vgpu_send_ok(&so, sizeof(so));
-    }
-
+    // SET_SCANOUT sengaja TIDAK dikirim di sini: surface biasa (mis. image
+    // kursor 64x64) tidak boleh jadi output. Framebuffer utama compositor
+    // lewat virtio_surface_create_scanout(), yang mengirim scanout eksplisit.
     return s;
 }
 
 static void virtio_surface_destroy(ghal_surface_t* s) {
     if (!s) return;
     // DETACH_BACKING lalu UNREF.
-    virtio_gpu_ctrl_hdr_t det;
+    virtio_gpu_resource_detach_backing_t det;
     virtio_gpu_cmd_detach_backing(&det, s->resource_id);
     vgpu_send_ok(&det, sizeof(det));
     virtio_gpu_resource_unref_t ur;
@@ -175,6 +223,52 @@ static void virtio_surface_destroy(ghal_surface_t* s) {
     gpu_free_pages(s->pages, s->num_pages);
     kfree(s->pages);
     kfree(s);
+}
+
+// ------------------------------------------------------------
+// Scanout
+// ------------------------------------------------------------
+
+// SET_SCANOUT untuk seluruh resource ini di (0,0). Rect inilah yang menentukan
+// ukuran output — QEMU menyesuaikan console/window ke ukuran surface scanout.
+// Return 0 sukses.
+static int virtio_set_scanout(ghal_surface_t* s) {
+    if (!s) return -1;
+    virtio_gpu_set_scanout_t so;
+    virtio_gpu_cmd_set_scanout(&so, 0, s->resource_id, 0, 0, s->width, s->height);
+    if (vgpu_send_ok(&so, sizeof(so)) != 0) return -1;
+    s->scanout_set = 1;
+    return 0;
+}
+
+// Framebuffer utama compositor (ghal_surface_create_scanout). Ukurannya boleh
+// berbeda dari pmodes host — lihat negosiasi di virtio_init().
+static ghal_surface_t* virtio_surface_create_scanout(uint32_t w, uint32_t h,
+                                                    ghal_format_t fmt) {
+    ghal_surface_t* s = virtio_surface_create(w, h, fmt);
+    if (!s) return NULL;
+    if (virtio_set_scanout(s) != 0) {
+        serial_print("[vgpu] SET_SCANOUT gagal ");
+        serial_dec(w); serial_print("x"); serial_dec(h);
+        serial_print(" — device menolak ukuran surface\n");
+    }
+    // Disimpan: jalur panic/BSOD menggambar LANGSUNG ke backing resource ini
+    // (lihat virtio_scanout_map). Hanya resource scanout yang boleh dipakai —
+    // tulisan ke framebuffer Limine tidak pernah terlihat lagi sejak device
+    // punya scanout sendiri.
+    g_scanout_surface = s;
+    return s;
+}
+
+// Buktikan device menerima (w,h) sebagai scanout tanpa mengunci mode: resource
+// probe → SET_SCANOUT → lepas lagi (scanout probe mati bersama resource;
+// compositor membuat surface-nya sendiri segera setelah ini).
+static int virtio_probe_scanout(uint32_t w, uint32_t h) {
+    ghal_surface_t* s = virtio_surface_create(w, h, GHAL_FMT_XRGB8888);
+    if (!s) return -1;
+    int ok = virtio_set_scanout(s);
+    virtio_surface_destroy(s);
+    return ok;
 }
 
 static void virtio_surface_upload(ghal_surface_t* s, const uint32_t* src,
@@ -227,6 +321,10 @@ static void virtio_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
 // Fence_id present terakhir yang berhasil dikirim (Phase 2C §9.2).
 static uint64_t g_last_present_fence = 0;
 
+// Forward (didefinisikan di bawah, dipakai Fix B di virtio_present).
+static int virtio_fence_pending(uint64_t fence);
+static void virtio_fence_wait(uint64_t fence);
+
 extern void serial_print(const char* s);
 
 static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
@@ -235,12 +333,26 @@ static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
     if (rect) r = *rect;
     else { r.x = 0; r.y = 0; r.w = s->width; r.h = s->height; }
 
-    // SET_SCANOUT sekali per resource: pastikan resource ini output aktif.
-    if (!s->scanout_set && s->width == g_vgpu.scanout_width &&
-        s->height == g_vgpu.scanout_height) {
-        virtio_gpu_set_scanout_t so;
-        virtio_gpu_cmd_set_scanout(&so, 0, s->resource_id, 0, 0, s->width, s->height);
-        if (vgpu_send_ok(&so, sizeof(so)) == 0) s->scanout_set = 1;
+    // Jaring pengaman: bila surface ini belum berhasil jadi scanout (device
+    // menolak saat create / scanout probe belum tergantikan), ulangi tiap
+    // frame sampai berhasil. Steady state: sudah beres di
+    // virtio_surface_create_scanout() → nol command extra per frame.
+    if (!s->scanout_set) (void)virtio_set_scanout(s);
+
+    // Fix B: jangan menumpuk batch baru ke device yang tidak me-reap.
+    // Bila fence batch sebelumnya masih outstanding setelah wait terbatas,
+    // lewati frame ini — dirty dipertahankan compositor, dicoba lagi flush
+    // berikutnya. Menumpuk submit hanya memperdalam wedge (pool habis,
+    // tiap flush = timeout penuh).
+    if (g_last_present_fence != 0 &&
+        virtio_fence_pending(g_last_present_fence)) {
+        virtio_fence_wait(g_last_present_fence);
+        if (virtio_fence_pending(g_last_present_fence)) {
+            static uint32_t skip_n = 0;
+            if ((skip_n++ % 64) == 0)
+                serial_print("[vgpu] present: skipped, fence outstanding\n");
+            return;
+        }
     }
 
     // Phase 2C §9.1+§9.2: TRANSFER + FLUSH dikirim sebagai DUA chain
@@ -251,7 +363,10 @@ static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
     // state tidak ada busy-poll sama sekali per frame.
     virtio_gpu_transfer_to_host_2d_t t;
     virtio_gpu_resource_flush_t f;
-    virtio_gpu_cmd_transfer_to_host(&t, s->resource_id, r.x, r.y, r.w, r.h);
+    // pitch backing = s->width * 4 (resource linear; device memakai stride
+    // yang sama untuk resource 32bpp, jadi baris sumber cocok dengan backing).
+    virtio_gpu_cmd_transfer_to_host(&t, s->resource_id, r.x, r.y, r.w, r.h,
+                                    s->width * 4);
     virtio_gpu_cmd_resource_flush(&f, s->resource_id, r.x, r.y, r.w, r.h);
     uint64_t fence = virtio_gpu_dev_submit2(&t, sizeof(t), &f, sizeof(f));
     if (fence != 0) {
@@ -286,8 +401,10 @@ static int virtio_cursor_update(ghal_surface_t* img, int hot_x, int hot_y) {
         img->format != GHAL_FMT_ARGB8888) return -1;
 
     // TRANSFER seluruh image backing → resource (sync, controlq).
+    // Rect penuh di (0,0) → offset 0; pitch = lebar backing kursor.
     virtio_gpu_transfer_to_host_2d_t t;
-    virtio_gpu_cmd_transfer_to_host(&t, img->resource_id, 0, 0, 64, 64);
+    virtio_gpu_cmd_transfer_to_host(&t, img->resource_id, 0, 0, 64, 64,
+                                    img->width * 4);
     if (vgpu_send_ok(&t, sizeof(t)) != 0) return -1;
 
     // UPDATE_CURSOR di cursorq: definisikan plane pada posisi tersimpan.
@@ -310,6 +427,50 @@ static void virtio_cursor_move(int x, int y) {
     (void)virtio_gpu_dev_cursor_command(&c, sizeof(c));
 }
 
+// ------------------------------------------------------------
+// Scanout darurat (jalur panic/BSOD)
+// ------------------------------------------------------------
+// Kernel panic menggambar dengan cli, TANPA heap/lock/IRQ. Backend ini
+// menyerahkan backing resource scanout supaya BSOD mendarat di tempat yang
+// benar-benar tampil, lalu mengirimnya lewat jalur command try-lock.
+static int virtio_scanout_map(uint32_t** pixels, uint32_t* width, uint32_t* height,
+                              uint32_t* pitch_px) {
+    if (!pixels || !width || !height || !pitch_px) return -1;
+    ghal_surface_t* s = g_scanout_surface;
+    if (!s || !s->backing_virt || !s->scanout_set) return -1;
+    if (s->format != GHAL_FMT_XRGB8888) return -1;   // image kursor bukan output
+    if (s->width == 0 || s->height == 0) return -1;
+    *pixels   = s->backing_virt;
+    *width    = s->width;
+    *height   = s->height;
+    *pitch_px = s->width;         // resource linear: pitch = width * 4 byte
+    return 0;
+}
+
+// Kirim region yang digambar panic ke device: TRANSFER (guest backing → pixmap
+// host) lalu RESOURCE_FLUSH (repaint region). SENGAJA tidak memakai
+// virtio_present(): present compositor melewati frame yang fence present-nya
+// masih outstanding — di jalur panic melewati frame berarti BSOD tidak pernah
+// muncul. Jadi di sini command dikirim langsung, dan kalau lock sedang dipakai
+// CPU lain (termasuk CPU yang fault) command DILEWATI tanpa menunggu; piksel
+// sudah ada di backing, jadi percobaan berikutnya mengirimnya lagi.
+static int virtio_scanout_flush(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    ghal_surface_t* s = g_scanout_surface;
+    if (!s || w == 0 || h == 0) return -1;
+    if (x >= s->width || y >= s->height) return -1;
+    if (w > s->width - x)  w = s->width - x;
+    if (h > s->height - y) h = s->height - y;
+
+    virtio_gpu_transfer_to_host_2d_t t;
+    virtio_gpu_cmd_transfer_to_host(&t, s->resource_id, x, y, w, h, s->width * 4);
+    if (virtio_gpu_dev_command_try(&t, sizeof(t)) != 0) return -1;
+
+    virtio_gpu_resource_flush_t f;
+    virtio_gpu_cmd_resource_flush(&f, s->resource_id, x, y, w, h);
+    if (virtio_gpu_dev_command_try(&f, sizeof(f)) != 0) return -1;
+    return 0;
+}
+
 // --- Statistik (Phase 2C §9.6) ---
 static int virtio_gpu_stats(ghal_gpu_stats_t* out) {
     const virtio_gpu_stats_t* s = virtio_gpu_dev_stats();
@@ -325,10 +486,10 @@ static int virtio_gpu_stats(ghal_gpu_stats_t* out) {
 
 // --- Display mode (host-controlled; guest tidak punya mode-set di v1) ---
 static int virtio_mode_get(display_mode_t* out) {
-    if (!out || g_vgpu.scanout_width == 0 || g_vgpu.scanout_height == 0) return -1;
-    out->width       = g_vgpu.scanout_width;
-    out->height      = g_vgpu.scanout_height;
-    out->pitch_bytes = g_vgpu.scanout_width * 4;
+    if (!out || g_pref_width == 0 || g_pref_height == 0) return -1;
+    out->width       = g_pref_width;
+    out->height      = g_pref_height;
+    out->pitch_bytes = g_pref_width * 4;
     out->bpp         = 32;
     out->format      = DISPLAY_FMT_XRGB8888;
     return 0;
@@ -347,13 +508,20 @@ static int virtio_mode_set(const display_mode_t* mode) { (void)mode; return -1; 
 
 const ghal_backend_ops_t virtio_gpu_backend_ops = {
     .name           = "virtio-gpu",
-    .capabilities   = GHAL_CAP_PARTIAL_FLUSH | GHAL_CAP_ASYNC_PRESENT |
-                      GHAL_CAP_HW_CURSOR,
+    // GHAL_CAP_HW_CURSOR SENGAJA tidak diiklankan.
+    // Plane kursor virtio digambar frontend HOST (GTK/SDL) di luar scanout
+    // guest: tidak ikut screendump dan pada frontend non-X11 (mis. Windows)
+    // tidak dirender sama sekali. Compositor yang melihat capability ini
+    // berhenti menggambar kursor software → kursor hilang dari layar (regresi
+    // nyata di QEMU Windows), sementara device melaporkan semuanya OK.
+    // Command kursor sendiri sudah benar (§9.4: struct 56 byte, cursorq tanpa
+    // response body) dan siap dipakai begitu plane kursor benar-benar terlihat.
+    .capabilities   = GHAL_CAP_PARTIAL_FLUSH | GHAL_CAP_ASYNC_PRESENT,
     .init           = virtio_init,
     .shutdown       = virtio_shutdown,
     .surface_create = virtio_surface_create,
     .surface_destroy= virtio_surface_destroy,
-    .surface_create_scanout = NULL,   // virtio: resource biasa jadi scanout
+    .surface_create_scanout = virtio_surface_create_scanout,
     .surface_upload = virtio_surface_upload,
     .fill_rect      = virtio_fill_rect,
     .blit           = virtio_blit,
@@ -368,4 +536,9 @@ const ghal_backend_ops_t virtio_gpu_backend_ops = {
     .mode_enumerate = virtio_mode_enumerate,
     .mode_set       = virtio_mode_set,
     .mode_changed   = NULL,   // host resize belum dilaporkan (lihat dokumentasi)
+    // Jalur panic/BSOD: BSOD digambar langsung ke backing scanout lalu dikirim
+    // dengan try-lock (tanpa tunggu device/lock). NULL pada backend tanpa
+    // scanout sendiri = caller fallback ke framebuffer hardware.
+    .scanout_map    = virtio_scanout_map,
+    .scanout_flush  = virtio_scanout_flush,
 };

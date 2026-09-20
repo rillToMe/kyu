@@ -13,9 +13,9 @@
 // ============================================================
 
 #include "ghal.h"
-#include "backend/intel_bench.h"
-#include "backend/intel_robust.h"
-#include "backend/intel_gen12_ghal.h"
+#include "backend/intel/intel_bench.h"
+#include "backend/intel/intel_robust.h"
+#include "backend/intel/intel_gen12_ghal.h"
 #include "spinlock.h"
 #include <stddef.h>   // NULL
 
@@ -159,6 +159,21 @@ void ghal_scanout_size(uint32_t* w, uint32_t* h) {
     }
     if (w) *w = 0;
     if (h) *h = 0;
+}
+
+// --- Scanout darurat (jalur panic/BSOD) ---
+// Tanpa lock & tanpa alokasi — jalur ini berjalan di konteks panic (cli, tanpa
+// heap, tanpa IRQ). Backend yang tidak menyediakan ops ini (mis. software)
+// dianggap tidak punya scanout sendiri: caller fallback ke framebuffer.
+int ghal_scanout_map(uint32_t** pixels, uint32_t* width, uint32_t* height,
+                     uint32_t* pitch_px) {
+    if (!g_active || !g_active->scanout_map) return -1;
+    return g_active->scanout_map(pixels, width, height, pitch_px);
+}
+
+int ghal_scanout_flush(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (!g_active || !g_active->scanout_flush) return -1;
+    return g_active->scanout_flush(x, y, w, h);
 }
 
 // --- Display mode API ---

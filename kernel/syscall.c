@@ -186,7 +186,7 @@ static int64_t spawn_common(char* kfname, int argc, char kargv[][PROC_MAX_ARG_LE
     return ret;
 }
 
-// Diagnostik panic (kernel/panic.c): konteks syscall TERAKHIR. Best-effort,
+// Diagnostik panic (kernel/panic/): konteks syscall TERAKHIR. Best-effort,
 // non-atomic, tanpa lock — tujuannya hanya memberi petunjuk "app sedang apa"
 // saat kernel mati. Tidak dipakai untuk logika apa pun.
 volatile uint64_t g_last_syscall_num  = 0;
@@ -202,7 +202,7 @@ void syscall_handler(registers_t *r) {
     uint64_t syscall_num = r->rax;
     uint64_t ret_val = 0; // Default return
 
-    // Catat konteks untuk BSOD (lihat kernel/panic.c).
+    // Catat konteks untuk BSOD (lihat kernel/panic/panic.c).
     g_last_syscall_num  = syscall_num;
     g_last_syscall_task = syscall_task ? (int32_t)syscall_task->id : -1;
     g_last_syscall_arg0 = r->rdi;

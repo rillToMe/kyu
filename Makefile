@@ -3,27 +3,67 @@
 # ==========================================
 #
 # Target penting:
-#   make          → Compile kernel (build/myos.bin)
-#   make apps     → Compile user_apps (build/*.elf)
+#   make          → Compile kernel (build/bin/myos.bin)
+#   make apps     → Compile user_apps (build/apps/*.elf)
 #   make boot_image.iso → Build kernel + apps + ISO
 #   make run      → Build + Boot di QEMU
-#   make clean    → Bersihkan kernel objects
-#   make clean-apps → Bersihkan user_apps objects
-# ==========================================
+#   make clean    → Bersihkan SELURUH hasil build (build/ + sisa .o/.d lama)
+#   make clean-apps → Bersihkan hasil build user_apps saja
+#
+# --- Tata letak output ---
+# Tidak ada lagi object file di source tree; semuanya di build/:
+#
+#   build/obj/<path sumber>.o    object kernel (mirror struktur sumber)
+#       kernel/foo.c                  → build/obj/kernel/foo.o
+#       kernel/gfx/fb.c               → build/obj/kernel/gfx/fb.o
+#       drivers/net/e1000/e1000.c     → build/obj/drivers/net/e1000/e1000.o
+#   build/obj/<path sumber>.d    dependensi header (-MMD -MP), pasangan .o
+#   build/obj/user/<path>.o      object user_apps (namespace terpisah: file
+#                                seperti apps/userutil.c dipakai kernel DAN
+#                                user app dengan flag berbeda, jadi tidak boleh
+#                                berbagi object)
+#   build/bin/myos.bin           kernel (build/myos.bin = salinan kompatibilitas)
+#   build/apps/*.elf             ELF user (C/C++ dan Rust)
+#   build/iso_root/              staging ISO
+#   build/boot_image.iso         image boot hybrid BIOS+UEFI
 
+# ==========================================
 # Tools
+# ==========================================
 CC = clang
 AS = nasm
 LD = ld.lld
 QEMU = qemu-system-x86_64.exe
 
-# Direktori sumber kernel (Ring 0)
+# --- Tampilan host (jendela QEMU) ---
+# Default: GTK + zoom-to-fit + FULLSCREEN, jadi guest 1920x1080 tampil besar
+# (di-scale mengikuti monitor) dan screenshot layar penuh langsung enak dibaca.
+# Tanpa zoom-to-fit, jendela hanya menampilkan guest 1:1 — di monitor besar
+# terlihat kecil, dan di monitor kecil isinya terpotong.
+# Override sesuai kebutuhan:
+#   make run FULLSCREEN=0                    → mode jendela (tombol Maximize tetap jalan)
+#   make run QEMU_DISPLAY=none FULLSCREEN=0  → headless, jejak hanya di serial.log
+#   make run QEMU_DISPLAY=sdl,zoom-to-fit=on → frontend SDL
+QEMU_DISPLAY ?= gtk,zoom-to-fit=on
+FULLSCREEN   ?= 1
+# Kosong bila FULLSCREEN bukan 1 (ekspansi kosong itu sah di shell).
+FULLSCREEN_ARG = $(if $(filter 1,$(FULLSCREEN)),-full-screen,)
+
+# Direktori sumber kernel (Ring 0).
+# Daftar eksplisit — sengaja TIDAK memakai find rekursif dari root supaya
+# third_party/*, legacy/, test/, debug/, rust/target, dan hasil build tidak
+# ikut terambil secara tidak sengaja. Sub-directory yang memang bagian kernel
+# didaftarkan langsung di sini (driver NIC & NET port lwIP punya daftar sendiri
+# di bawah karena flag-nya beda).
 SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs kernel/fs apps \
-           graphics graphics/backend graphics/memory drivers/graphics/hw libs/color/src
+           kernel/panic \
+           graphics graphics/backend graphics/backend/intel graphics/memory drivers/graphics/hw libs/color/src
+
 
 # ==========================================
 # lwIP Network Stack
 # ==========================================
+
 # Semua file .c dari lwIP core, netif, dan port driver kita.
 # File port/sys_arch.c TIDAK diperlukan saat NO_SYS=1 — hanya sys_now()
 # yang perlu diimplementasikan di kernel/timer.c atau sejenisnya.
@@ -53,13 +93,9 @@ LWIP_PORT_SRCS = $(LWIP_PORT_DIR)/kyuzen_netif.c \
 # (tidak perlu lwIP headers, driver ini standalone)
 E1000_DIR  = drivers/net/e1000
 E1000_SRCS = $(E1000_DIR)/e1000.c
-E1000_OBJS = $(E1000_SRCS:.c=.o)
 
-# Gabung semua source lwIP + e1000
+# Gabung semua source lwIP + e1000 (di-link bersama, flag berbeda per grup)
 LWIP_SRCS      = $(LWIP_CORE_SRCS) $(LWIP_NETIF_SRCS) $(LWIP_PORT_SRCS)
-
-# Object files lwIP + e1000 (keduanya di-link bersama)
-LWIP_OBJS      = $(LWIP_SRCS:.c=.o) $(E1000_OBJS)
 
 # LWIP_CFLAGS akan didefinisikan di bawah, setelah CFLAGS kernel tersedia
 
@@ -71,10 +107,22 @@ LWIP_OBJS      = $(LWIP_SRCS:.c=.o) $(E1000_OBJS)
 #    relocation error saat simbol berada di atas 4GB (0xFFFFFFFF80000000)
 INCLUDE_DIR = include
 
-# Folder output build — semua artefak final (myos.bin, *.elf, ISO, iso_root)
-# dikumpulkan di build/ supaya project root tetap bersih saat development.
-BUILD_DIR = build
-$(shell mkdir -p $(BUILD_DIR))
+# --- Folder output ---
+# build/obj   : object + dependency file (mirror source tree)
+# build/bin   : kernel binary
+# build/apps  : ELF user
+# build/iso_root + build/boot_image.iso
+# Direktori TIDAK dibuat saat parse (`$(shell mkdir -p ...)`). Direktori
+# object dibuat lewat order-only prerequisite (lihat OBJ_DIRS di bawah):
+# sekali per direktori, aman untuk `make -j8`, dan tidak menambah satu proses
+# `mkdir` untuk setiap object (mahal di Windows, ~20ms per spawn).
+BUILD_DIR  = build
+OBJ_DIR    = $(BUILD_DIR)/obj
+BIN_DIR    = $(BUILD_DIR)/bin
+ELF_DIR    = $(BUILD_DIR)/apps
+ISO_ROOT   = $(BUILD_DIR)/iso_root
+ISO_IMAGE  = $(BUILD_DIR)/boot_image.iso
+
 # -MMD -MP: tulis file .d (dependensi header) di samping tiap .o — perubahan
 # header (mis. task.h) memicu rebuild semua .c yang meng-includenya. Tanpa
 # ini, object basi membaca struct dengan layout lama (pernah menggigit:
@@ -115,81 +163,104 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
-                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c test/virtqueue_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c test/ata_devmodel_test.c,\
+                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c                        test/virtqueue_test.c test/virtio_gpu_cmd_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c test/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
 
-# Ubah ekstensi sumber menjadi target object (.o)
-# Kernel + arch + drivers object files
-OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
+# --- Pemetaan sumber → object (generik, tidak ada daftar object manual) ---
+#   kernel/foo.c              → build/obj/kernel/foo.o
+#   kernel/gfx/fb.c           → build/obj/kernel/gfx/fb.o
+#   drivers/net/e1000/e1000.c → build/obj/drivers/net/e1000/e1000.o
+#   arch/x86/gdt_flush.asm    → build/obj/arch/x86/gdt_flush.o
+OBJS       = $(patsubst %.c,$(OBJ_DIR)/%.o,$(C_SOURCES)) \
+             $(patsubst %.asm,$(OBJ_DIR)/%.o,$(ASM_SOURCES))
+LWIP_OBJS  = $(patsubst %.c,$(OBJ_DIR)/%.o,$(LWIP_SRCS))
+E1000_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(E1000_SRCS))
+ALL_OBJS   = $(OBJS) $(LWIP_OBJS) $(E1000_OBJS)
 
 # Default goal dipatok DULU. Tanpa ini, -include file .d di bawah membuat
-# target pertama file .d (arch/x86/gdt.o) menjadi default goal → `make`
-# hanya membangun gdt.o. (.DEFAULT_GOAL yang dieksplisit menang atas target
-# pertama yang dilihat make.)
+# target pertama file .d menjadi default goal → `make` hanya membangun satu
+# object. (.DEFAULT_GOAL yang eksplisit menang atas target pertama yang
+# dilihat make.)
 .DEFAULT_GOAL := all
 
-# Sertakan dependensi header hasil -MMD (diabaikan saat belum ada / setelah clean)
--include $(OBJS:.o=.d) $(LWIP_OBJS:.o=.d)
+# Sertakan dependensi header hasil -MMD/-MD (diabaikan saat belum ada / setelah
+# clean). File .d yang sama juga memberi tahu make saat sebuah HEADER berubah.
+-include $(ALL_OBJS:.o=.d)
 
-# File output
-TARGET = $(BUILD_DIR)/myos.bin
+# File output kernel. build/myos.bin dipertahankan sebagai salinan kompatibel
+# untuk catatan/script lokal yang masih menunjuk path lama; isinya hanya
+# ditulis ulang bila berubah (jadi tidak memicu rebuild ISO yang sia-sia).
+TARGET     = $(BIN_DIR)/myos.bin
+COMPAT_BIN = $(BUILD_DIR)/myos.bin
 
-# Default target
-all: $(TARGET)
+# Default target (kernel saja; ISO dibangun lewat `make boot_image.iso`)
+.PHONY: all
+all: $(TARGET) $(COMPAT_BIN)
 
 # Tahap 3: Link Semuanya
-$(TARGET): $(OBJS) $(LWIP_OBJS)
-	$(LD) $(LDFLAGS) $(OBJS) $(LWIP_OBJS) -o $(TARGET)
+$(TARGET): $(ALL_OBJS)
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) $(ALL_OBJS) -o $@
+
+$(COMPAT_BIN): $(TARGET)
+	@cmp -s $< $@ || cp $< $@
+
+# Direktori object: dibuat sekali (order-only) sebelum object-object di
+# dalamnya. `$@` di sini adalah direktori itu sendiri; kalau direktorinya sudah
+# ada make tidak menjalankan apa pun (target tanpa prerequisite = up to date).
+OBJ_DIRS = $(sort $(dir $(ALL_OBJS)))
+$(OBJ_DIRS):
+	@mkdir -p $@
 
 # Tahap 2: Compile C (kernel/arch/drivers/fs/apps)
-%.o: %.c
+$(OBJ_DIR)/%.o: %.c | $(OBJ_DIRS)
 	$(CC) $(CFLAGS) -std=c11 -c $< -o $@
 
-# Tahap 2b: Compile lwIP source files
-# Aturan eksplisit ini harus muncul SEBELUM aturan generic %.o: %.c
-# agar lwIP mendapat LWIP_CFLAGS (termasuk -I path yang benar).
-$(LWIP_CORE_DIR)/%.o: $(LWIP_CORE_DIR)/%.c
+# Tahap 2b: Compile lwIP source files (LWIP_CFLAGS).
+# Pattern rule yang lebih spesifik menang atas $(OBJ_DIR)/%.o: %.c di atas —
+# stem-nya lebih pendek — sehingga file lwIP selalu dapat -I header yang benar.
+$(OBJ_DIR)/third_party/net/lwip/src/%.o: third_party/net/lwip/src/%.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
-$(LWIP_CORE_DIR)/ipv4/%.o: $(LWIP_CORE_DIR)/ipv4/%.c
-	$(CC) $(LWIP_CFLAGS) -c $< -o $@
-
-$(LWIP_NETIF_DIR)/%.o: $(LWIP_NETIF_DIR)/%.c
-	$(CC) $(LWIP_CFLAGS) -c $< -o $@
-
-$(LWIP_PORT_DIR)/%.o: $(LWIP_PORT_DIR)/%.c
+# Port lwIP Kyuzen (kyuzen_netif.c, sys_arch.c) — juga LWIP_CFLAGS
+$(OBJ_DIR)/$(LWIP_PORT_DIR)/%.o: $(LWIP_PORT_DIR)/%.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # e1000 driver: pakai CFLAGS kernel biasa (bukan LWIP_CFLAGS)
-# e1000.c tidak butuh lwIP headers — hanya kernel headers (heap, string, pci)
-$(E1000_DIR)/%.o: $(E1000_DIR)/%.c
-	$(CC) $(CFLAGS) -std=c11 -I$(INCLUDE_DIR) -c $< -o $@
+# e1000.c tidak butuh lwIP headers — hanya kernel headers (heap, string, pci),
+# jadi cukup rule generik di atas.
 
 # net_init.c: butuh LWIP_CFLAGS karena include lwIP headers (dhcp.h, dns.h, dll)
-# Aturan ini OVERRIDE aturan generic %.o:%.c untuk file ini saja.
-kernel/net_init.o: kernel/net_init.c
+# Aturan ini OVERRIDE aturan generic $(OBJ_DIR)/%.o:%.c untuk file ini saja.
+$(OBJ_DIR)/kernel/net_init.o: kernel/net_init.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # net_ping.c: butuh LWIP_CFLAGS karena include lwIP raw/icmp/dns headers
-kernel/net_ping.o: kernel/net_ping.c
+$(OBJ_DIR)/kernel/net_ping.o: kernel/net_ping.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # net_socket.c: butuh LWIP_CFLAGS karena include lwIP tcp headers
-kernel/net_socket.o: kernel/net_socket.c
+$(OBJ_DIR)/kernel/net_socket.o: kernel/net_socket.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # Tahap 1: Compile Assembly
-%.o: %.asm
-	$(AS) $(ASFLAGS) $< -o $@
+# -MD menulis dependensi (%include, mis. arch/x86/isr_macro.inc) ke .d di
+# samping object; file itu ikut di-include di atas bersama .d hasil clang.
+$(OBJ_DIR)/%.o: %.asm | $(OBJ_DIRS)
+	$(AS) $(ASFLAGS) -MD $(@:.o=.d) $< -o $@
 
 # --- compile_commands.json untuk IntelliSense VS Code ---
 # Menangkap flag compile PERSIS dari build sungguhan (via dry-run) sehingga
 # IntelliSense tidak pernah out-of-sync dengan Makefile. Jalankan ulang setiap
 # kali menambah file .c baru atau mengubah -I path.
 #   Butuh: python -m pip install compiledb
+# `env -u MAKELEVEL`: make mengekspor MAKELEVEL=1 ke recipe-nya, dan make yang
+# dijalankan compiledb lalu menganggap dirinya SUB-make sehingga output dry-run
+# tidak tertangkap (database jadi kosong). Tanpa variabel itu, seluruh command
+# ter-capture normal.
 .PHONY: compile_commands
 compile_commands:
-	python -m compiledb -n make clean all
+	env -u MAKELEVEL python -m compiledb -n make clean all
 
 # --- Host-side unit test (roadmap §11): virtqueue multi-chain ---
 # Dikompilasi dengan compiler host (bukan freestanding) — mock MMIO berupa
@@ -209,6 +280,23 @@ test/virtqueue_test: test/virtqueue_test.c \
 	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/virtqueue_test.c \
 	    drivers/graphics/hw/virtqueue.c \
 	    -Idrivers/graphics/hw -Igraphics/memory
+
+# --- Host-side unit test: encoder command virtio-gpu ---
+# Mengunci semantik wire-format yang tidak kelihatan di log serial — terutama
+# offset TRANSFER_TO_HOST_2D (device membacanya sebagai awal baris sumber, jadi
+# rect di luar (0,0) tidak boleh mengirim 0). Test mengemulasi loop transfer
+# QEMU apa adanya dan membandingkan isi rect hasilnya.
+# Jalankan: make test-virtio-cmd
+.PHONY: test-virtio-cmd
+test-virtio-cmd: test/virtio_gpu_cmd_test
+	./test/virtio_gpu_cmd_test
+
+test/virtio_gpu_cmd_test: test/virtio_gpu_cmd_test.c \
+                          drivers/graphics/hw/virtio_gpu_cmd.c \
+                          drivers/graphics/hw/virtio_gpu_cmd.h \
+                          drivers/graphics/hw/virtio_gpu_regs.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/virtio_gpu_cmd_test.c \
+	    drivers/graphics/hw/virtio_gpu_cmd.c -Idrivers/graphics/hw
 
 # --- Host-side unit test (P0 Phase 1): credential policy ---
 # Pure policy in include/cred.h, no scheduler needed. Run: make test-cred.
@@ -318,11 +406,12 @@ mkfs: mkfs.kyuzenfs
 mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 	$(HOSTCC) -O2 -Wall -Wextra -iquote include -o $@ tools/mkfs.kyuzenfs.c
 
+# Binary host test (test/*.exe) semuanya generated — `make clean` memanggil ini.
+.PHONY: clean-tool
 clean-tool:
-	rm -f mkfs.kyuzenfs test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test test/ata_devmodel_test \
-	      test/panic_test.exe test/color_test test/color_test.exe test/color_utils_host.o \
-	      test/textedit_test test/textedit_test.exe \
-	      test/libui_theme_test test/libui_theme_test.exe testimg.img
+	rm -f mkfs.kyuzenfs testimg.img test/color_utils_host.o
+	rm -f test/*.exe test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
+	      test/ata_devmodel_test test/color_test test/textedit_test test/libui_theme_test
 
 # --- Cross-check: image buatan mkfs host harus termount oleh parser kernel ---
 # Target memformat testimg.img via ./mkfs.kyuzenfs lalu menjalankan test host
@@ -337,8 +426,8 @@ test-kyuzenfs-xcheck: test/kyuzenfs_xcheck mkfs.kyuzenfs
 test/kyuzenfs_xcheck: test/kyuzenfs_xcheck.c $(KFS4_HDRS) $(KFS4_SRCS)
 	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_xcheck.c
 
-# --- Host test panic handler (BSOD): diagnostik, lockdown, auto-reboot ---
-# panic.c di-include dengan -DPANIC_HOST_TEST (instruksi privileged → stub),
+# --- Host test panic handler (BSOD): diagnostik, lockdown, interaktif ---
+# kernel/panic/*.c di-include dengan -DPANIC_HOST_TEST (instruksi privileged → stub),
 # jadi alur countdown → flush FS → reboot bisa diverifikasi tanpa QEMU.
 # Jalankan: make test-panic
 .PHONY: test-panic
@@ -360,7 +449,7 @@ $(ATA_FLAG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
 	@printf '%s' "$(ATA_READ_PATH_DEFAULT)" | cmp -s - $@ || printf '%s' "$(ATA_READ_PATH_DEFAULT)" > $@
 
-drivers/ata.o: $(ATA_FLAG_STAMP)
+$(OBJ_DIR)/drivers/ata.o: $(ATA_FLAG_STAMP)
 test/ata_devmodel_test: $(ATA_FLAG_STAMP)
 
 .PHONY: test-ata
@@ -373,7 +462,9 @@ test/ata_devmodel_test: test/ata_devmodel_test.c test/atamock/io.h \
 	$(HOSTCC) -O1 -Wall -Wextra -iquote test/atamock -iquote test -iquote include \
 	         -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT) -o $@ test/ata_devmodel_test.c
 
-test/panic_test: test/panic_test.c kernel/panic.c kernel/panic_log.c kernel/crashdump.c drivers/acpi.c \
+test/panic_test: test/panic_test.c kernel/panic/panic.c kernel/panic/panic_draw.c \
+                 kernel/panic/panic_hw.c kernel/panic/panic_explain.c kernel/panic/panic_internal.h \
+                 kernel/panic_log.c kernel/crashdump.c drivers/acpi.c \
                  include/panic.h include/crashdump.h include/acpi.h include/display.h include/task.h include/timer.h
 	$(HOSTCC) -DPANIC_HOST_TEST -O1 -Wall -iquote test -iquote include -o $@ test/panic_test.c
 
@@ -417,112 +508,126 @@ test/desktop_manifest_test: test/desktop_manifest_test.c user_apps/desktop.c inc
                            libs/color/include/color_types.h
 	$(HOSTCC) -O1 -Wall -iquote include -Ilibs/color/include -o $@ test/desktop_manifest_test.c
 
-# --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
-# Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer
+
+# ==========================================
+# USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf)
+# ==========================================
+
+# Daftar app HARUS sinkron dengan APP_NAMES di user_apps/Makefile,
+# manifests/*.app, dan blok module_path di limine.conf.
+APP_NAMES = fileman viewer clock calc taskmgr notepad badptr widget_demo desktop \
+            terminal settings procinfo exit_test kill_test fd_test echo cat \
+            pipe_test fork_test
+APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
+
+# `apps` tetap target phony (menu, kompatibel dengan workflow lama). Setiap ELF
+# adalah FILE target nyata dengan prerequisite order-only ke `apps`, sehingga:
+#   - `make apps` / `make boot_image.iso` menjalankan sub-make (yang incremental
+#     di dalamnya: hanya app/header yang berubah yang dikompilasi ulang), dan
+#   - ISO tetap dibangun ulang HANYA kalau timestamp ELF benar-benar berubah.
 .PHONY: apps
 apps:
 	$(MAKE) -C user_apps all
 
-# --- RUST APPS (Phase 1: no_std userspace Rust) ---
-# Cargo workspace ada di rust/; hasil akhir di-link dengan user_apps/app.ld
-# yang sama (ELF64 single-base 0x4000000, PT_LOAD saja) agar bisa dimuat
-# loader kernel. SELALU bangun lewat target ini: RUSTFLAGS meng-inject
-# script linker (path relatif tidak bisa ditaruh di rust/.cargo/config.toml).
-RUST_DIR  = rust
-RUST_TRIP = x86_64-unknown-none
-RUST_OUT  = $(RUST_DIR)/target/$(RUST_TRIP)/release
+$(APP_ELFS): | apps
 
+# --- RUST APPS (Phase 1: no_std userspace Rust) ---
+# Cargo tetap build system Rust (workspace di rust/); hasil akhir di-link dengan
+# user_apps/app.ld yang sama (ELF64 single-base 0x4000000, PT_LOAD saja) agar
+# bisa dimuat loader kernel. SELALU bangun lewat target ini: RUSTFLAGS
+# meng-inject script linker (path relatif tidak bisa ditaruh di
+# rust/.cargo/config.toml).
+RUST_DIR   = rust
+RUST_TRIP  = x86_64-unknown-none
+RUST_OUT   = $(RUST_DIR)/target/$(RUST_TRIP)/release
+RUST_NAMES = hello-slint control-center
+RUST_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(RUST_NAMES)))
+
+# `$a.elf` disalin hanya kalau isinya berubah (cmp -s): cp apa adanya akan
+# memperbarui timestamp setiap build dan membuat ISO selalu dianggap basi.
 .PHONY: rust-apps
 rust-apps:
+	@mkdir -p $(ELF_DIR)
 	cd $(RUST_DIR) && RUSTFLAGS="-C relocation-model=static -C link-arg=-T../user_apps/app.ld" cargo build --release
-	cp $(RUST_OUT)/hello-slint $(BUILD_DIR)/hello-slint.elf
-	cp $(RUST_OUT)/control-center $(BUILD_DIR)/control-center.elf
+	@for a in $(RUST_NAMES); do \
+		cmp -s $(RUST_OUT)/$$a $(ELF_DIR)/$$a.elf || cp $(RUST_OUT)/$$a $(ELF_DIR)/$$a.elf; \
+	done
+
+$(RUST_ELFS): | rust-apps
 
 .PHONY: rust-clean
 rust-clean:
 	cd $(RUST_DIR) && cargo clean
 
-# Shortcut: bangun ELF secara individual
-fileman.elf:
-	$(MAKE) -C user_apps fileman
+# Shortcut: bangun ELF individual (nama target lama dipertahankan).
+.PHONY: $(addsuffix .elf,$(APP_NAMES))
+fileman.elf: $(ELF_DIR)/fileman.elf
+viewer.elf: $(ELF_DIR)/viewer.elf
+clock.elf: $(ELF_DIR)/clock.elf
+calc.elf: $(ELF_DIR)/calc.elf
+taskmgr.elf: $(ELF_DIR)/taskmgr.elf
+notepad.elf: $(ELF_DIR)/notepad.elf
+badptr.elf: $(ELF_DIR)/badptr.elf
+widget_demo.elf: $(ELF_DIR)/widget_demo.elf
+desktop.elf: $(ELF_DIR)/desktop.elf
+terminal.elf: $(ELF_DIR)/terminal.elf
+settings.elf: $(ELF_DIR)/settings.elf
+procinfo.elf: $(ELF_DIR)/procinfo.elf
+exit_test.elf: $(ELF_DIR)/exit_test.elf
+kill_test.elf: $(ELF_DIR)/kill_test.elf
+fd_test.elf: $(ELF_DIR)/fd_test.elf
+echo.elf: $(ELF_DIR)/echo.elf
+cat.elf: $(ELF_DIR)/cat.elf
+pipe_test.elf: $(ELF_DIR)/pipe_test.elf
+fork_test.elf: $(ELF_DIR)/fork_test.elf
 
-viewer.elf:
-	$(MAKE) -C user_apps viewer
-
-clock.elf:
-	$(MAKE) -C user_apps clock
-
-calc.elf:
-	$(MAKE) -C user_apps calc
-
-taskmgr.elf:
-	$(MAKE) -C user_apps taskmgr
-
-kill_test.elf:
-	$(MAKE) -C user_apps kill_test
-
-fd_test.elf:
-	$(MAKE) -C user_apps fd_test
-
-echo.elf:
-	$(MAKE) -C user_apps echo
-
-cat.elf:
-	$(MAKE) -C user_apps cat
-
-pipe_test.elf:
-	$(MAKE) -C user_apps pipe_test
-
-fork_test.elf:
-	$(MAKE) -C user_apps fork_test
-
-notepad.elf:
-	$(MAKE) -C user_apps notepad
-
-badptr.elf:
-	$(MAKE) -C user_apps badptr
-
-widget_demo.elf:
-	$(MAKE) -C user_apps widget_demo
-
-# Bersihkan hanya file objek user_apps (bukan ELF output)
+# Bersihkan hanya file objek/ELF user_apps (kernel tidak disentuh)
+.PHONY: clean-apps
 clean-apps:
 	$(MAKE) -C user_apps clean
 
-# ISO: tergantung pada kernel + ELF apps (auto-rebuild jika source berubah)
-# Tahap 3: Pembuatan ISO Hybrid (BIOS + UEFI 64-bit)
-.PHONY: boot_image.iso
-boot_image.iso: $(BUILD_DIR)/boot_image.iso
 
-$(BUILD_DIR)/boot_image.iso: $(TARGET) apps rust-apps limine.conf kyuzen.png logo.png
-	rm -rf $(BUILD_DIR)/iso_root
-	mkdir -p $(BUILD_DIR)/iso_root/EFI/BOOT
-	cp limine/BOOTX64.EFI $(BUILD_DIR)/iso_root/EFI/BOOT/
-	
-	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf kyuzen.png logo.png $(BUILD_DIR)/fileman.elf $(BUILD_DIR)/viewer.elf $(BUILD_DIR)/clock.elf $(BUILD_DIR)/calc.elf $(BUILD_DIR)/taskmgr.elf $(BUILD_DIR)/notepad.elf $(BUILD_DIR)/badptr.elf $(BUILD_DIR)/widget_demo.elf $(BUILD_DIR)/desktop.elf $(BUILD_DIR)/terminal.elf $(BUILD_DIR)/settings.elf $(BUILD_DIR)/procinfo.elf $(BUILD_DIR)/exit_test.elf $(BUILD_DIR)/kill_test.elf $(BUILD_DIR)/fd_test.elf $(BUILD_DIR)/echo.elf $(BUILD_DIR)/cat.elf $(BUILD_DIR)/pipe_test.elf $(BUILD_DIR)/fork_test.elf $(BUILD_DIR)/hello-slint.elf $(BUILD_DIR)/control-center.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin $(BUILD_DIR)/iso_root/
-	# Manifest launcher (name=/color=/hidden=), dibaca desktop.elf saat scan
-	# app. Setiap file baru di manifests/ HARUS ditambah juga ke limine.conf.
-	cp manifests/*.app $(BUILD_DIR)/iso_root/
-	
+# ==========================================
+# ISO (Limine, hybrid BIOS + UEFI 64-bit)
+# ==========================================
+
+# Prerequisite ISO adalah FILE nyata (kernel, ELF, limine.conf, aset, manifest,
+# file Limine) — bukan target phony — sehingga ISO hanya disusun ulang kalau
+# salah satu inputnya berubah. Staging dir tidak di-`rm -rf` lagi: isinya
+# disinkronkan (ELF lama dibuang supaya app yang dihapus tidak tertinggal).
+MANIFESTS    = $(wildcard manifests/*.app)
+LIMINE_FILES = limine/BOOTX64.EFI limine/limine-bios.sys \
+               limine/limine-bios-cd.bin limine/limine-uefi-cd.bin
+
+.PHONY: boot_image.iso
+boot_image.iso: $(ISO_IMAGE)
+
+$(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
+              limine.conf kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES)
+	@mkdir -p $(ISO_ROOT)/EFI/BOOT
+	@rm -f $(ISO_ROOT)/*.elf
+	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) limine.conf kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
+	@cp limine/BOOTX64.EFI $(ISO_ROOT)/EFI/BOOT/
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
 		--efi-boot limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label \
-		$(BUILD_DIR)/iso_root -o $(BUILD_DIR)/boot_image.iso
-		
-	./limine/limine.exe bios-install $(BUILD_DIR)/boot_image.iso
+		$(ISO_ROOT) -o $@
+	./limine/limine.exe bios-install $@
 
 # Tahap 4: Boot up QEMU (Dengan Fitur Debugging 64-bit)
 # COM1 selalu diarahkan ke serial.log: kalau sistem membeku / panic, jejaknya
 # sudah ada di file itu tanpa perlu mengubah cara menjalankan (dan tanpa
 # menutup jendela QEMU lebih dulu).
+.PHONY: run
 run: boot_image.iso
 	-rm -f serial.log
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
 		-smp 8 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(ISO_IMAGE),media=cdrom,index=2 \
 		-nic user,model=e1000 \
+		-vga none -device virtio-vga,xres=1920,yres=1080 \
+		-display $(QEMU_DISPLAY) \
 		-serial file:serial.log
 	@echo "Jejak COM1 ada di serial.log (ekor file = kejadian terakhir)."
 
@@ -532,8 +637,10 @@ run-serial: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(ISO_IMAGE),media=cdrom,index=2 \
 		-nic user,model=e1000 \
+		-vga none -device virtio-vga,xres=1920,yres=1080 \
+		-display $(QEMU_DISPLAY) \
 		-serial stdio
 
 # run + serial ke FILE (lebih andal di Windows daripada stdio): panic dump
@@ -543,8 +650,10 @@ run-wd: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(ISO_IMAGE),media=cdrom,index=2 \
 		-nic user,model=e1000 \
+		-vga none -device virtio-vga,xres=1920,yres=1080 \
+		-display $(QEMU_DISPLAY)\
 		-serial file:serial.log
 
 # Stress test: recursive make with STRESS_TEST flag + debug/ sources
@@ -555,8 +664,9 @@ stress:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
-		-nic user,model=e1000
+		-drive file=$(ISO_IMAGE),media=cdrom,index=2 \
+		-nic user,model=e1000 \
+		-display $(QEMU_DISPLAY)
 
 # Concurrency test: sleep/mutex/semaphore/condvar (Fase 1-3) + test/ sources
 .PHONY: conc
@@ -566,8 +676,9 @@ conc:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
-		-nic user,model=e1000
+		-drive file=$(ISO_IMAGE),media=cdrom,index=2 \
+		-nic user,model=e1000 \
+		-display $(QEMU_DISPLAY)
 
 # Heap stress test: overflow guard + canary corruption detection (test/ sources)
 .PHONY: heap-stress
@@ -578,8 +689,9 @@ heap-stress:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
-		-nic user,model=e1000
+		-drive file=$(ISO_IMAGE),media=cdrom,index=2 \
+		-nic user,model=e1000 \
+		-display $(QEMU_DISPLAY)
 
 .PHONY: heap-watch
 heap-watch:
@@ -588,18 +700,27 @@ heap-watch:
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
-		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
+		-drive file=$(ISO_IMAGE),media=cdrom,index=2 \
 		-nic user,model=e1000 \
+		-display $(QEMU_DISPLAY) \
 		-serial stdio
 
-# Bersihkan file hasil build (kernel + lwIP objects)
-clean:
-	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o test/conc_test.o test/heap_stress_test.o
-	rm -rf $(BUILD_DIR)/iso_root
-	rm -f $(BUILD_DIR)/*.elf
 
-# run: boot_image.iso
-# 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
-# 		-drive file=disk.img,format=raw,index=0,media=disk \
-# 		-drive file=$(BUILD_DIR)/boot_image.iso,media=cdrom,index=2 \
-# 		-no-reboot -no-shutdown
+# ==========================================
+# CLEAN
+# ==========================================
+
+# Sisa .o/.d dari Makefile lama (object ditulis di samping sumber) ikut
+# dibersihkan supaya source tree benar-benar bersih. Hanya file *.o dan *.d
+# yang dihapus — source, header, konfigurasi, dan file third_party yang bukan
+# hasil build tidak disentuh. rust/target dan build tool lain di luar daftar
+# ini juga tidak disentuh.
+LEGACY_SWEEP_DIRS = arch apps drivers fs graphics kernel libs test tools user_apps third_party/net
+
+.PHONY: clean
+clean:
+	rm -rf $(BUILD_DIR)
+	rm -rf libs/widget/build
+	$(MAKE) clean-tool
+	@n=$$(find $(LEGACY_SWEEP_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -delete -print 2>/dev/null | wc -l); \
+	 echo "[CLEAN] build/ dihapus, $$n file .o/.d lama dibersihkan dari source tree"

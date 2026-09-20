@@ -9,6 +9,7 @@
 #include "color_utils.h"  // palet COLOR_BLACK/WHITE/TRANSPARENT
 #include "heap.h"     // kmalloc/kfree — buffer image kursor HW (§9.4)
 #include "ghal.h"     // Phase 2B: present lewat Graphics HAL
+#include "serial.h"   // diagnostik jalur kursor (hw vs software)
 #include "panic.h"    // lockdown: hentikan present saat BSOD aktif
 
 extern int32_t mouse_x;
@@ -607,7 +608,13 @@ static int hw_cursor_set_kind(int kind) {
 // virtqueue tidak boleh di IRQ). Gagal di titik mana pun = fallback permanen
 // ke software cursor (jalur lama tetap utuh).
 static void compositor_hw_cursor_init(void) {
-    if (!(ghal_capabilities() & GHAL_CAP_HW_CURSOR)) return;
+    if (!(ghal_capabilities() & GHAL_CAP_HW_CURSOR)) {
+        // Backend tanpa plane kursor (mis. virtio: plane digambar frontend host
+        // dan tidak terlihat/terverifikasi dari guest). Compositor tetap di
+        // jalur software — kursor digambar ke framebuffer seperti biasa.
+        serial_print("[cursor] software (backend tanpa HW_CURSOR)\n");
+        return;
+    }
     g_cursor_img_buf = (uint32_t*)kmalloc(HW_CURSOR_SIZE * HW_CURSOR_SIZE * 4);
     if (!g_cursor_img_buf) return;
     g_hw_cursor_surface = ghal_surface_create(HW_CURSOR_SIZE, HW_CURSOR_SIZE, GHAL_FMT_ARGB8888);

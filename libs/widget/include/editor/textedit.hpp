@@ -139,6 +139,15 @@ public:
     // Readonly (output terminal) tak boleh mencuri fokus dari input.
     virtual bool focusable() override { return !readonly; }
 
+    // Batas edit terminal (enter_cb): tepat SETELAH prompt ps1 di baris
+    // terakhir — prompt "user@host:~$ " tidak boleh dihapus/dinusulkan oleh
+    // backspace, navigasi kursor, maupun seleksi. Editor biasa: 0 (bebas).
+    int edit_lower() const {
+        if (!enter_cb) return 0;
+        int ls = line_start(len);
+        return line_has_ps1(ls) ? ls + ps1_len : ls;
+    }
+
     // --- utilitas baris ---
     int line_at(int idx) const {
         int ln = 0;
@@ -216,8 +225,10 @@ public:
     // --- seleksi ---
     bool has_sel() const { return sel_anchor >= 0 && sel_anchor != cur; }
     int  sel_lo() const {
-        if (sel_anchor < 0) return cur;
-        return sel_anchor < cur ? sel_anchor : cur;
+        int lo = edit_lower();
+        if (sel_anchor < 0) return cur < lo ? lo : cur;
+        int a = sel_anchor < cur ? sel_anchor : cur;
+        return a < lo ? lo : a;                     // terminal: seleksi tak menyentuh prompt
     }
     int  sel_hi() const {
         if (sel_anchor < 0) return cur;
@@ -263,6 +274,8 @@ public:
     void move_to(int idx, bool extend) {
         if (idx < 0) idx = 0;
         if (idx > len) idx = len;
+        int lo = edit_lower();
+        if (idx < lo) idx = lo;                     // terminal: jangan masuk prompt
         if (extend) { if (sel_anchor < 0) sel_anchor = cur; }
         else sel_anchor = -1;
         cur = idx;
@@ -423,7 +436,7 @@ public:
             enter_cb(enter_data);
             return;
         }
-        int lower = enter_cb ? line_start(len) : 0;   // edit hanya baris perintah
+        int lower = edit_lower();   // terminal: edit hanya SETELAH prompt di baris terakhir
         // Semua mutasi lewat apply_replace() supaya seleksi ikut terhapus dan
         // langkah undo tercatat satu per aksi (bukan satu per karakter buffer).
         if (ascii >= 32) {                            // printable → sisip/timpa seleksi

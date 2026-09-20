@@ -168,6 +168,13 @@ typedef struct {
     uint32_t padding;
 } __attribute__((packed)) virtio_gpu_resource_unref_t;
 
+// --- RESOURCE_DETACH_BACKING ---
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t resource_id;
+    uint32_t padding;
+} __attribute__((packed)) virtio_gpu_resource_detach_backing_t;
+
 // --- mem_entry for ATTACH_BACKING ---
 typedef struct {
     uint64_t addr;
@@ -201,12 +208,29 @@ typedef struct {
 // --- UPDATE_CURSOR / MOVE_CURSOR (spec: virtio_gpu_update_cursor) ---
 // resource 64x64 (format dengan alpha). x,y = posisi kiri-atas plane
 // kursor di scanout. resource_id=0 pada MOVE_CURSOR = sembunyikan.
+//
+// Urutan field WAJIB persis spec: hdr, pos{scanout_id,x,y,hot_x,hot_y},
+// resource_id, padding (= 56 byte). QEMU memverifikasi ukuran ini
+// (QEMU_BUILD_BUG_ON(... != 56)) dan virtio_gpu_handle_cursor() MEMBUANG
+// command yang lebih pendek dari itu ("cursor size incorrect"), jadi versi
+// lama (40 byte, resource_id sebelum x/y) membuat kursor hw tak pernah jalan.
+// hot_x/hot_y = hot spot di dalam image; 0,0 untuk semua bentuk kursor kita.
+//
+// tail_padding: seluruh struct di file ini `packed`, jadi 52 byte field tidak
+// dibulatkan otomatis — sedangkan struct C di sisi device (QEMU) dibulatkan ke
+// alignment-nya (8, dari fence_id) sehingga menjadi 56 byte dan
+// virtio_gpu_handle_cursor() menolak payload yang lebih pendek. Jadi padding
+// ekor ini bagian dari protokol, bukan sekadar perataan.
 typedef struct {
-    virtio_gpu_ctrl_hdr_t hdr;
-    uint32_t scanout_id;
-    uint32_t resource_id;
-    uint32_t x;
-    uint32_t y;
+    virtio_gpu_ctrl_hdr_t hdr;     // +0
+    uint32_t scanout_id;           // +24
+    uint32_t x;                    // +28
+    uint32_t y;                    // +32
+    uint32_t hot_x;                // +36
+    uint32_t hot_y;                // +40
+    uint32_t resource_id;          // +44
+    uint32_t padding;              // +48
+    uint32_t tail_padding;         // +52..56 (lihat catatan di atas)
 } __attribute__((packed)) virtio_gpu_update_cursor_t;
 
 // --- TRANSFER_TO_HOST_2D ---
@@ -217,5 +241,24 @@ typedef struct {
     uint32_t resource_id;
     uint32_t padding;
 } __attribute__((packed)) virtio_gpu_transfer_to_host_2d_t;
+
+// ============================================================
+// Ukuran struct WAJIB sama dengan yang dibaca device — daftar ini
+// mencerminkan QEMU_BUILD_BUG_ON di hw/display/virtio-gpu-base.c. Command
+// berukuran beda TIDAK dijawab dengan error yang jelas: device hanya menulis
+// "command data size incorrect" di log host lalu memperlakukannya sebagai
+// no-op (driver tetap menerima response OK_NODATA). Sudah pernah menggigit:
+// update_cursor 40 byte → command kursor dibuang tanpa gejala di serial.
+// ============================================================
+_Static_assert(sizeof(virtio_gpu_ctrl_hdr_t) == 24, "ctrl_hdr bukan 24 byte");
+_Static_assert(sizeof(virtio_gpu_resource_unref_t) == 32, "resource_unref bukan 32 byte");
+_Static_assert(sizeof(virtio_gpu_resource_detach_backing_t) == 32, "detach_backing bukan 32 byte");
+_Static_assert(sizeof(virtio_gpu_resource_create_2d_t) == 40, "resource_create_2d bukan 40 byte");
+_Static_assert(sizeof(virtio_gpu_set_scanout_t) == 48, "set_scanout bukan 48 byte");
+_Static_assert(sizeof(virtio_gpu_resource_flush_t) == 48, "resource_flush bukan 48 byte");
+_Static_assert(sizeof(virtio_gpu_transfer_to_host_2d_t) == 56, "transfer_to_host_2d bukan 56 byte");
+_Static_assert(sizeof(virtio_gpu_update_cursor_t) == 56, "update_cursor bukan 56 byte");
+_Static_assert(sizeof(virtio_gpu_mem_entry_t) == 16, "mem_entry bukan 16 byte");
+_Static_assert(sizeof(virtio_gpu_resp_display_info_t) == 408, "resp_display_info bukan 408 byte");
 
 #endif // VIRTIO_GPU_REGS_H
