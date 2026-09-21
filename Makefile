@@ -441,6 +441,7 @@ LIBC_CC        = clang
 LIBC_CXX       = clang++
 LIBC_LD        = ld.lld
 LIBC_NM        = llvm-nm
+LIBC_OBJDUMP   = llvm-objdump
 LIBC_JOBS     ?= 8
 LIBC_PYTHON_EXE ?=
 LIBC_PYTHON_ARG = $(if $(LIBC_PYTHON_EXE),-DPython3_EXECUTABLE=$(LIBC_PYTHON_EXE),)
@@ -607,6 +608,471 @@ libc-phase2-qemu: $(LIBC_PHASE2_APP) $(LIBC_PHASE2_CONF)
 	@grep -q "\[phase2\] PASS" $(LIBC_OUT)/phase2-serial.log || { echo "[libc] FAIL: [phase2] PASS tidak terlihat di serial"; exit 1; }
 
 # ==========================================
+# LLVM libc 22.1.8 — Phase 4: C runtime completeness (time + utils)
+# ==========================================
+# Waktu (hook __llvm_libc_timespec_get_active/utc → syscall #14/#20) +
+# utilitas murni-userspace (strtol-family, qsort/bsearch, rand/srand,
+# abs/div-family, strdup/strndup, aligned_alloc). Klasifikasi per API +
+# backend mapping: docs/design/audit-llvm-libc-22-freestanding.md §16.
+#
+# App smoke DIBANGUN VIA SDK (build/sdk/c, pola Phase 3) — sekaligus bukti
+# SDK mengekspos runtime baru. Bergantung pada $(SDK_STAGE) sehingga
+# `make sdk-c` otomatis memakai libc baru.
+#
+#   make libc-phase4        → build app ELF statis via SDK
+#   make libc-phase4-qemu   → jalankan smoke test otomatis di QEMU
+#
+LIBC_PHASE4_SRC  = tools/libc-phase4/sdk_smoke.c
+LIBC_PHASE4_OBJ  = $(LIBC_OUT)/phase4_app.o
+LIBC_PHASE4_APP  = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin/libc_phase4.elf
+# Varian limine.conf untuk ISO smoke test Phase 4 (direktori sendiri supaya
+# tidak bentrok dengan varian Phase 1/2/3).
+LIBC_PHASE4_CONF = $(LIBC_OUT)/iso4/limine.conf
+
+.PHONY: libc-phase4
+libc-phase4: $(LIBC_PHASE4_APP)
+	@echo "[libc] phase4 app : $(LIBC_PHASE4_APP)"
+
+# Kompilasi MURNI via SDK (guard anti-third_party = batas ergonomi Phase 3).
+$(LIBC_PHASE4_OBJ): $(LIBC_PHASE4_SRC) $(SDK_STAGE)
+	@if grep -q "third_party" $(LIBC_PHASE4_SRC); then echo "[libc] FAIL: phase4 app menyebut third_party (bocor ke internal LLVM)"; exit 1; fi
+	@mkdir -p $(LIBC_OUT)
+	$(LIBC_CC) $(SDK_CFLAGS) -isystem $(SDK_INC) -c $< -o $@
+
+# Link MURNI via SDK: crt + libc + ld semuanya dari build/sdk/c.
+$(LIBC_PHASE4_APP): $(LIBC_PHASE4_OBJ) $(SDK_STAGE)
+	@mkdir -p $(dir $@)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib -T $(SDK_LD) -o $@ $(LIBC_PHASE4_OBJ) $(SDK_CRT) $(SDK_LIB)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[libc] FAIL: _start tidak ada di app Phase 4"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[libc] FAIL: masih ada simbol undefined di app Phase 4"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@echo "[libc] phase4 link OK: $(notdir $@) (entry _start, 0 undefined)"
+
+$(LIBC_PHASE4_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Smoke test LLVM libc 22.1.8 Phase 4 (hanya ada di ISO uji).\n    module_path: boot():/libc_phase4.elf\n    module_string: libc_phase4.elf\n\n' >> $@
+
+.PHONY: libc-phase4-qemu
+libc-phase4-qemu: $(LIBC_PHASE4_APP) $(LIBC_PHASE4_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(LIBC_PHASE4_CONF)
+	@QEMU="$(QEMU)" bash tools/libc-phase4/run-qemu.sh
+	@echo "--- bukti serial [phase4] ---"; grep "\[phase4\]" $(LIBC_OUT)/phase4-serial.log || true
+	@grep -q "\[phase4\] PASS" $(LIBC_OUT)/phase4-serial.log || { echo "[libc] FAIL: [phase4] PASS tidak terlihat di serial"; exit 1; }
+
+# ==========================================
+# Kyuzen C++ SDK — Phase 5 (runtime/foundation) + Phase 6 (libc++ subset)
+# ==========================================
+# Boundary publik C++ di atas C SDK: yang di-commit hanya sumber boundary
+# (sdk/cpp/linker/app.ld + sdk/cpp/include/__config_site +
+#  sdk/cpp/include/__assertion_handler + sdk/cpp/README.md);
+# yang di-generate di-stage ke build/sdk/cpp (gitignored) lewat `make sdk-cpp`:
+#
+#   build/sdk/cpp/include/       ← CLOSURE header libc++ (8 header publik +
+#                                  internal __* yang mereka butuhkan; disalin
+#                                  dari tree LLVM, di-rebase ke root include)
+#   build/sdk/cpp/include/__config_site + __assertion_handler ← milik Kyuzen
+#   build/sdk/cpp/cxxrt.o        ← runtime C++ Phase 5 (new/delete, guard,
+#                                  __dso_handle, pure_virtual, cxa_atexit/
+#                                  finalize; dari libs/libc-port, BUKAN LLVM)
+#   build/sdk/cpp/lib/libcxxrt.a ← runtime libc++ Phase 6 (subset .cpp persis
+#                                  audit §18; BUKAN seluruh libc++)
+#   build/sdk/cpp/linker/app.ld  ← salinan linker script C++ (+ .init_array)
+#
+# CRT (_start + heap + init walk) dan libc.a dipakai ulang dari build/sdk/c
+# (TIDAK diduplikasi). __cxa_atexit/finalize milik cxxrt.o (versi libc.a hanya
+# memfinalisasi dso==NULL sementara clang mendaftar dso=&__dso_handle —
+# bila dipakai, dtor global tak pernah jalan; lihat audit §17).
+#
+#   make sdk-cpp             → stage SDK C++ (+guard anti-stale)
+#   make sdk-cpp-smoke       → app uji Phase 5 murni lewat SDK C++
+#   make sdk-cpp-smoke-qemu  → QEMU Phase 5 (harap PASS + dtor)
+#   make libc-phase5         → alias menu Phase 5
+#   make libc-phase6         → app uji Phase 6 (libc++ subset) via SDK C++
+#   make libc-phase6-qemu    → QEMU Phase 6 (harap [phase6] PASS)
+#   make cpp-app             → contoh hello via wrapper publik `kyuzen-c++`
+#   make cpp-app-run         → QEMU contoh hello (harap Hello from Kyuzen C++)
+#   make cpp-examples        → semua contoh examples/cpp via wrapper publik
+#   make libc-phase7         → smoke SDK publik Phase 7 via wrapper
+#   make libc-phase7-qemu    → QEMU Phase 7 (harap [phase7] PASS)
+#
+SDK_CPP_SRC_DIR = sdk/cpp
+SDK_CPP_DIR     = $(BUILD_DIR)/sdk/cpp
+SDK_CPP_INC     = $(SDK_CPP_DIR)/include
+SDK_CPP_CXXRT   = $(SDK_CPP_DIR)/cxxrt.o
+SDK_CPP_LD      = $(SDK_CPP_DIR)/linker/app.ld
+SDK_CPP_LD_SRC  = $(SDK_CPP_SRC_DIR)/linker/app.ld
+SDK_CPP_WRAPPER_SRC = $(SDK_CPP_SRC_DIR)/bin/kyuzen-c++
+SDK_CPP_WRAPPER = $(SDK_CPP_DIR)/bin/kyuzen-c++
+SDK_CPP_SITE_FILES = $(SDK_CPP_SRC_DIR)/include/__config_site \
+                     $(SDK_CPP_SRC_DIR)/include/__assertion_handler
+SDK_CPP_PUBLIC_HEADERS = $(SDK_CPP_SRC_DIR)/include/kyuzen/config.hpp \
+                         $(SDK_CPP_SRC_DIR)/include/kyuzen/app.hpp \
+                         $(SDK_CPP_SRC_DIR)/include/kyuzen/panic.hpp
+SDK_CPP_STAGE   = $(SDK_CPP_DIR)/.staged
+# Flag kanonis app C++: flag C SDK + C++ (-nostdinc++ agar hermetis dari
+# libc++ host; <stddef.h> tetap dari header freestanding clang).
+SDK_CXXFLAGS    = $(LIBC_TARGET_FLAGS) -O2 -std=c++17 -fno-exceptions -fno-rtti -nostdinc++
+LIBC_CXXRT_SRC  = libs/libc-port/src/kyuzen_cxx_runtime.cpp
+LIBC_CXXRT_OBJ  = $(LIBC_OUT)/port/kyuzen_cxx_runtime.o
+SDK_CPP_SMOKE_SRC = tools/libc-phase5/sdk_smoke.cpp
+SDK_CPP_SMOKE_OBJ = $(LIBC_OUT)/sdk_cpp_smoke.o
+SDK_CPP_SMOKE_APP = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin/libc_phase5.elf
+# Varian limine.conf untuk ISO smoke test C++ (direktori sendiri).
+SDK_CPP_SMOKE_CONF = $(LIBC_OUT)/iso5/limine.conf
+# ---- Phase 6: libc++ subset (audit §18) ----
+LIBCXX_SRC_DIR  = third_party/stdlib/llvm-project/libcxx
+LIBCXX_INCLUDE  = $(LIBCXX_SRC_DIR)/include
+# Header publik yang diaktifkan (tugas §9 + new untuk runtime + functional
+# sebagai dependensi build <algorithm>: __sort memakai ranges::less).
+# functional di-stage karena dibutuhkan kompilasi, BUKAN API Phase 6 yang
+# didukung (lihat guard denylist smoke + audit §18).
+LIBCXX_PUBLIC_HEADERS = array algorithm memory string string_view type_traits utility vector new functional
+# Source libc++ yang dikompilasi (tepat, bukan seluruh src/):
+#   stdexcept.cpp    — kelas exception + __throw_* inline backend (verbose_abort)
+#   verbose_abort.cpp— __libcpp_verbose_abort (vfprintf+abort; fail keras)
+# string.cpp + algorithm.cpp SENGAJA absen (§18): string.cpp (stof/stod return
+# FP) dan instantiasi sort float/double/long-double di algorithm.cpp tak bisa
+# dikompilasi -mno-sse (clang menolak / mengemisikan x87). Penggantinya: slice
+# instantiation milik Kyuzen (verbatim hulu, hanya varian FP-free) — bukan
+# implementasi baru, hanya slicing TU.
+LIBCXXRT_SRCS   = src/stdexcept.cpp src/verbose_abort.cpp
+LIBCXXRT_OBJDIR = $(LIBC_OUT)/libcxxrt
+LIBCXXRT_OBJS   = $(patsubst src/%.cpp,$(LIBCXXRT_OBJDIR)/%.o,$(LIBCXXRT_SRCS)) \
+                  $(LIBCXXRT_OBJDIR)/shims.o $(LIBCXXRT_OBJDIR)/string_inst.o \
+                  $(LIBCXXRT_OBJDIR)/sort_inst.o
+LIBCXXRT_ARCHIVE = $(SDK_CPP_DIR)/lib/libcxxrt.a
+LIBC_AR         = llvm-ar
+# Shim milik Kyuzen (libs/, BUKAN tree LLVM): stub abort() untuk strtof/
+# strtod/strtold yang direferensikan string.cpp tetapi di luar subset C
+# (tipe FP tak bisa dikompilasi -mno-sse; lihat file sumbernya).
+LIBCXXRT_SHIM_SRC = libs/libc-port/src/kyuzen_libcxx_shims.cpp
+$(LIBCXXRT_OBJDIR)/shims.o: $(LIBCXXRT_SHIM_SRC) $(SDK_STAGE) $(LIBCXXRT_PROLOGUE)
+	@mkdir -p $(dir $@)
+	$(LIBC_CXX) $(LIBCXXRT_FLAGS) -c $< -o $@
+# Slice instantiation basic_string<char> (TU milik Kyuzen, §18): kompilasi
+# dengan standar SAMA seperti app (C++17) agar instantiation persis cocok
+# dengan yang diharapkan extern-template declarations sisi app.
+LIBCXXRT_STRING_INST_SRC = libs/libc-port/src/kyuzen_libcxx_string_inst.cpp
+$(LIBCXXRT_OBJDIR)/string_inst.o: $(LIBCXXRT_STRING_INST_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES)
+	@mkdir -p $(dir $@)
+	$(LIBC_CXX) $(LIBCXX_BUILD_FLAGS) -c $< -o $@
+# Slice instantiation __sort non-FP (TU milik Kyuzen, §18): butuh C++20
+# (ranges::less) seperti algorithm.cpp hulu; simbol yang diekspor
+# ABI-nya sama untuk app C++17.
+LIBCXXRT_SORT_INST_SRC = libs/libc-port/src/kyuzen_libcxx_sort_inst.cpp
+$(LIBCXXRT_OBJDIR)/sort_inst.o: $(LIBCXXRT_SORT_INST_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES)
+	@mkdir -p $(dir $@)
+	$(LIBC_CXX) $(LIBCXXRT_FLAGS) -c $< -o $@
+# Flag build DARI tree LLVM (input build, BUKAN boundary app): site config
+# milik Kyuzen dulu, lalu header libc++ tree, lalu header C SDK.
+# _LIBCPP_BUILDING_LIBRARY + AVAILABILITY_MINIMUM_HEADER_VERSION=2 = tepat
+# yang dilakukan CMake hulu saat mengompilasi library (tanpanya, deklarasi
+# legacy-ABI di header vs definisi di .cpp tak konsisten — ditemukan audit).
+LIBCXX_BUILD_FLAGS = $(LIBC_TARGET_FLAGS) -std=c++17 -fno-exceptions -fno-rtti -nostdinc++ -O2 -fno-builtin \
+	-D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2 \
+	-isystem $(SDK_CPP_SRC_DIR)/include -isystem $(LIBCXX_INCLUDE) -isystem $(SDK_INC)
+LIBC_PHASE6_SRC  = tools/libc-phase6/sdk_smoke.cpp
+LIBC_PHASE6_OBJ  = $(LIBC_OUT)/phase6_app.o
+LIBC_PHASE6_APP  = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin/libc_phase6.elf
+LIBC_PHASE6_CONF = $(LIBC_OUT)/iso6/limine.conf
+
+.PHONY: sdk-cpp
+sdk-cpp: $(SDK_CPP_STAGE)
+	@echo "[sdk-cpp] staged : $(SDK_CPP_DIR)"
+
+.PHONY: libc-phase5
+libc-phase5: $(SDK_CPP_SMOKE_APP)
+	@echo "[libc] phase5 app : $(SDK_CPP_SMOKE_APP)"
+
+.PHONY: libc-phase6
+libc-phase6: $(LIBC_PHASE6_APP)
+	@echo "[libc] phase6 app : $(LIBC_PHASE6_APP)"
+
+# Runtime C++ Phase 5: freestanding biasa (malloc/free dari header C SDK,
+# <new>/__config dari tree libc++ + site config Kyuzen). Prereq SDK_STAGE =
+# header C sudah ada. apps TIDAK melihat path tree ini (hanya staged).
+$(LIBC_CXXRT_OBJ): $(LIBC_CXXRT_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES)
+	@mkdir -p $(dir $@)
+	$(LIBC_CXX) $(LIBCXX_BUILD_FLAGS) -c $< -o $@
+
+# Runtime libc++ Phase 6: tepat file audit §18, satu rule pola.
+# Prologue (-include) mendeklarasikan strtof/strtod/strtold untuk TU libc++
+# (dibutuhkan string.cpp; definisi = stub abort di shims.o).
+# -std=c++20 HANYA untuk TU archive (bukan app): algorithm.cpp memakai
+# ranges::less (butuh C++20); hulu mengompilasi library sekali sebagai
+# standar terbaru untuk semua standar app — model yang sama. Simbol yang
+# diekspor (__sort untuk iterator char/int) ABI-nya tak terpengaruh versi
+# standar TU. App tetap -std=c++17 (SDK_CXXFLAGS tak berubah).
+LIBCXXRT_PROLOGUE = libs/libc-port/src/kyuzen_libcxx_prologue.h
+LIBCXXRT_FLAGS = $(LIBCXX_BUILD_FLAGS) -std=c++20 -include $(LIBCXXRT_PROLOGUE)
+$(LIBCXXRT_OBJDIR)/%.o: $(LIBCXX_SRC_DIR)/src/%.cpp $(SDK_STAGE) $(SDK_CPP_SITE_FILES) $(LIBCXXRT_PROLOGUE)
+	@mkdir -p $(dir $@)
+	$(LIBC_CXX) $(LIBCXXRT_FLAGS) -c $< -o $@
+
+$(LIBCXXRT_ARCHIVE): $(LIBCXXRT_OBJS)
+	@mkdir -p $(dir $@)
+	@rm -f $@
+	$(LIBC_AR) rcs $@ $(LIBCXXRT_OBJS)
+	@echo "[libcxxrt] archive : $@ ($$(llvm-ar t $@ | wc -l) member)"
+
+# Satu stage atomik: closure header + site files + cxxrt.o + libcxxrt.a + ld.
+# Closure dihitung OTOMATIS via clang -M per header publik (bukan daftar
+# manual): hanya file di bawah libcxx/include yang disalin, di-rebase ke
+# root staged include. Bila tree LLVM berubah, closure mengikuti tanpa edit
+# Makefile — dan -M yang gagal membuat stage ikut gagal (keras, bukan diam).
+$(SDK_CPP_STAGE): $(LIBC_CXXRT_OBJ) $(LIBCXXRT_ARCHIVE) $(SDK_CPP_LD_SRC) $(SDK_CPP_WRAPPER_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES) $(SDK_CPP_PUBLIC_HEADERS)
+	@mkdir -p $(SDK_CPP_INC) $(dir $(SDK_CPP_CXXRT)) $(dir $(SDK_CPP_LD))
+	@rm -rf $(SDK_CPP_INC)
+	@mkdir -p $(SDK_CPP_INC)
+	@cp $(SDK_CPP_SITE_FILES) $(SDK_CPP_INC)/
+	@mkdir -p $(SDK_CPP_INC)/kyuzen
+	@cp $(SDK_CPP_PUBLIC_HEADERS) $(SDK_CPP_INC)/kyuzen/
+	@mkdir -p $(dir $(SDK_CPP_WRAPPER))
+	@cp $(SDK_CPP_WRAPPER_SRC) $(SDK_CPP_WRAPPER)
+	@chmod +x $(SDK_CPP_WRAPPER)
+	@for h in $(LIBCXX_PUBLIC_HEADERS); do \
+		echo "#include <$$h>" | $(LIBC_CXX) $(LIBCXX_BUILD_FLAGS) -x c++ -M -MT x - 2>/dev/null | tr ' ' '\n' | grep "^$(LIBCXX_INCLUDE)/" | sed 's|\\$$||'; \
+	done | sort -u | while read f; do \
+		rel=$${f#$(LIBCXX_INCLUDE)/}; \
+		mkdir -p $(SDK_CPP_INC)/$$(dirname $$rel); \
+		cp $$f $(SDK_CPP_INC)/$$rel; \
+	done
+	@for h in $(LIBCXX_PUBLIC_HEADERS); do \
+		test -f $(SDK_CPP_INC)/$$h || { echo "[sdk-cpp] FAIL: header <$$h> tak ter-stage"; exit 1; }; \
+	done
+	@test -f $(SDK_CPP_INC)/__config_site -a -f $(SDK_CPP_INC)/__assertion_handler || { echo "[sdk-cpp] FAIL: site files tak ter-stage"; exit 1; }
+	@for h in config.hpp app.hpp panic.hpp; do \
+		test -f $(SDK_CPP_INC)/kyuzen/$$h || { echo "[sdk-cpp] FAIL: header publik <kyuzen/$$h> tak ter-stage"; exit 1; }; \
+	done
+	@test -x $(SDK_CPP_WRAPPER) || { echo "[sdk-cpp] FAIL: wrapper kyuzen-c++ tak ter-stage executable"; exit 1; }
+	@cp $(LIBC_CXXRT_OBJ) $(SDK_CPP_CXXRT)
+	@cp $(SDK_CPP_LD_SRC) $(SDK_CPP_LD)
+	@$(LIBC_NM) --defined-only $(SDK_CPP_CXXRT) | grep -qE " [Tt] _Znwm$$" || { echo "[sdk-cpp] FAIL: cxxrt.o tanpa operator new"; exit 1; }
+	@$(LIBC_NM) --defined-only $(SDK_CPP_CXXRT) | grep -qE " [Tt] __cxa_guard_acquire$$" || { echo "[sdk-cpp] FAIL: cxxrt.o tanpa __cxa_guard_acquire"; exit 1; }
+	@$(LIBC_NM) --defined-only $(SDK_CPP_CXXRT) | grep -qE " [BbDd] __dso_handle$$" || { echo "[sdk-cpp] FAIL: cxxrt.o tanpa __dso_handle"; exit 1; }
+	@$(LIBC_NM) --defined-only $(LIBCXXRT_ARCHIVE) | grep -q "__libcpp_verbose_abort" || { echo "[sdk-cpp] FAIL: libcxxrt.a tanpa __libcpp_verbose_abort (verbose_abort.cpp basi?)"; exit 1; }
+	@$(LIBC_NM) --defined-only $(LIBCXXRT_ARCHIVE) | grep -q "_ZNSt11logic_errorC1EPKc" || { echo "[sdk-cpp] FAIL: libcxxrt.a tanpa logic_error (stdexcept.cpp basi?)"; exit 1; }
+	@touch $@
+	@echo "[sdk-cpp] stage OK: include/closure + kyuzen/ + kyuzen-c++ + cxxrt.o + libcxxrt.a + app.ld"
+
+# Ordering eksplisit untuk file TANPA rule sendiri (salinan cp): relink bila
+# stage berubah. (LIBCXXRT_ARCHIVE punya rule ar sendiri — di luar sini agar
+# tak sirkular dengan SDK_CPP_STAGE yang membutuhkannya sebagai prereq.)
+$(SDK_CPP_CXXRT) $(SDK_CPP_LD) $(SDK_CPP_WRAPPER): $(SDK_CPP_STAGE)
+	@:
+
+.PHONY: sdk-cpp-smoke
+sdk-cpp-smoke: $(SDK_CPP_SMOKE_APP)
+	@echo "[sdk-cpp] smoke app : $(SDK_CPP_SMOKE_APP)"
+
+# Kompilasi MURNI via SDK C++ (guard anti-third_party + anti-libc++ host).
+$(SDK_CPP_SMOKE_OBJ): $(SDK_CPP_SMOKE_SRC) $(SDK_CPP_STAGE)
+	@if grep -q "third_party" $(SDK_CPP_SMOKE_SRC); then echo "[sdk-cpp] FAIL: smoke app menyebut third_party (bocor ke internal LLVM)"; exit 1; fi
+	@if grep -qE "#include <(string|vector|iostream|exception|typeinfo|memory|utility|tuple|array)>" $(SDK_CPP_SMOKE_SRC); then echo "[sdk-cpp] FAIL: smoke app memakai header libc++ (di luar Phase 5)"; exit 1; fi
+	@mkdir -p $(LIBC_OUT)
+	$(LIBC_CXX) $(SDK_CXXFLAGS) -isystem $(SDK_CPP_INC) -isystem $(SDK_INC) -c $< -o $@
+
+# Link MURNI via SDK: cxxrt + crt + libc + ld C++. Dependensi file eksplisit
+# (bukan hanya .staged) agar relink terjadi bila crt/lib berubah.
+$(SDK_CPP_SMOKE_APP): $(SDK_CPP_SMOKE_OBJ) $(SDK_CPP_STAGE) $(SDK_CPP_CXXRT) $(SDK_CRT) $(SDK_LIB)
+	@mkdir -p $(dir $@)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib -T $(SDK_CPP_LD) -o $@ $(SDK_CPP_SMOKE_OBJ) $(SDK_CPP_CXXRT) $(SDK_CRT) $(SDK_LIB)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[sdk-cpp] FAIL: _start tidak ada di app C++"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[sdk-cpp] FAIL: masih ada simbol undefined di app C++"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@echo "[sdk-cpp] smoke link OK: $(notdir $@) (entry _start, 0 undefined)"
+
+$(SDK_CPP_SMOKE_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Smoke test Kyuzen C++ SDK Phase 5 (hanya ada di ISO uji).\n    module_path: boot():/libc_phase5.elf\n    module_string: libc_phase5.elf\n\n' >> $@
+
+.PHONY: sdk-cpp-smoke-qemu
+sdk-cpp-smoke-qemu: $(SDK_CPP_SMOKE_APP) $(SDK_CPP_SMOKE_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(SDK_CPP_SMOKE_CONF)
+	@QEMU="$(QEMU)" bash tools/libc-phase5/run-qemu.sh
+	@echo "--- bukti serial [phase5] ---"; grep "\[phase5\]" $(LIBC_OUT)/phase5-serial.log || true
+	@grep -q "\[phase5\] PASS" $(LIBC_OUT)/phase5-serial.log || { echo "[sdk-cpp] FAIL: [phase5] PASS tidak terlihat di serial"; exit 1; }
+	@grep -q "\[phase5\] global dtor ok" $(LIBC_OUT)/phase5-serial.log || { echo "[sdk-cpp] FAIL: dtor global tak jalan (finalisasi rusak)"; exit 1; }
+
+# ---- Phase 6: smoke libc++ subset (via SDK C++ staged, hermetis) ----
+.PHONY: libc-phase6-qemu
+libc-phase6-qemu: $(LIBC_PHASE6_APP) $(LIBC_PHASE6_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(LIBC_PHASE6_CONF)
+	@QEMU="$(QEMU)" bash tools/libc-phase6/run-qemu.sh
+	@echo "--- bukti serial [phase6] ---"; grep "\[phase6\]" $(LIBC_OUT)/phase6-serial.log || true
+	@grep -q "\[phase6\] PASS" $(LIBC_OUT)/phase6-serial.log || { echo "[libc] FAIL: [phase6] PASS tidak terlihat di serial"; exit 1; }
+
+# Kompilasi MURNI via staged SDK (SATU-SATUNYA -isystem C++ = staged;
+# guard menolak rujukan tree LLVM dan header libc++ di luar subset).
+$(LIBC_PHASE6_OBJ): $(LIBC_PHASE6_SRC) $(SDK_CPP_STAGE)
+	@if grep -q "third_party" $(LIBC_PHASE6_SRC); then echo "[libc] FAIL: phase6 app menyebut third_party (bocor ke internal LLVM)"; exit 1; fi
+	@if grep -qE "#include <(iostream|fstream|filesystem|regex|locale|thread|mutex|future|chrono|random|shared_mutex|atomic|condition_variable|stop_token|semaphore|latch|barrier|functional)" $(LIBC_PHASE6_SRC); then echo "[libc] FAIL: phase6 app memakai header di luar subset Phase 6"; exit 1; fi
+	@mkdir -p $(LIBC_OUT)
+	$(LIBC_CXX) $(SDK_CXXFLAGS) -isystem $(SDK_CPP_INC) -isystem $(SDK_INC) -c $< -o $@
+
+# Link: app + libcxxrt.a + cxxrt + crt + libc + ld C++.
+$(LIBC_PHASE6_APP): $(LIBC_PHASE6_OBJ) $(SDK_CPP_STAGE) $(LIBCXXRT_ARCHIVE) $(SDK_CPP_CXXRT) $(SDK_CRT) $(SDK_LIB)
+	@mkdir -p $(dir $@)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib -T $(SDK_CPP_LD) -o $@ $(LIBC_PHASE6_OBJ) $(LIBCXXRT_ARCHIVE) $(SDK_CPP_CXXRT) $(SDK_CRT) $(SDK_LIB)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[libc] FAIL: _start tidak ada di app Phase 6"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[libc] FAIL: masih ada simbol undefined di app Phase 6"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_NM) --defined-only $@ | grep -qE " (__cxa_throw|__cxa_begin_catch|__cxa_end_catch|_Unwind_|__gxx_personality_|pthread_)"; then \
+		echo "[libc] FAIL: app Phase 6 menarik runtime exception/thread"; $(LIBC_NM) --defined-only $@ | grep -E " (__cxa_throw|_Unwind_|pthread_)"; exit 1; \
+	fi
+	@echo "[libc] phase6 link OK: $(notdir $@) (entry _start, 0 undefined, 0 cxa/unwind/pthread)"
+
+$(LIBC_PHASE6_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Smoke test libc++ subset Phase 6 (hanya ada di ISO uji).\n    module_path: boot():/libc_phase6.elf\n    module_string: libc_phase6.elf\n\n' >> $@
+
+# ---- Phase 7: C++ Application SDK (boundary publik + wrapper) ----
+# Aplikasi hanya memakai `build/sdk/cpp/bin/kyuzen-c++`; recipe di bawah
+# tidak menyebut path LLVM/port/build internal. Wrapper memiliki flag,
+# include, arsip, dan urutan link kanonis. Dependensi normal pada
+# $(SDK_CPP_STAGE) membuat app relink bila SDK di-stage ulang.
+LIBC_PHASE7_SRC  = tools/libc-phase7/sdk_smoke.cpp
+LIBC_PHASE7_APP  = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin/libc_phase7.elf
+LIBC_PHASE7_CONF = $(LIBC_OUT)/iso7/limine.conf
+LIBC_PHASE7_ISOLATION = tools/libc-phase7/check-sdk-isolation.sh
+CPP_EX_DIR       = examples/cpp
+CPP_OUT          = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin
+CPP_HELLO_SRC    = $(CPP_EX_DIR)/hello/hello.cpp
+CPP_HELLO_APP    = $(CPP_OUT)/cpp_hello.elf
+CPP_HELLO_CONF   = $(LIBC_OUT)/iso-hello/limine.conf
+CPP_EX_SRCS      = $(CPP_HELLO_SRC) \
+                   $(CPP_EX_DIR)/containers/containers.cpp \
+                   $(CPP_EX_DIR)/strings/strings.cpp
+CPP_EX_APPS      = $(CPP_HELLO_APP) \
+                   $(CPP_OUT)/cpp_containers.elf \
+                   $(CPP_OUT)/cpp_strings.elf
+
+.PHONY: cpp-sdk-isolation
+cpp-sdk-isolation: $(SDK_CPP_STAGE)
+	@bash $(LIBC_PHASE7_ISOLATION) $(LIBC_PHASE7_SRC) $(CPP_EX_SRCS)
+
+.PHONY: libc-phase7
+libc-phase7: $(LIBC_PHASE7_APP)
+	@echo "[libc] phase7 app : $(LIBC_PHASE7_APP)"
+
+$(LIBC_PHASE7_APP): $(LIBC_PHASE7_SRC) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@bash $(LIBC_PHASE7_ISOLATION) $<
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $< -o $@
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[libc] FAIL: _start tidak ada di app Phase 7"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[libc] FAIL: masih ada simbol undefined di app Phase 7"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_NM) --defined-only $@ | grep -qE " (__cxa_throw|__cxa_begin_catch|__cxa_end_catch|_Unwind_|__gxx_personality_|pthread_)"; then \
+		echo "[libc] FAIL: app Phase 7 menarik runtime exception/thread"; $(LIBC_NM) --defined-only $@ | grep -E " (__cxa_throw|_Unwind_|pthread_)"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "%xmm|%ymm|%zmm"; then \
+		echo "[libc] FAIL: app Phase 7 mengandung instruksi SSE"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "	(fld|fst|fxch|fucom|fadd|fmul|fdiv|fsub|fild|fist|fcom)"; then \
+		echo "[libc] FAIL: app Phase 7 mengandung instruksi x87"; exit 1; \
+	fi
+	@echo "[libc] phase7 link OK: $(notdir $@) (entry _start, 0 undefined, 0 cxa/unwind/pthread, 0 SSE/x87)"
+
+$(LIBC_PHASE7_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Smoke test C++ Application SDK Phase 7 (hanya ada di ISO uji).\n    module_path: boot():/libc_phase7.elf\n    module_string: libc_phase7.elf\n\n' >> $@
+
+.PHONY: libc-phase7-qemu
+libc-phase7-qemu: $(LIBC_PHASE7_APP) $(LIBC_PHASE7_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(LIBC_PHASE7_CONF)
+	@QEMU="$(QEMU)" bash tools/libc-phase7/run-qemu.sh
+	@echo "--- bukti serial [phase7] ---"; grep "\[phase7\]" $(LIBC_OUT)/phase7-serial.log || true
+	@grep -q "\[phase7\] PASS" $(LIBC_OUT)/phase7-serial.log || { echo "[libc] FAIL: [phase7] PASS tidak terlihat di serial"; exit 1; }
+
+.PHONY: cpp-app cpp-examples
+cpp-app: $(CPP_HELLO_APP)
+	@echo "[cpp-app] example : $(CPP_HELLO_APP)"
+
+cpp-examples: $(CPP_EX_APPS)
+	@echo "[cpp-app] examples: $(CPP_EX_APPS)"
+
+$(CPP_HELLO_APP): $(CPP_HELLO_SRC) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@bash $(LIBC_PHASE7_ISOLATION) $<
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $< -o $@
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[cpp-app] FAIL: _start tidak ada di hello"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[cpp-app] FAIL: masih ada simbol undefined di hello"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "%xmm|%ymm|%zmm"; then \
+		echo "[cpp-app] FAIL: contoh hello mengandung instruksi SSE"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "	(fld|fst|fxch|fucom|fadd|fmul|fdiv|fsub|fild|fist|fcom)"; then \
+		echo "[cpp-app] FAIL: contoh hello mengandung instruksi x87"; exit 1; \
+	fi
+	@echo "[cpp-app] link OK: $(notdir $@) (entry _start, 0 undefined, 0 SSE/x87)"
+
+$(CPP_OUT)/cpp_containers.elf: $(CPP_EX_DIR)/containers/containers.cpp $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@bash $(LIBC_PHASE7_ISOLATION) $<
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $< -o $@
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[cpp-app] FAIL: _start tidak ada di containers"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[cpp-app] FAIL: masih ada simbol undefined di containers"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "%xmm|%ymm|%zmm"; then \
+		echo "[cpp-app] FAIL: contoh containers mengandung instruksi SSE"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "	(fld|fst|fxch|fucom|fadd|fmul|fdiv|fsub|fild|fist|fcom)"; then \
+		echo "[cpp-app] FAIL: contoh containers mengandung instruksi x87"; exit 1; \
+	fi
+	@echo "[cpp-app] link OK: $(notdir $@) (entry _start, 0 undefined, 0 SSE/x87)"
+
+$(CPP_OUT)/cpp_strings.elf: $(CPP_EX_DIR)/strings/strings.cpp $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@bash $(LIBC_PHASE7_ISOLATION) $<
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $< -o $@
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[cpp-app] FAIL: _start tidak ada di strings"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[cpp-app] FAIL: masih ada simbol undefined di strings"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "%xmm|%ymm|%zmm"; then \
+		echo "[cpp-app] FAIL: contoh strings mengandung instruksi SSE"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "	(fld|fst|fxch|fucom|fadd|fmul|fdiv|fsub|fild|fist|fcom)"; then \
+		echo "[cpp-app] FAIL: contoh strings mengandung instruksi x87"; exit 1; \
+	fi
+	@echo "[cpp-app] link OK: $(notdir $@) (entry _start, 0 undefined, 0 SSE/x87)"
+
+$(CPP_HELLO_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Contoh Kyuzen C++ SDK (hanya ada di ISO uji).\n    module_path: boot():/cpp_hello.elf\n    module_string: cpp_hello.elf\n\n' >> $@
+
+.PHONY: cpp-app-run
+cpp-app-run: $(CPP_HELLO_APP) $(CPP_HELLO_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(CPP_HELLO_CONF)
+	@KYUZEN_TEST_APP_PATH="$(CPP_HELLO_APP)" \
+		KYUZEN_TEST_APP="cpp_hello" \
+		KYUZEN_TEST_DISK="$(LIBC_OUT)/cpp-app-disk.img" \
+		KYUZEN_TEST_SERIAL="$(LIBC_OUT)/cpp-app-serial.log" \
+		KYUZEN_TEST_MONLOG="$(LIBC_OUT)/cpp-app-qemu-monitor.log" \
+		KYUZEN_TEST_MARKER="Hello from Kyuzen C++ SDK" \
+		KYUZEN_TEST_SUCCESS="Hello from Kyuzen C++ SDK 7.0" \
+		KYUZEN_TEST_FAILURE="[cpp-app] FAIL" \
+		QEMU="$(QEMU)" bash tools/libc-phase7/run-qemu.sh
+	@echo "--- bukti serial [cpp-app] ---"; grep "Hello from Kyuzen C++ SDK" $(LIBC_OUT)/cpp-app-serial.log || true
+	@grep -qF "Hello from Kyuzen C++ SDK 7.0" $(LIBC_OUT)/cpp-app-serial.log || { echo "[cpp-app] FAIL: sapaan contoh tidak terlihat di serial"; exit 1; }
+
+# ==========================================
 # Kyuzen C SDK — Phase 3 (staging + smoke app)
 # ==========================================
 # Boundary publik aplikasi C: yang di-commit hanya sumber boundary
@@ -615,8 +1081,8 @@ libc-phase2-qemu: $(LIBC_PHASE2_APP) $(LIBC_PHASE2_CONF)
 #
 #   build/sdk/c/include/  ← salinan header hasil hdrgen (bukan manual,
 #                            bukan internal src/__support/...)
-#   build/sdk/c/lib/libc.a ← salinan archive Phase 0–2 terverifikasi
-#   build/sdk/c/crt/crt.o  ← salinan object port (_start + exit/errno/heap/stdio)
+#   build/sdk/c/lib/libc.a ← salinan archive Phase 0–4 terverifikasi
+#   build/sdk/c/crt/crt.o  ← salinan object port (_start + exit/errno/heap/stdio/time)
 #   build/sdk/c/linker/app.ld ← salinan linker script kanonis
 #
 #   make sdk-c             → stage SDK dari sumber LLVM yang di-pin
@@ -660,14 +1126,28 @@ $(SDK_STAGE): $(LIBC_ARCHIVE) $(LIBC_PORT_OBJ) $(SDK_LD_SRC)
 	@cp $(LIBC_INCLUDE)/*.h $(SDK_INC)/
 	@cp $(LIBC_INCLUDE)/llvm-libc-types/*.h $(SDK_INC)/llvm-libc-types/
 	@cp $(LIBC_INCLUDE)/llvm-libc-macros/*.h $(SDK_INC)/llvm-libc-macros/
+	@# Subdirektori per-OS (Phase 4: time-macros.h meng-include
+	@# "baremetal/time-macros.h" di bawah __ELF__; tanpa ini time.h gagal
+	@# dikompilasi). Hanya *.h yang disalin — artefak build CMakeFiles/
+	@# Makefile/cmake_install.cmake TIDAK ikut ke SDK.
+	@mkdir -p $(SDK_INC)/llvm-libc-macros/baremetal
+	@cp $(LIBC_INCLUDE)/llvm-libc-macros/baremetal/*.h $(SDK_INC)/llvm-libc-macros/baremetal/
 	@cp $(LIBC_ARCHIVE) $(SDK_LIB)
 	@cp $(LIBC_PORT_OBJ) $(SDK_CRT)
 	@cp $(SDK_LD_SRC) $(SDK_LD)
 	@test -f $(SDK_INC)/stdio.h -a -f $(SDK_INC)/stdlib.h -a -f $(SDK_INC)/string.h -a -f $(SDK_INC)/ctype.h -a -f $(SDK_INC)/errno.h || { echo "[sdk] FAIL: header SDK tak lengkap di $(SDK_INC)"; exit 1; }
+	@test -f $(SDK_INC)/time.h || { echo "[sdk] FAIL: time.h tak ada di SDK (libc.a basi pra-Phase 4?) — hapus build/libc/cmake lalu make libc-phase0"; exit 1; }
 	@$(LIBC_NM) --defined-only $(SDK_LIB) | grep -qE "[Tt] printf$$" || { echo "[sdk] FAIL: libc.a basi (tanpa printf) — hapus build/libc/cmake lalu make libc-phase0"; exit 1; }
 	@$(LIBC_NM) --defined-only $(SDK_LIB) | grep -qE "[Tt] malloc$$" || { echo "[sdk] FAIL: libc.a basi (tanpa malloc) — hapus build/libc/cmake lalu make libc-phase0"; exit 1; }
+	@$(LIBC_NM) --defined-only $(SDK_LIB) | grep -qE "[Tt] qsort$$" || { echo "[sdk] FAIL: libc.a basi (tanpa qsort Phase 4) — hapus build/libc/cmake lalu make libc-phase0"; exit 1; }
+	@$(LIBC_NM) --defined-only $(SDK_LIB) | grep -qE "[Tt] timespec_get$$" || { echo "[sdk] FAIL: libc.a basi (tanpa timespec_get Phase 4) — hapus build/libc/cmake lalu make libc-phase0"; exit 1; }
 	@touch $@
 	@echo "[sdk] stage OK: include + libc.a + crt.o + app.ld"
+
+# File stage sebagai target nyata (ordering eksplisit): app yang me-link
+# file-file ini dijamin dibangun SETELAH stage, bukan dari salinan basi.
+$(SDK_CRT) $(SDK_LIB) $(SDK_LD): $(SDK_STAGE)
+	@:
 
 .PHONY: sdk-c-smoke
 sdk-c-smoke: $(SDK_SMOKE_APP)
@@ -904,9 +1384,14 @@ $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@rm -f $(ISO_ROOT)/*.elf
 	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
-	@# Opsional: app smoke test libc Phase 1/2 + SDK Phase 3 (tidak diproduksi build normal).
+	@# Opsional: app smoke test libc Phase 1/2/4/5/6/7 + SDK Phase 3 + contoh C++ (tidak diproduksi build normal).
 	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
 	@if [ -f $(LIBC_PHASE2_APP) ]; then cp $(LIBC_PHASE2_APP) $(ISO_ROOT)/libc_phase2.elf; fi
+	@if [ -f $(LIBC_PHASE4_APP) ]; then cp $(LIBC_PHASE4_APP) $(ISO_ROOT)/libc_phase4.elf; fi
+	@if [ -f $(SDK_CPP_SMOKE_APP) ]; then cp $(SDK_CPP_SMOKE_APP) $(ISO_ROOT)/libc_phase5.elf; fi
+	@if [ -f $(LIBC_PHASE6_APP) ]; then cp $(LIBC_PHASE6_APP) $(ISO_ROOT)/libc_phase6.elf; fi
+	@if [ -f $(LIBC_PHASE7_APP) ]; then cp $(LIBC_PHASE7_APP) $(ISO_ROOT)/libc_phase7.elf; fi
+	@if [ -f $(CPP_HELLO_APP) ]; then cp $(CPP_HELLO_APP) $(ISO_ROOT)/cpp_hello.elf; fi
 	@if [ -f $(SDK_SMOKE_APP) ]; then cp $(SDK_SMOKE_APP) $(ISO_ROOT)/sdk_smoke.elf; fi
 	@cp limine/BOOTX64.EFI $(ISO_ROOT)/EFI/BOOT/
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!

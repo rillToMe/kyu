@@ -1,5 +1,6 @@
 // ============================================================
-// KyuzenOS — LLVM libc 22.1.8 port layer (Phase 1: exit + errno + malloc)
+// KyuzenOS — LLVM libc 22.1.8 port layer (Phase 1–5: exit + errno + malloc +
+// stdio + time + init_array walk)
 //
 // Satu-satunya file yang tahu cara menyambungkan LLVM libc 22.1.8 (baremetal,
 // target x86_64-pc-none-elf) ke KyuzenOS. Tidak ada header/kernel/libc Kyuzen
@@ -10,9 +11,17 @@
 //   2. `__llvm_libc_errno()`     — LIBC_ERRNO_MODE_EXTERNAL (config baremetal).
 //   3. `freelist_heap`           — instance heap yang dipakai malloc/calloc/
 //                                  realloc/free/aligned_alloc baremetal.
-//   4. `_start`                  — crt minimal Kyuzen (bukan bagian libc).
+//   4. `_start`                  — crt minimal Kyuzen (bukan bagian libc);
+//                                  Phase 5: + menjalankan .init_array C++
+//                                  (weak symbol → app C tidak terpengaruh).
 //   5. `__llvm_libc_stdio_cookie` + 3 objek cookie + `__llvm_libc_stdio_read`/
 //      `__llvm_libc_stdio_write` — src/__support/OSUtil/baremetal/io.h.
+//   6. `__llvm_libc_timespec_get_active/utc` — src/time/baremetal/clock.cpp
+//      dan timespec_get.cpp (Phase 4: → syscall #14/#20).
+//
+// Runtime C++ (operator new/delete, guard, __dso_handle, pure_virtual) ada
+// di file terpisah kyuzen_cxx_runtime.cpp — file ini hanya menambahkan walk
+// init_array agar _start tunggal melayani C dan C++.
 //
 // Arena malloc (desain Phase 1, lihat docs/design/audit-llvm-libc-22-freestanding.md §13):
 //   LLVM `FreeListHeap` (src/__support/freelist_heap.h) adalah allocator di atas
@@ -51,6 +60,8 @@
 #define KZ_SYS_EXIT_CODE 34    // RBX = status -> proc_exit(status)
 #define KZ_SYS_READ      48    // RBX = fd, RCX = buf, RDX = count -> byte / -1
 #define KZ_SYS_WRITE     49    // RBX = fd, RCX = buf, RDX = count -> byte / -1
+#define KZ_SYS_UPTIME    14    // -> ms sejak boot (timer_get_ms, uint64, no wrap)
+#define KZ_SYS_GET_TIME  20    // RBX = ptr uint32_t[6] -> [thn,bln,hari,jam,menit,detik]
 
 static inline void *kyuzen_sys_alloc(size_t size) {
   void *ret;
@@ -200,6 +211,88 @@ extern "C" long __llvm_libc_stdio_write(void *cookie, const char *buf,
   return n;
 }
 
+// ------------------------------------------------------------
+// time — hook vendor baremetal Phase 4 (`src/time/baremetal/clock.cpp` dan
+// `timespec_get.cpp` mendeklarasikan persis):
+//
+//   extern "C" bool __llvm_libc_timespec_get_active(struct timespec *ts);
+//   extern "C" bool __llvm_libc_timespec_get_utc(struct timespec *ts);
+//
+// `struct timespec` LLVM 22.1.8 x86_64 = { time_t tv_sec (64-bit),
+// long tv_nsec } (`libc/include/llvm-libc-types/struct_timespec.h`). Port
+// mendefinisikan struct ABI-identik sendiri (pola yang sama dengan hook stdio
+// yang memakai `long`/`unsigned long` alih-alih ssize_t/size_t) agar tidak
+// bergantung pada header generated.
+//
+// Pemetaan (tanpa syscall baru, tanpa klaim palsu):
+//   active (monotonik, dipakai clock()) → #14 uptime ms (timer_get_ms,
+//            uint64: overflow ≈ 584 juta tahun — tidak perlu khawatir wrap).
+//            Uptime BUKAN wall clock: nol saat boot, tidak ada zona waktu.
+//   utc (kalender, dipakai timespec_get(TIME_UTC)) → #20 RTC yang mengisi
+//            uint32_t[6] = [tahun,bulan,hari,jam,menit,detik]. Konversi
+//            sipil→epoch memakai days-from-civil (Howard Hinnant, integer
+//            murni, tanpa tabel). Presisi detik (tv_nsec = 0).
+//
+// Kualifikasi RTC (drivers/rtc.c, jujur didokumentasikan, bukan diperbaiki di
+// sini karena kernel tidak boleh diubah fase ini):
+//   - CMOS dibaca sebagai UTC lalu +7 jam (WIB); jam yang overflow dibungkus
+//     mod 24 TANPA carry ke hari. Konversi di bawah setia pada field yang
+//     dilaporkan — di sekitar tengah malam WIB bisa selisih satu hari.
+//   - Tahun = BCD + 2000 (rentang efektif 2000–2099).
+// ------------------------------------------------------------
+struct kyuzen_timespec {
+  long tv_sec;
+  long tv_nsec;
+};
+
+static inline unsigned long long kyuzen_sys_uptime_ms() {
+  unsigned long long ret;
+  __asm__ volatile("int $0x80"
+                   : "=a"(ret)
+                   : "a"((long)KZ_SYS_UPTIME)
+                   : "memory");
+  return ret;
+}
+
+extern "C" bool __llvm_libc_timespec_get_active(struct kyuzen_timespec *ts) {
+  if (ts == nullptr)
+    return false;
+  unsigned long long ms = kyuzen_sys_uptime_ms();
+  ts->tv_sec = static_cast<long>(ms / 1000ULL);
+  ts->tv_nsec = static_cast<long>((ms % 1000ULL) * 1000000ULL);
+  return true;
+}
+
+extern "C" bool __llvm_libc_timespec_get_utc(struct kyuzen_timespec *ts) {
+  if (ts == nullptr)
+    return false;
+  unsigned int civil[6] = {0, 0, 0, 0, 0, 0};
+  __asm__ volatile("int $0x80"
+                   :
+                   : "a"((long)KZ_SYS_GET_TIME), "b"(civil)
+                   : "memory");
+  unsigned long year = civil[0], mon = civil[1], day = civil[2];
+  unsigned long hour = civil[3], min = civil[4], sec = civil[5];
+  // Validasi struktural (bukan wall-clock host): tolak field mustahil agar
+  // timespec_get mengembalikan 0 alih-alih epoch sampah.
+  if (year < 2000 || year > 2100 || mon < 1 || mon > 12 || day < 1 ||
+      day > 31 || hour > 23 || min > 59 || sec > 60)
+    return false;
+  // days-from-civil → hari sejak 1970-01-01 (integer murni).
+  long y = static_cast<long>(mon <= 2 ? year - 1 : year);
+  long era = (y >= 0 ? y : y - 399) / 400;
+  unsigned long yoe = static_cast<unsigned long>(y - era * 400);
+  unsigned long mp = (mon + 9) % 12;
+  unsigned long doy = (153 * mp + 2) / 5 + day - 1;
+  unsigned long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  long days = era * 146097 + static_cast<long>(doe) - 719468;
+  ts->tv_sec =
+      days * 86400L +
+      static_cast<long>(hour * 3600UL + min * 60UL + sec);
+  ts->tv_nsec = 0;
+  return true;
+}
+
 namespace LIBC_NAMESPACE_DECL {
 
 // Definisi kuat yang MENGGANTIKAN `freelist_heap.cpp` milik libc (simbol ini
@@ -248,14 +341,48 @@ void kyuzen_libc_heap_init() {
 //
 // `and $-16, %rsp` menormalkan stack; `call` lalu mendorong return address
 // sehingga kyuzen_libc_start_c melihat RSP % 16 == 8 — keadaan ABI SysV yang
-// benar untuk sebuah fungsi. Tidak ada .init_array/.fini_array di Phase 1
-// (tidak ada global constructor di subset ini — lihat known limitations §13).
+// benar untuk sebuah fungsi.
+//
+// Phase 5: SEBELUM main, _start menjalankan constructor global C++ dari
+// .init_array (linker script sdk/cpp; app C tidak punya section ini).
+// Simbol dibaca via weak reference: app C melihat start==end==NULL dan
+// melewati loop — perilaku C IDENTIK dengan Phase 1–4 (bukti: regresi
+// [phase1..4] PASS tak berubah).
+//
+// Phase 5b: return dari main MASUK exit(), bukan langsung ke hook
+// __llvm_libc_exit. exit() = __cxa_finalize + hook. Untuk app C ini identik
+// (daftar finalizer kosong → finalize no-op; bukti: regresi tak berubah).
+// Untuk app C++ inilah yang menjalankan dtor global: memotong jalur ini
+// (return → hook langsung) membuat dtor tidak pernah jalan meskipun
+// terdaftar benar. compiler mendaftarkan dtor via __cxa_atexit (cxxrt.o di
+// app C++, libc.a di app C) — teardown = LIFO atexit yang benar.
 // ------------------------------------------------------------
 extern "C" int main(int argc, char **argv);
+extern "C" [[noreturn]] void exit(int status); // LLVM libc: finalize + hook
+
+// Fungsi init C++: void(int, char**, char**) menurut konvensi; sebagian besar
+// mengabaikan argumen.
+//
+// Simbol __init_array_start/end didefinisikan linker script (sdk/cpp).
+// Dideklarasikan sebagai data weak: &simbol = alamatnya (0 bila tak
+// didefinisikan — kasus app C yang memakai script sdk/c). Loop membandingkan
+// ALAMAT, tidak pernah me-dereference batas akhir (isi setelah section bisa
+// nol/apa saja — membacanya sebagai syarat akan melewatkan array 1-entri).
+typedef void (*kyuzen_init_fn_t)(int, char **, char **);
+extern "C" void *__init_array_start __attribute__((weak));
+extern "C" void *__init_array_end __attribute__((weak));
 
 extern "C" [[noreturn]] void kyuzen_libc_start_c(long argc, char **argv) {
   LIBC_NAMESPACE::kyuzen_libc_heap_init();
-  __llvm_libc_exit(main(static_cast<int>(argc), argv));
+  kyuzen_init_fn_t *fn =
+      reinterpret_cast<kyuzen_init_fn_t *>(&__init_array_start);
+  kyuzen_init_fn_t *end =
+      reinterpret_cast<kyuzen_init_fn_t *>(&__init_array_end);
+  for (; fn != end; ++fn) {
+    if (*fn != nullptr)
+      (*fn)(static_cast<int>(argc), argv, nullptr);
+  }
+  exit(main(static_cast<int>(argc), argv));
 }
 
 __asm__(".text\n"

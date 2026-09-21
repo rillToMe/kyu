@@ -13,8 +13,8 @@ sdk/c/                      # COMMITTED: sumber boundary (bukan artifact)
 
 build/sdk/c/                # GENERATED (gitignored): hasil `make sdk-c`
 ├── include/                # header publik LLVM libc (disalin dari hasil hdrgen)
-├── lib/libc.a              # archive terverifikasi Phase 0–2
-├── crt/crt.o               # startup + port layer (_start, exit/errno/heap/stdio)
+├── lib/libc.a              # archive terverifikasi Phase 0–4
+├── crt/crt.o               # startup + port layer (_start, exit/errno/heap/stdio/time)
 └── linker/app.ld           # salinan linker script kanonis
 ```
 
@@ -57,6 +57,18 @@ dipakai membangun `libc.a`) menjamin tidak ada instruksi itu.
 Arena malloc tetap 1 MiB; stdin terpetakan tapi belum teruji runtime;
 tanpa `%f`, tanpa keluarga `scanf`, tanpa file stream/seek/close/flush;
 `feof`/`ferror` stub; errno tanpa TLS; link statis; tanpa POSIX/pthread.
+Phase 4 menambah: `time.h` (clock/timespec_get UTC via #14/#20 — uptime
+BUKAN wall clock; tanpa `time()`/`nanosleep`/`clock_gettime`), `strtol`-
+family/`atoi`/`abs`/`div`-family/`qsort`/`bsearch`/`rand`/`srand` (PRNG saja),
+`strdup`/`strndup`/`aligned_alloc`; tanpa `getenv`/`setenv`, tanpa libm.
+Phase 6 menambah satu stub C: `remove()` (selalu -1, tanpa FS — dibutuhkan
+agar header libc++ `<cstdio>` dapat dikompilasi; app C tidak memakainya).
+
+C++ BUKAN bagian boundary ini — tinggal di `sdk/cpp/` (fondasi Phase 5–6 +
+application SDK Phase 7: header `kyuzen/`, wrapper `kyuzen-c++`, contoh;
+tanpa STL/libc++ baru, tanpa exception/RTTI).
+Dari sudut pandang C tidak ada yang berubah (bukti: regresi Phase 1–4 hijau
+setelah `_start` melayani `.init_array` C++ via weak symbol).
 
 ## Perintah
 

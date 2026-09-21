@@ -1,0 +1,46 @@
+// ============================================================
+// Kyuzen C++ SDK — libc++ assertion handler (Phase 6)
+//
+// Pengganti file GENERATED CMake (`<__assertion_handler>`, lihat
+// libcxx/vendor/llvm/default_assertion_handler.in). Diadaptasi dengan
+// cabang C++03-dingin dibuang (SDK ini C++17 saja).
+//
+// Semantik situs = QUICK_ENFORCE (lihat __config_site): pelanggaran
+// hardening/pengaman = trap seketika via __builtin_trap — tanpa
+// dependensi OS/stdio, tanpa unwind. Gagal = keras, bukan diam.
+// ============================================================
+#ifndef _LIBCPP___ASSERTION_HANDLER
+#define _LIBCPP___ASSERTION_HANDLER
+
+#include <__config>
+#include <__log_hardening_failure>
+#include <__verbose_abort>
+#include <__verbose_trap>
+
+#if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+#  pragma GCC system_header
+#endif
+
+#if _LIBCPP_ASSERTION_SEMANTIC == _LIBCPP_ASSERTION_SEMANTIC_IGNORE
+#  define _LIBCPP_ASSERTION_HANDLER(message) ((void)0)
+
+#elif _LIBCPP_ASSERTION_SEMANTIC == _LIBCPP_ASSERTION_SEMANTIC_OBSERVE
+#  define _LIBCPP_ASSERTION_HANDLER(message) _LIBCPP_LOG_HARDENING_FAILURE(message)
+
+#elif _LIBCPP_ASSERTION_SEMANTIC == _LIBCPP_ASSERTION_SEMANTIC_QUICK_ENFORCE
+#  define _LIBCPP_ASSERTION_HANDLER(message) _LIBCPP_VERBOSE_TRAP(message)
+
+#elif _LIBCPP_ASSERTION_SEMANTIC == _LIBCPP_ASSERTION_SEMANTIC_ENFORCE
+#  define _LIBCPP_ASSERTION_HANDLER(message) _LIBCPP_VERBOSE_ABORT("%s", message)
+
+#else
+
+#  error _LIBCPP_ASSERTION_SEMANTIC must be set to one of the following values: \
+_LIBCPP_ASSERTION_SEMANTIC_IGNORE, \
+_LIBCPP_ASSERTION_SEMANTIC_OBSERVE, \
+_LIBCPP_ASSERTION_SEMANTIC_QUICK_ENFORCE, \
+_LIBCPP_ASSERTION_SEMANTIC_ENFORCE
+
+#endif
+
+#endif // _LIBCPP___ASSERTION_HANDLER
