@@ -163,7 +163,7 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
-                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c                        test/virtqueue_test.c test/virtio_gpu_cmd_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c test/ata_devmodel_test.c,\
+                        test/aa_math_test.c test/desktop_manifest_test.cpp test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c                        test/virtqueue_test.c test/virtio_gpu_cmd_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c test/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
 
 # --- Pemetaan sumber → object (generik, tidak ada daftar object manual) ---
@@ -711,6 +711,11 @@ SDK_CPP_SITE_FILES = $(SDK_CPP_SRC_DIR)/include/__config_site \
 SDK_CPP_PUBLIC_HEADERS = $(SDK_CPP_SRC_DIR)/include/kyuzen/config.hpp \
                          $(SDK_CPP_SRC_DIR)/include/kyuzen/app.hpp \
                          $(SDK_CPP_SRC_DIR)/include/kyuzen/panic.hpp
+# ---- Phase 8: header publik libdesktop (sumber kanonis di libs/, BUKAN
+# duplikat di sdk/cpp — stage menyalinnya ke kyuzen/desktop/) ----
+LIBDESKTOP_SRC_DIR = libs/libdesktop
+LIBDESKTOP_INC_SRC = $(LIBDESKTOP_SRC_DIR)/include
+LIBDESKTOP_PUBLIC_HEADERS = $(wildcard $(LIBDESKTOP_INC_SRC)/kyuzen/desktop/*.hpp)
 SDK_CPP_STAGE   = $(SDK_CPP_DIR)/.staged
 # Flag kanonis app C++: flag C SDK + C++ (-nostdinc++ agar hermetis dari
 # libc++ host; <stddef.h> tetap dari header freestanding clang).
@@ -823,13 +828,15 @@ $(LIBCXXRT_ARCHIVE): $(LIBCXXRT_OBJS)
 # manual): hanya file di bawah libcxx/include yang disalin, di-rebase ke
 # root staged include. Bila tree LLVM berubah, closure mengikuti tanpa edit
 # Makefile — dan -M yang gagal membuat stage ikut gagal (keras, bukan diam).
-$(SDK_CPP_STAGE): $(LIBC_CXXRT_OBJ) $(LIBCXXRT_ARCHIVE) $(SDK_CPP_LD_SRC) $(SDK_CPP_WRAPPER_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES) $(SDK_CPP_PUBLIC_HEADERS)
+$(SDK_CPP_STAGE): $(LIBC_CXXRT_OBJ) $(LIBCXXRT_ARCHIVE) $(SDK_CPP_LD_SRC) $(SDK_CPP_WRAPPER_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES) $(SDK_CPP_PUBLIC_HEADERS) $(LIBDESKTOP_PUBLIC_HEADERS)
 	@mkdir -p $(SDK_CPP_INC) $(dir $(SDK_CPP_CXXRT)) $(dir $(SDK_CPP_LD))
 	@rm -rf $(SDK_CPP_INC)
 	@mkdir -p $(SDK_CPP_INC)
 	@cp $(SDK_CPP_SITE_FILES) $(SDK_CPP_INC)/
 	@mkdir -p $(SDK_CPP_INC)/kyuzen
 	@cp $(SDK_CPP_PUBLIC_HEADERS) $(SDK_CPP_INC)/kyuzen/
+	@mkdir -p $(SDK_CPP_INC)/kyuzen/desktop
+	@cp $(LIBDESKTOP_PUBLIC_HEADERS) $(SDK_CPP_INC)/kyuzen/desktop/
 	@mkdir -p $(dir $(SDK_CPP_WRAPPER))
 	@cp $(SDK_CPP_WRAPPER_SRC) $(SDK_CPP_WRAPPER)
 	@chmod +x $(SDK_CPP_WRAPPER)
@@ -846,6 +853,10 @@ $(SDK_CPP_STAGE): $(LIBC_CXXRT_OBJ) $(LIBCXXRT_ARCHIVE) $(SDK_CPP_LD_SRC) $(SDK_
 	@test -f $(SDK_CPP_INC)/__config_site -a -f $(SDK_CPP_INC)/__assertion_handler || { echo "[sdk-cpp] FAIL: site files tak ter-stage"; exit 1; }
 	@for h in config.hpp app.hpp panic.hpp; do \
 		test -f $(SDK_CPP_INC)/kyuzen/$$h || { echo "[sdk-cpp] FAIL: header publik <kyuzen/$$h> tak ter-stage"; exit 1; }; \
+	done
+	@test -n "$(LIBDESKTOP_PUBLIC_HEADERS)" || { echo "[sdk-cpp] FAIL: header publik libdesktop kosong (libs/libdesktop/include/kyuzen/desktop/*.hpp hilang?)"; exit 1; }
+	@for h in $(notdir $(LIBDESKTOP_PUBLIC_HEADERS)); do \
+		test -f $(SDK_CPP_INC)/kyuzen/desktop/$$h || { echo "[sdk-cpp] FAIL: header publik <kyuzen/desktop/$$h> tak ter-stage"; exit 1; }; \
 	done
 	@test -x $(SDK_CPP_WRAPPER) || { echo "[sdk-cpp] FAIL: wrapper kyuzen-c++ tak ter-stage executable"; exit 1; }
 	@cp $(LIBC_CXXRT_OBJ) $(SDK_CPP_CXXRT)
@@ -1072,6 +1083,167 @@ cpp-app-run: $(CPP_HELLO_APP) $(CPP_HELLO_CONF)
 	@echo "--- bukti serial [cpp-app] ---"; grep "Hello from Kyuzen C++ SDK" $(LIBC_OUT)/cpp-app-serial.log || true
 	@grep -qF "Hello from Kyuzen C++ SDK 7.0" $(LIBC_OUT)/cpp-app-serial.log || { echo "[cpp-app] FAIL: sapaan contoh tidak terlihat di serial"; exit 1; }
 
+# ---- Phase 8: Desktop Framework Foundation (libdesktop + desktop ganti) ----
+# Arsitektur: kernel/KWM (tak tersentuh) ← libdesktop (framework, arsip
+# statis) ← apps/<DESKTOP_APP> (implementasi userspace biasa, ELF statis).
+# Slot boot tetap $(ELF_DIR)/desktop.elf (login/limine/manifest tak berubah);
+# DESKTOP_APP memilih SUMBER yang mengisi slot itu. Stamp .selected memaksa
+# relink saat implementasi diganti (object per-impl terisolasi di objdir
+# masing-masing, jadi ganti bolak-balik tak pernah basi).
+LIBDESKTOP_SRCS   = $(LIBDESKTOP_SRC_DIR)/src/event.cpp \
+                    $(LIBDESKTOP_SRC_DIR)/src/window_manager.cpp \
+                    $(LIBDESKTOP_SRC_DIR)/src/canvas.cpp \
+                    $(LIBDESKTOP_SRC_DIR)/src/system.cpp \
+                    $(LIBDESKTOP_SRC_DIR)/src/application.cpp
+LIBDESKTOP_OBJDIR = $(BUILD_DIR)/obj/libdesktop
+LIBDESKTOP_OBJS   = $(patsubst $(LIBDESKTOP_SRC_DIR)/src/%.cpp,$(LIBDESKTOP_OBJDIR)/%.o,$(LIBDESKTOP_SRCS))
+LIBDESKTOP_LIB    = $(BUILD_DIR)/desktop/libdesktop.a
+LIBDESKTOP_ISOLATION = tools/desktop-phase8/check-desktop-isolation.sh
+# Header C bersama untuk TU framework/implementasi (userlib.h/libgui.h +
+# color_types.h — pola yang sama dipakai user_apps/Makefile CFLAGS_COMMON).
+LIBDESKTOP_SYS_INC = -I$(LIBDESKTOP_INC_SRC) -I$(INCLUDE_DIR) -Ilibs/color/include
+
+DESKTOP_APP      ?= desktop
+DESKTOP_IMPL_DIR  = apps/$(DESKTOP_APP)
+DESKTOP_SRCS      = $(wildcard $(DESKTOP_IMPL_DIR)/*.cpp)
+DESKTOP_OBJDIR    = $(BUILD_DIR)/obj/desktop-$(DESKTOP_APP)
+DESKTOP_OBJS      = $(patsubst $(DESKTOP_IMPL_DIR)/%.cpp,$(DESKTOP_OBJDIR)/%.o,$(DESKTOP_SRCS))
+DESKTOP_SELECTED  = $(BUILD_DIR)/desktop/.selected
+DESKTOP_ELF       = $(ELF_DIR)/desktop.elf
+# Object C userspace yang dipakai link desktop (userlib/libgui — dibangun
+# sub-make user_apps; pola di bawah memicu sub-make itu bila berkas hilang).
+USERAPP_LIB_OBJS  = $(BUILD_DIR)/obj/user/apps/userlib.o $(BUILD_DIR)/obj/user/apps/libgui.o
+
+DTSMOKE_SRC   = tools/desktop-phase8/dtsmoke.cpp
+DTSMOKE_APP   = $(LIBC_OUT)/desktop-phase8/dtsmoke.elf
+DTSMOKE_CONF  = $(LIBC_OUT)/desktop-phase8/limine.conf
+
+.PHONY: libdesktop
+libdesktop: $(LIBDESKTOP_LIB)
+	@echo "[libdesktop] archive : $(LIBDESKTOP_LIB)"
+
+.PHONY: desktop
+desktop: $(DESKTOP_ELF)
+	@echo "[desktop] selected : $(DESKTOP_APP) -> $(DESKTOP_ELF)"
+
+.PHONY: desktop-isolation
+desktop-isolation:
+	@bash $(LIBDESKTOP_ISOLATION)
+
+$(LIBDESKTOP_OBJDIR)/%.o: $(LIBDESKTOP_SRC_DIR)/src/%.cpp $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(LIBDESKTOP_SYS_INC)
+
+$(LIBDESKTOP_LIB): $(LIBDESKTOP_OBJS) $(SDK_CPP_STAGE)
+	@bash $(LIBDESKTOP_ISOLATION)
+	@mkdir -p $(dir $@)
+	@rm -f $@
+	$(LIBC_AR) rcs $@ $(LIBDESKTOP_OBJS)
+	@test "$$(llvm-ar t $@ | wc -l)" = "5" || { echo "[libdesktop] FAIL: arsip harus 5 member (event/window_manager/canvas/system/application)"; exit 1; }
+	@$(LIBC_NM) --defined-only $@ | grep -q "Application.*run\|_ZN6kyuzen7desktop11Application3run" || { echo "[libdesktop] FAIL: arsip tanpa Application::run"; exit 1; }
+	@echo "[libdesktop] archive OK: $(notdir $@) (5 member)"
+
+# Stamp pilihan implementasi: ganti isi + touch bila DESKTOP_APP berubah
+# (inilah yang memaksa relink desktop.elf bolak-balik tanpa `make clean`).
+.PHONY: FORCE
+$(DESKTOP_SELECTED): FORCE
+	@mkdir -p $(dir $@)
+	@if [ "$$(cat $@ 2>/dev/null)" != "$(DESKTOP_APP)" ]; then echo "$(DESKTOP_APP)" > $@; echo "[desktop] selected implementation: $(DESKTOP_APP)"; fi
+
+$(DESKTOP_OBJDIR)/%.o: $(DESKTOP_IMPL_DIR)/%.cpp $(SDK_CPP_STAGE) $(DESKTOP_SELECTED) | $(SDK_CPP_WRAPPER)
+	@test -d $(DESKTOP_IMPL_DIR) || { echo "[desktop] FAIL: implementasi '$(DESKTOP_APP)' tidak ada (apps/$(DESKTOP_APP)/ hilang?)"; exit 1; }
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(LIBDESKTOP_SYS_INC)
+
+$(BUILD_DIR)/obj/user/apps/%.o:
+	$(MAKE) -C user_apps all
+
+$(DESKTOP_ELF): $(DESKTOP_SELECTED) $(DESKTOP_OBJS) $(LIBDESKTOP_LIB) $(USERAPP_LIB_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@test -n "$(DESKTOP_SRCS)" || { echo "[desktop] FAIL: implementasi '$(DESKTOP_APP)' tanpa *.cpp di $(DESKTOP_IMPL_DIR)/"; exit 1; }
+	@bash $(LIBDESKTOP_ISOLATION)
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(DESKTOP_OBJS) $(LIBDESKTOP_LIB) $(USERAPP_LIB_OBJS) -o $@ $(LIBDESKTOP_SYS_INC)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[desktop] FAIL: _start tidak ada di desktop.elf ($(DESKTOP_APP))"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[desktop] FAIL: masih ada simbol undefined di desktop.elf ($(DESKTOP_APP))"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_NM) --defined-only $@ | grep -qE " (__cxa_throw|__cxa_begin_catch|__cxa_end_catch|_Unwind_|__gxx_personality_|pthread_)"; then \
+		echo "[desktop] FAIL: desktop.elf menarik runtime exception/thread"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "%xmm|%ymm|%zmm"; then \
+		echo "[desktop] FAIL: desktop.elf mengandung instruksi SSE ($(DESKTOP_APP))"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "	(fld|fst|fxch|fucom|fadd|fmul|fdiv|fsub|fild|fist|fcom)"; then \
+		echo "[desktop] FAIL: desktop.elf mengandung instruksi x87 ($(DESKTOP_APP))"; exit 1; \
+	fi
+	@echo "[desktop] link OK: desktop.elf ($(DESKTOP_APP), entry _start, 0 undefined, 0 SSE/x87)"
+
+# Framework smoke: konsol biasa (tanpa window) yang memakai libdesktop.
+$(DTSMOKE_APP): $(DTSMOKE_SRC) $(LIBDESKTOP_LIB) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@bash $(LIBDESKTOP_ISOLATION)
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $< $(LIBDESKTOP_LIB) -o $@ $(LIBDESKTOP_SYS_INC)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[desktop] FAIL: _start tidak ada di dtsmoke"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[desktop] FAIL: masih ada simbol undefined di dtsmoke"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@echo "[desktop] smoke link OK: $(notdir $@)"
+
+$(DTSMOKE_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Framework smoke desktop Phase 8 (hanya ada di ISO uji).\n    module_path: boot():/dtsmoke.elf\n    module_string: dtsmoke.elf\n\n' >> $@
+
+.PHONY: desktop-smoke
+desktop-smoke: $(DTSMOKE_APP) $(DTSMOKE_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(DTSMOKE_CONF)
+	@KYUZEN_TEST_APP_PATH="$(DTSMOKE_APP)" \
+		KYUZEN_TEST_APP="dtsmoke" \
+		KYUZEN_TEST_START="dtsmoke" \
+		KYUZEN_TEST_DISK="$(LIBC_OUT)/desktop-phase8/dtsmoke-disk.img" \
+		KYUZEN_TEST_SERIAL="$(LIBC_OUT)/desktop-phase8/dtsmoke-serial.log" \
+		KYUZEN_TEST_MONLOG="$(LIBC_OUT)/desktop-phase8/dtsmoke-qemu-monitor.log" \
+		KYUZEN_TEST_MARKER="[dtsmoke]" \
+		KYUZEN_TEST_SUCCESS="[dtsmoke] PASS" \
+		KYUZEN_TEST_FAILURE="[dtsmoke] FAIL" \
+		QEMU="$(QEMU)" bash tools/desktop-phase8/run-qemu.sh
+	@echo "--- bukti serial [dtsmoke] ---"; grep "\[dtsmoke\]" $(LIBC_OUT)/desktop-phase8/dtsmoke-serial.log || true
+	@grep -q "\[dtsmoke\] PASS" $(LIBC_OUT)/desktop-phase8/dtsmoke-serial.log || { echo "[desktop] FAIL: [dtsmoke] PASS tidak terlihat di serial"; exit 1; }
+
+# Boot desktop pilihan di QEMU (ISO default — desktop.elf = slot boot).
+# Bukti: marker startup + shell tetap hidup (echo) + tanpa panic.
+.PHONY: desktop-qemu
+desktop-qemu: $(DESKTOP_ELF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso
+	@KYUZEN_TEST_DISK="$(LIBC_OUT)/desktop-phase8/desktop-disk.img" \
+		KYUZEN_TEST_SERIAL="$(LIBC_OUT)/desktop-phase8/desktop-serial.log" \
+		KYUZEN_TEST_MONLOG="$(LIBC_OUT)/desktop-phase8/desktop-qemu-monitor.log" \
+		KYUZEN_TEST_MARKER="[desktop]" \
+		KYUZEN_TEST_SUCCESS="[desktop] shell started (libdesktop)" \
+		KYUZEN_TEST_FAILURE="PANIC" \
+		QEMU="$(QEMU)" bash tools/desktop-phase8/run-qemu.sh
+	@echo "--- bukti serial [desktop] ---"; grep "\[desktop\]" $(LIBC_OUT)/desktop-phase8/desktop-serial.log || true
+	@grep -qF "[desktop] shell started (libdesktop)" $(LIBC_OUT)/desktop-phase8/desktop-serial.log || { echo "[desktop] FAIL: marker startup tak terlihat di serial"; exit 1; }
+
+.PHONY: desktop-qemu-test
+desktop-qemu-test:
+	@$(MAKE) desktop DESKTOP_APP=test-desktop
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso
+	@KYUZEN_TEST_DISK="$(LIBC_OUT)/desktop-phase8/test-desktop-disk.img" \
+		KYUZEN_TEST_SERIAL="$(LIBC_OUT)/desktop-phase8/test-desktop-serial.log" \
+		KYUZEN_TEST_MONLOG="$(LIBC_OUT)/desktop-phase8/test-desktop-qemu-monitor.log" \
+		KYUZEN_TEST_MARKER="[test-desktop]" \
+		KYUZEN_TEST_SUCCESS="[test-desktop] shutdown ok" \
+		KYUZEN_TEST_FAILURE="PANIC" \
+		QEMU="$(QEMU)" bash tools/desktop-phase8/run-qemu.sh
+	@echo "--- bukti serial [test-desktop] ---"; grep "\[test-desktop\]" $(LIBC_OUT)/desktop-phase8/test-desktop-serial.log || true
+	@grep -qF "[test-desktop] shutdown ok" $(LIBC_OUT)/desktop-phase8/test-desktop-serial.log || { echo "[desktop] FAIL: siklus test-desktop tak lengkap di serial"; exit 1; }
+	@$(MAKE) desktop DESKTOP_APP=desktop
+	@echo "[desktop] implementasi default dipulihkan (desktop.elf = Kyuzen Desktop lagi)"
+
 # ==========================================
 # Kyuzen C SDK — Phase 3 (staging + smoke app)
 # ==========================================
@@ -1267,25 +1439,31 @@ test/libui_theme_test: test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.
 	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
 	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
 
-# Desktop host test: desktop.c di-include langsung dengan syscall FS di-stub.\
-# Menguji discover_apps()/manifest DAN siklus notifikasi crash (kartu harus\
-# bisa ditutup oleh klik/waktu habis, bukan menempel selamanya).\
+# Desktop host test: modul apps/desktop + backend libdesktop dikompilasi
+# langsung dengan syscall di-stub. Menguji discovery/manifest launcher,
+# terjemahan event + WindowManager, poll/klik taskbar, DAN siklus notifikasi
+# crash (kartu harus bisa ditutup oleh klik/waktu habis). C++ (HOSTCXX)
+# karena modulnya C++ — tanpa libc host untuk string (helper lokal).
 # Jalankan: make test-desktop
 .PHONY: test-desktop
 test-desktop: test/desktop_manifest_test
 	./test/desktop_manifest_test
 
-test/desktop_manifest_test: test/desktop_manifest_test.c user_apps/desktop.c include/userlib.h include/libgui.h \
-                           libs/color/include/color_types.h
-	$(HOSTCC) -O1 -Wall -iquote include -Ilibs/color/include -o $@ test/desktop_manifest_test.c
+DESKTOP_HOST_TUS = test/desktop_manifest_test.cpp \
+                   apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp \
+                   libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
+test/desktop_manifest_test: $(DESKTOP_HOST_TUS) include/userlib.h include/libgui.h \
+                            $(LIBDESKTOP_PUBLIC_HEADERS) apps/desktop/launcher.hpp apps/desktop/taskbar.hpp apps/desktop/crash_notice.hpp apps/desktop/theme.hpp
+	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/libdesktop/include -Iapps/desktop -Ilibs/color/include -o $@ test/desktop_manifest_test.cpp apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
 
 
 # ==========================================
 # USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf)
 # ==========================================
 
-# Daftar app HARUS sinkron dengan APP_NAMES di user_apps/Makefile,
-# manifests/*.app, dan blok module_path di limine.conf.
+# Daftar app HARUS sinkron dengan APP_NAMES di user_apps/Makefile (kecuali
+# desktop — dibangun aturan Phase 8 dari apps/$(DESKTOP_APP)/, bukan
+# user_apps/), manifests/*.app, dan blok module_path di limine.conf.
 APP_NAMES = fileman viewer clock calc taskmgr notepad badptr widget_demo desktop \
             terminal settings procinfo exit_test kill_test fd_test echo cat \
             pipe_test fork_test
@@ -1297,10 +1475,15 @@ APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 #     di dalamnya: hanya app/header yang berubah yang dikompilasi ulang), dan
 #   - ISO tetap dibangun ulang HANYA kalau timestamp ELF benar-benar berubah.
 .PHONY: apps
-apps: sdk-c
+apps: sdk-c sdk-cpp libdesktop
 	$(MAKE) -C user_apps all
+	$(MAKE) $(DESKTOP_ELF) DESKTOP_APP=$(DESKTOP_APP)
 
-$(APP_ELFS): | apps
+# desktop.elf DIKECUALIKAN dari relay ini: ia punya rule file nyata Phase 8
+# (DESKTOP_ELF) dengan prereq-nya sendiri. Menggabungkannya ke sini akan
+# menggabungkan prereq order-only `apps` ke rule desktop → `apps` memanggil
+# `$(MAKE) $(DESKTOP_ELF)` → loop rekursi RH (`make desktop` fork-bomb).
+$(filter-out $(DESKTOP_ELF),$(APP_ELFS)): | apps
 
 # --- RUST APPS (Phase 1: no_std userspace Rust) ---
 # Cargo tetap build system Rust (workspace di rust/); hasil akhir di-link dengan

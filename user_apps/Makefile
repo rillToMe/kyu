@@ -115,10 +115,13 @@ PNG_OBJ        = $(OBJ_DIR)/apps/png.o        # dekoder PNG bersama (apps/png.c,
 # limine.conf, dan APP_NAMES di Makefile root.
 #   GUI_APPS    : link libui toolkit + png + color_utils
 #   SIMPLE_APPS : hanya butuh userlib
-#   OTHER_APPS  : desktop (libgui saja) dan terminal (shell engine + toolkit)
+#   OTHER_APPS  : terminal (shell engine + toolkit). Desktop TIDAK di sini —
+#                 dibangun root Makefile dari apps/$(DESKTOP_APP)/ via
+#                 libdesktop + C++ SDK (aturan Phase 8), output tetap
+#                 ../build/apps/desktop.elf (slot boot).
 GUI_APPS    = fileman viewer clock calc taskmgr notepad settings widget_demo
 SIMPLE_APPS = procinfo exit_test kill_test fd_test echo cat pipe_test fork_test badptr
-OTHER_APPS  = desktop terminal
+OTHER_APPS  = terminal
 APP_NAMES   = $(GUI_APPS) $(SIMPLE_APPS) $(OTHER_APPS)
 
 ALL_ELFS = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
@@ -183,7 +186,6 @@ $(OBJ_DIR)/libs/widget/%.o: $(WIDGET_DIR)/%.cpp | $(OBJ_DIRS)
 # ==========================================================
 GUI_LIBS     = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 TERMINAL_LIBS= $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
-DESKTOP_LIBS = $(USERLIB_OBJ) $(LIBGUI_OBJ)
 
 # Link generic: ELF dibangun dari object app-nya + library grup-nya.
 # clock DIKECUALIKAN dari pola ini — ia di-link via SDK (ENTRY _start).
@@ -203,11 +205,6 @@ $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(SIMPLE_APPS))): $(ELF_DIR)/%.elf: $(O
 	@mkdir -p $(ELF_DIR)
 	@echo "[LD] $(notdir $@) ke $(APP_BASE)"
 	$(LD) $(LDFLAGS) $< $(USERLIB_OBJ) -o $@
-
-$(ELF_DIR)/desktop.elf: $(OBJ_DIR)/user_apps/desktop.o $(DESKTOP_LIBS)
-	@mkdir -p $(ELF_DIR)
-	@echo "[LD] desktop.elf (libgui renderer)"
-	$(LD) $(LDFLAGS) $< $(DESKTOP_LIBS) -o $@
 
 $(ELF_DIR)/terminal.elf: $(OBJ_DIR)/user_apps/terminal.o $(TERMINAL_LIBS)
 	@mkdir -p $(ELF_DIR)
