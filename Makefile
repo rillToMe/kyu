@@ -413,6 +413,297 @@ clean-tool:
 	rm -f test/*.exe test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
 	      test/ata_devmodel_test test/color_test test/textedit_test test/libui_theme_test
 
+# ==========================================
+# LLVM libc 22.1.8 — freestanding x86_64 (Phase 0)
+# ==========================================
+# Cross build LLVM libc (third_party/stdlib/llvm-project @ tag llvmorg-22.1.8)
+# untuk triple KyuzenOS + link smoke test. Referensi desain:
+# docs/design/audit-llvm-libc-22-freestanding.md.
+#
+# Opt-in dan modular: TIDAK ada kernel/aplikasi yang di-link ke archive ini.
+# Artifact hanya hidup di build/libc/ (gitignored, ikut `make clean`).
+#
+# Prasyarat host: cmake + make/sh (msys2) di PATH — generator "Unix Makefiles",
+# ninja tidak diperlukan; python3 + pyyaml untuk hdrgen LLVM. Bila `python`
+# bukan interpreter yang punya pyyaml, set LIBC_PYTHON_EXE.
+#
+#   make libc-phase0
+#   make libc-phase0 LIBC_PYTHON_EXE=E:/Tools/Language/Python/python.exe
+LIBC_SRC       = third_party/stdlib/llvm-project
+LIBC_TRIPLE    = x86_64-pc-none-elf
+LIBC_OUT       = $(BUILD_DIR)/libc
+LIBC_CMAKE_DIR = $(LIBC_OUT)/cmake
+LIBC_INCLUDE   = $(LIBC_CMAKE_DIR)/libc/include
+LIBC_ARCHIVE   = $(LIBC_OUT)/$(LIBC_TRIPLE)/lib/libc.a
+LIBC_CACHE     = $(LIBC_SRC)/libc/cmake/caches/$(LIBC_TRIPLE).cmake
+LIBC_CFG_DIR   = $(LIBC_SRC)/libc/config/baremetal/x86_64
+LIBC_CC        = clang
+LIBC_CXX       = clang++
+LIBC_LD        = ld.lld
+LIBC_NM        = llvm-nm
+LIBC_JOBS     ?= 8
+LIBC_PYTHON_EXE ?=
+LIBC_PYTHON_ARG = $(if $(LIBC_PYTHON_EXE),-DPython3_EXECUTABLE=$(LIBC_PYTHON_EXE),)
+LIBC_TARGET_FLAGS = --target=$(LIBC_TRIPLE) -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float
+LIBC_SMOKE_SRC = tools/libc-phase0/smoke.c
+LIBC_SMOKE_OBJ = $(LIBC_OUT)/smoke.o
+LIBC_SMOKE_ELF = $(LIBC_OUT)/smoke.elf
+
+.PHONY: libc-phase0
+libc-phase0: $(LIBC_SMOKE_ELF)
+	@echo "[libc] archive : $(LIBC_ARCHIVE)"
+	@echo "[libc] headers : $(LIBC_INCLUDE)"
+	@echo "[libc] smoke   : $(LIBC_SMOKE_ELF) (entry phase0_entry)"
+
+# Konfigurasi ulang otomatis bila cache/config berubah (ninja tidak dipakai).
+$(LIBC_CMAKE_DIR)/Makefile: $(LIBC_CACHE) $(LIBC_CFG_DIR)/entrypoints.txt $(LIBC_CFG_DIR)/headers.txt
+	"$(CMAKE)" -S $(LIBC_SRC)/runtimes -B $(LIBC_CMAKE_DIR) -G "Unix Makefiles" \
+		-C $(LIBC_CACHE) \
+		-DCMAKE_C_COMPILER=$(LIBC_CC) -DCMAKE_CXX_COMPILER=$(LIBC_CXX) \
+		-DCMAKE_BUILD_TYPE=Release $(LIBC_PYTHON_ARG)
+
+$(LIBC_ARCHIVE): $(LIBC_CMAKE_DIR)/Makefile
+	"$(CMAKE)" --build $(LIBC_CMAKE_DIR) --target libc -- -j$(LIBC_JOBS)
+	mkdir -p $(dir $(LIBC_ARCHIVE))
+	cp $(LIBC_CMAKE_DIR)/libc/lib/libc.a $(LIBC_ARCHIVE)
+
+$(LIBC_SMOKE_OBJ): $(LIBC_SMOKE_SRC) $(LIBC_ARCHIVE)
+	mkdir -p $(LIBC_OUT)
+	$(LIBC_CC) $(LIBC_TARGET_FLAGS) -I$(LIBC_INCLUDE) -c $< -o $@
+
+# Link-only smoke test: header + archive + linkage untuk fungsi pure. Tidak ada
+# vendor hook, tidak ada _start (entry = phase0_entry), -nostdlib, jadi setiap
+# simbol wajib datang dari libc.a.
+$(LIBC_SMOKE_ELF): $(LIBC_SMOKE_OBJ) $(LIBC_ARCHIVE)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib --entry=phase0_entry -o $@ $(LIBC_SMOKE_OBJ) $(LIBC_ARCHIVE)
+	@for sym in memcpy memset memcmp strlen strcmp isalpha isdigit; do \
+		$(LIBC_NM) --defined-only $@ | grep -qE "[TtWw] $$sym$$" || { echo "[libc] FAIL: $$sym tidak resolve dari libc.a"; exit 1; }; \
+	done
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[libc] FAIL: masih ada simbol undefined di smoke.elf"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@echo "[libc] smoke OK: 7/7 simbol pure dari libc.a, 0 undefined symbol"
+
+.PHONY: libc-clean
+libc-clean:
+	rm -rf $(LIBC_OUT)
+
+# ==========================================
+# LLVM libc 22.1.8 — Phase 1: port layer (exit + errno + malloc)
+# ==========================================
+# Port layer `libs/libc-port/src/kyuzen_libc_port.cpp` di-compile dengan flag & 
+# namespace internal libc 22.1.8 (LIBC_NAMESPACE) supaya bisa menggantikan
+# instance `freelist_heap` bawaan libc; backing memory-nya datang dari syscall
+# #9 (uheap Kyuzen), bukan simbol linker _end/__llvm_libc_heap_limit.
+#
+#   make libc-phase1        → build app ELF statis (libc + port)
+#   make libc-phase1-qemu   → jalankan smoke test otomatis di QEMU
+#
+# Disk image untuk test DIBUAT TERPISAH (build/libc/phase1-disk.img): disk.img
+# milik user tidak pernah disentuh.
+LIBC_PORT_SRC    = libs/libc-port/src/kyuzen_libc_port.cpp
+LIBC_PORT_OBJ    = $(LIBC_OUT)/port/kyuzen_libc_port.o
+LIBC_PORT_DEFS   = -DLIBC_NAMESPACE=__llvm_libc_22_1_8_ -DLIBC_FULL_BUILD -DLIBC_TARGET_OS_IS_BAREMETAL \
+                   -DLIBC_ERRNO_MODE=LIBC_ERRNO_MODE_EXTERNAL -DLIBC_THREAD_MODE=LIBC_THREAD_MODE_SINGLE \
+                   -DLIBC_COPT_PUBLIC_PACKAGING
+LIBC_PORT_CFLAGS = $(LIBC_TARGET_FLAGS) -std=gnu++17 -fno-exceptions -fno-rtti -O2 -fno-builtin \
+                   -fno-unwind-tables -fno-asynchronous-unwind-tables -fvisibility-inlines-hidden \
+                   -I$(LIBC_SRC)/libc -I$(LIBC_CMAKE_DIR)/libc -isystem $(LIBC_INCLUDE) $(LIBC_PORT_DEFS)
+LIBC_PHASE1_SRC  = tools/libc-phase1/libc_phase1.c
+LIBC_PHASE1_LD   = tools/libc-phase1/libc_app.ld
+LIBC_PHASE1_OBJ  = $(LIBC_OUT)/phase1_app.o
+LIBC_PHASE1_APP  = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin/libc_phase1.elf
+# Varian limine.conf untuk ISO smoke test: isi repo + satu module app Phase 1.
+# Namanya harus `limine.conf` (Limine mencari nama itu di root ISO), jadi
+# digenerate di subdirektori sendiri.
+LIBC_PHASE1_CONF = $(LIBC_OUT)/iso/limine.conf
+
+.PHONY: libc-phase1
+libc-phase1: $(LIBC_PHASE1_APP)
+	@echo "[libc] phase1 app : $(LIBC_PHASE1_APP)"
+
+$(LIBC_PORT_OBJ): $(LIBC_PORT_SRC) $(LIBC_ARCHIVE)
+	mkdir -p $(dir $@)
+	$(LIBC_CXX) $(LIBC_PORT_CFLAGS) -c $< -o $@
+
+$(LIBC_PHASE1_OBJ): $(LIBC_PHASE1_SRC) $(LIBC_ARCHIVE)
+	mkdir -p $(LIBC_OUT)
+	$(LIBC_CC) $(LIBC_TARGET_FLAGS) -I$(LIBC_INCLUDE) -c $< -o $@
+
+$(LIBC_PHASE1_APP): $(LIBC_PHASE1_OBJ) $(LIBC_PORT_OBJ) $(LIBC_ARCHIVE) $(LIBC_PHASE1_LD)
+	mkdir -p $(dir $@)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib -T $(LIBC_PHASE1_LD) -o $@ $(LIBC_PHASE1_OBJ) $(LIBC_PORT_OBJ) $(LIBC_ARCHIVE)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[libc] FAIL: _start tidak ada di app Phase 1"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[libc] FAIL: masih ada simbol undefined di app Phase 1"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@echo "[libc] phase1 link OK: $(notdir $@) (entry _start, 0 undefined)"
+
+# Smoke test QEMU otomatis. Keystroke dikirim lewat monitor QEMU (sendkey); bukti
+# diambil dari COM1 (TTY di-mirror ke serial oleh drivers/tty.c). Disk uji = image
+# nol mentah (kernel memformat sendiri saat boot) — lihat tools/libc-phase1/run-qemu.sh.
+#   make libc-phase1-qemu [QEMU=/path/ke/qemu-system-x86_64.exe]
+$(LIBC_PHASE1_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Smoke test LLVM libc 22.1.8 Phase 1 (hanya ada di ISO uji).\n    module_path: boot():/libc_phase1.elf\n    module_string: libc_phase1.elf\n\n' >> $@
+
+.PHONY: libc-phase1-qemu
+libc-phase1-qemu: $(LIBC_PHASE1_APP) $(LIBC_PHASE1_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(LIBC_PHASE1_CONF)
+	@QEMU="$(QEMU)" bash tools/libc-phase1/run-qemu.sh
+	@echo "--- bukti serial [phase1] ---"; grep "\[phase1\]" $(LIBC_OUT)/phase1-serial.log || true
+	@grep -q "\[phase1\] PASS" $(LIBC_OUT)/phase1-serial.log || { echo "[libc] FAIL: [phase1] PASS tidak terlihat di serial"; exit 1; }
+
+# ==========================================
+# LLVM libc 22.1.8 — Phase 2: stdio (console I/O via #48/#49)
+# ==========================================
+# Hook `__llvm_libc_stdio_read/write` + 3 cookie di port layer memetakan
+# stdout/stderr/stdin LLVM ke fd 1/2/0 Kyuzen (int 0x80 #49/#48). Entrypoint
+# stdio baremetal yang diaktifkan ada di libc/config/baremetal/x86_64/
+# entrypoints.txt (printf/fprintf/snprintf/sprintf/puts/putchar/fwrite/fread
+# + varian v-/f- yang didukung backend baremetal 22.1.8).
+#
+#   make libc-phase2        → build app ELF statis (libc + port + stdio)
+#   make libc-phase2-qemu   → jalankan smoke test otomatis di QEMU
+#
+LIBC_PHASE2_SRC  = tools/libc-phase2/libc_phase2.c
+LIBC_PHASE2_LD   = tools/libc-phase2/libc_app.ld
+LIBC_PHASE2_OBJ  = $(LIBC_OUT)/phase2_app.o
+LIBC_PHASE2_APP  = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin/libc_phase2.elf
+# Varian limine.conf untuk ISO smoke test Phase 2 (direktori sendiri supaya
+# tidak bentrok dengan varian Phase 1: keduanya bernama `limine.conf`).
+LIBC_PHASE2_CONF = $(LIBC_OUT)/iso2/limine.conf
+
+.PHONY: libc-phase2
+libc-phase2: $(LIBC_PHASE2_APP)
+	@echo "[libc] phase2 app : $(LIBC_PHASE2_APP)"
+
+$(LIBC_PHASE2_OBJ): $(LIBC_PHASE2_SRC) $(LIBC_ARCHIVE)
+	mkdir -p $(LIBC_OUT)
+	$(LIBC_CC) $(LIBC_TARGET_FLAGS) -I$(LIBC_INCLUDE) -c $< -o $@
+
+$(LIBC_PHASE2_APP): $(LIBC_PHASE2_OBJ) $(LIBC_PORT_OBJ) $(LIBC_ARCHIVE) $(LIBC_PHASE2_LD)
+	mkdir -p $(dir $@)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib -T $(LIBC_PHASE2_LD) -o $@ $(LIBC_PHASE2_OBJ) $(LIBC_PORT_OBJ) $(LIBC_ARCHIVE)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[libc] FAIL: _start tidak ada di app Phase 2"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[libc] FAIL: masih ada simbol undefined di app Phase 2"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@echo "[libc] phase2 link OK: $(notdir $@) (entry _start, 0 undefined)"
+
+$(LIBC_PHASE2_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Smoke test LLVM libc 22.1.8 Phase 2 (hanya ada di ISO uji).\n    module_path: boot():/libc_phase2.elf\n    module_string: libc_phase2.elf\n\n' >> $@
+
+.PHONY: libc-phase2-qemu
+libc-phase2-qemu: $(LIBC_PHASE2_APP) $(LIBC_PHASE2_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(LIBC_PHASE2_CONF)
+	@QEMU="$(QEMU)" bash tools/libc-phase2/run-qemu.sh
+	@echo "--- bukti serial [phase2] ---"; grep "\[phase2\]" $(LIBC_OUT)/phase2-serial.log || true
+	@grep -q "\[phase2\] PASS" $(LIBC_OUT)/phase2-serial.log || { echo "[libc] FAIL: [phase2] PASS tidak terlihat di serial"; exit 1; }
+
+# ==========================================
+# Kyuzen C SDK — Phase 3 (staging + smoke app)
+# ==========================================
+# Boundary publik aplikasi C: yang di-commit hanya sumber boundary
+# (sdk/c/linker/app.ld + sdk/c/README.md); yang di-generate di-stage ke
+# build/sdk/c (gitignored) lewat `make sdk-c`:
+#
+#   build/sdk/c/include/  ← salinan header hasil hdrgen (bukan manual,
+#                            bukan internal src/__support/...)
+#   build/sdk/c/lib/libc.a ← salinan archive Phase 0–2 terverifikasi
+#   build/sdk/c/crt/crt.o  ← salinan object port (_start + exit/errno/heap/stdio)
+#   build/sdk/c/linker/app.ld ← salinan linker script kanonis
+#
+#   make sdk-c             → stage SDK dari sumber LLVM yang di-pin
+#   make sdk-c-smoke       → bangun app uji murni lewat SDK (tanpa third_party)
+#   make sdk-c-smoke-qemu  → jalankan app uji di QEMU (harap [phase3] PASS)
+#
+SDK_SRC_DIR   = sdk/c
+SDK_DIR       = $(BUILD_DIR)/sdk/c
+SDK_INC       = $(SDK_DIR)/include
+SDK_LIB       = $(SDK_DIR)/lib/libc.a
+SDK_CRT       = $(SDK_DIR)/crt/crt.o
+SDK_LD        = $(SDK_DIR)/linker/app.ld
+SDK_LD_SRC    = $(SDK_SRC_DIR)/linker/app.ld
+SDK_STAGE     = $(SDK_DIR)/.staged
+# Flag kanonis app SDK: sama persis dengan flag pembangun libc.a
+# (freestanding, tanpa SSE — kernel tidak mengaktifkan CR4.OSFXSR)
+# + -O2 mengikuti konvensi library user_apps (bukan -O0).
+SDK_CFLAGS    = $(LIBC_TARGET_FLAGS) -O2
+SDK_SMOKE_SRC = tools/libc-phase3/sdk_smoke.c
+SDK_SMOKE_OBJ = $(LIBC_OUT)/sdk_smoke.o
+SDK_SMOKE_APP = $(LIBC_OUT)/$(LIBC_TRIPLE)/bin/sdk_smoke.elf
+# Varian limine.conf untuk ISO smoke test SDK (direktori sendiri).
+SDK_SMOKE_CONF = $(LIBC_OUT)/iso3/limine.conf
+
+.PHONY: sdk-c
+sdk-c: $(SDK_STAGE)
+	@echo "[sdk] staged : $(SDK_DIR)"
+
+# Satu stage atomik: header + archive + crt + linker script. Prereq
+# LIBC_ARCHIVE/LIBC_PORT_OBJ menarik rebuild LLVM bila entrypoints berubah.
+# Guard di bawah menolak state basi tanpa suara (lihat audit §14.7.6:
+# incremental cmake tidak mendeteksi perubahan entrypoints.txt — bila guard
+# ini gagal, hapus build/libc/cmake lalu ulangi dari make libc-phase0).
+$(SDK_STAGE): $(LIBC_ARCHIVE) $(LIBC_PORT_OBJ) $(SDK_LD_SRC)
+	@mkdir -p $(SDK_INC) $(dir $(SDK_LIB)) $(dir $(SDK_CRT)) $(dir $(SDK_LD))
+	@# Header = HANYA *.h publik (top + llvm-libc-types/ + llvm-libc-macros/):
+	@# direktori generated LLVM juga berisi file build CMakeFiles/Makefile
+	@# yang TIDAK boleh ikut ke SDK. rm dulu agar stage idempoten.
+	@rm -rf $(SDK_INC)
+	@mkdir -p $(SDK_INC)/llvm-libc-types $(SDK_INC)/llvm-libc-macros
+	@cp $(LIBC_INCLUDE)/*.h $(SDK_INC)/
+	@cp $(LIBC_INCLUDE)/llvm-libc-types/*.h $(SDK_INC)/llvm-libc-types/
+	@cp $(LIBC_INCLUDE)/llvm-libc-macros/*.h $(SDK_INC)/llvm-libc-macros/
+	@cp $(LIBC_ARCHIVE) $(SDK_LIB)
+	@cp $(LIBC_PORT_OBJ) $(SDK_CRT)
+	@cp $(SDK_LD_SRC) $(SDK_LD)
+	@test -f $(SDK_INC)/stdio.h -a -f $(SDK_INC)/stdlib.h -a -f $(SDK_INC)/string.h -a -f $(SDK_INC)/ctype.h -a -f $(SDK_INC)/errno.h || { echo "[sdk] FAIL: header SDK tak lengkap di $(SDK_INC)"; exit 1; }
+	@$(LIBC_NM) --defined-only $(SDK_LIB) | grep -qE "[Tt] printf$$" || { echo "[sdk] FAIL: libc.a basi (tanpa printf) — hapus build/libc/cmake lalu make libc-phase0"; exit 1; }
+	@$(LIBC_NM) --defined-only $(SDK_LIB) | grep -qE "[Tt] malloc$$" || { echo "[sdk] FAIL: libc.a basi (tanpa malloc) — hapus build/libc/cmake lalu make libc-phase0"; exit 1; }
+	@touch $@
+	@echo "[sdk] stage OK: include + libc.a + crt.o + app.ld"
+
+.PHONY: sdk-c-smoke
+sdk-c-smoke: $(SDK_SMOKE_APP)
+	@echo "[sdk] smoke app : $(SDK_SMOKE_APP)"
+
+# Kompilasi MURNI via SDK: satu-satunya include libc adalah -isystem SDK.
+# Guard third_party membuktikan batas ergonomi (app → SDK → LLVM, bukan
+# app → internal LLVM).
+$(SDK_SMOKE_OBJ): $(SDK_SMOKE_SRC) $(SDK_STAGE)
+	@if grep -q "third_party" $(SDK_SMOKE_SRC); then echo "[sdk] FAIL: smoke app menyebut third_party (bocor ke internal LLVM)"; exit 1; fi
+	@mkdir -p $(LIBC_OUT)
+	$(LIBC_CC) $(SDK_CFLAGS) -isystem $(SDK_INC) -c $< -o $@
+
+# Link MURNI via SDK: crt + libc + ld semuanya dari build/sdk/c.
+$(SDK_SMOKE_APP): $(SDK_SMOKE_OBJ) $(SDK_STAGE)
+	@mkdir -p $(dir $@)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib -T $(SDK_LD) -o $@ $(SDK_SMOKE_OBJ) $(SDK_CRT) $(SDK_LIB)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[sdk] FAIL: _start tidak ada di app SDK"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[sdk] FAIL: masih ada simbol undefined di app SDK"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@echo "[sdk] smoke link OK: $(notdir $@) (entry _start, 0 undefined)"
+
+$(SDK_SMOKE_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Smoke test Kyuzen C SDK Phase 3 (hanya ada di ISO uji).\n    module_path: boot():/sdk_smoke.elf\n    module_string: sdk_smoke.elf\n\n' >> $@
+
+.PHONY: sdk-c-smoke-qemu
+sdk-c-smoke-qemu: $(SDK_SMOKE_APP) $(SDK_SMOKE_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(SDK_SMOKE_CONF)
+	@QEMU="$(QEMU)" bash tools/libc-phase3/run-qemu.sh
+	@echo "--- bukti serial [phase3] ---"; grep "\[phase3\]" $(LIBC_OUT)/phase3-serial.log || true
+	@grep -q "\[phase3\] PASS" $(LIBC_OUT)/phase3-serial.log || { echo "[sdk] FAIL: [phase3] PASS tidak terlihat di serial"; exit 1; }
+
 # --- Cross-check: image buatan mkfs host harus termount oleh parser kernel ---
 # Target memformat testimg.img via ./mkfs.kyuzenfs lalu menjalankan test host
 # yang memuat image tersebut ke RAM disk mock. Jalankan: make test-kyuzenfs-xcheck
@@ -526,7 +817,7 @@ APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 #     di dalamnya: hanya app/header yang berubah yang dikompilasi ulang), dan
 #   - ISO tetap dibangun ulang HANYA kalau timestamp ELF benar-benar berubah.
 .PHONY: apps
-apps:
+apps: sdk-c
 	$(MAKE) -C user_apps all
 
 $(APP_ELFS): | apps
@@ -599,14 +890,24 @@ MANIFESTS    = $(wildcard manifests/*.app)
 LIMINE_FILES = limine/BOOTX64.EFI limine/limine-bios.sys \
                limine/limine-bios-cd.bin limine/limine-uefi-cd.bin
 
+# Sumber limine.conf untuk ISO. Default: file di root repo (perilaku lama, tidak
+# berubah). Smoke test libc Phase 1 menyuntikkan varian hasil generate lewat
+# `make boot_image.iso LIMINE_CONF=...` supaya file repo tidak pernah memuat
+# module yang belum tentu ada di ISO (Limine gagal memuat module yang hilang).
+LIMINE_CONF ?= limine.conf
+
 .PHONY: boot_image.iso
 boot_image.iso: $(ISO_IMAGE)
 
 $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
-              limine.conf kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES)
+              $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES)
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@rm -f $(ISO_ROOT)/*.elf
-	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) limine.conf kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
+	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
+	@# Opsional: app smoke test libc Phase 1/2 + SDK Phase 3 (tidak diproduksi build normal).
+	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
+	@if [ -f $(LIBC_PHASE2_APP) ]; then cp $(LIBC_PHASE2_APP) $(ISO_ROOT)/libc_phase2.elf; fi
+	@if [ -f $(SDK_SMOKE_APP) ]; then cp $(SDK_SMOKE_APP) $(ISO_ROOT)/sdk_smoke.elf; fi
 	@cp limine/BOOTX64.EFI $(ISO_ROOT)/EFI/BOOT/
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \

@@ -96,7 +96,7 @@ public:
             p.text(col[c], cx, y + 4, p.theme.button_fg);
             cx += col_w[c];
         }
-        p.rect(x, y + HEADER_H - 1, cw, 1, p.theme.fg);
+        p.rect(x, y + HEADER_H - 1, cw, 1, p.theme.divider);   // pemisah halus, bukan garis fg terang
         // baris (scroll), setiap sel dipotong ke kolomnya
         p.set_clip(x, y + HEADER_H, cw, h - HEADER_H);
         for (int r = 0; r < nrows; r++) {

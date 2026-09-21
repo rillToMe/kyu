@@ -74,6 +74,16 @@ LDFLAGS = -m elf_x86_64 -nostdlib -T app.ld
 # --- Alamat Virtual Tunggal — OS yang alokasi physical RAM otomatis ---
 APP_BASE = 0x4000000
 
+# --- Kyuzen C SDK (LLVM libc 22.1.8) — hanya untuk app yang memakainya ---
+# Di-stage oleh root Makefile (`make sdk-c` → ../build/sdk/c) SEBELUM
+# sub-make ini berjalan. Saat ini: clock (snprintf/strlen). App lain tetap
+# murni userlib/libui (ENTRY main, tanpa libc).
+SDK_DIR = $(ROOT_DIR)/build/sdk/c
+SDK_INC = $(SDK_DIR)/include
+SDK_LIB = $(SDK_DIR)/lib/libc.a
+SDK_CRT = $(SDK_DIR)/crt/crt.o
+SDK_LD  = $(SDK_DIR)/linker/app.ld
+
 # ==========================================================
 # OBJECT BERSAMA
 # ==========================================================
@@ -152,6 +162,12 @@ $(OBJ_DIR)/user_apps/viewer.o: viewer.c | $(OBJ_DIRS)
 	@echo "[CC] $< (O2)"
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
+# clock memakai Kyuzen C SDK (snprintf/strlen dari LLVM libc): header SDK
+# via -isystem (JANGAN -I third_party/... — app hanya kenal SDK).
+$(OBJ_DIR)/user_apps/clock.o: clock.c | $(OBJ_DIRS)
+	@echo "[CC-SDK] $<"
+	$(CC) $(CFLAGS_LIB) -isystem $(SDK_INC) -c $< -o $@
+
 # libs/color — -O2 (header tersedia via CFLAGS_COMMON)
 $(OBJ_DIR)/libs/color/src/%.o: $(ROOT_DIR)/libs/color/src/%.c | $(OBJ_DIRS)
 	@echo "[CC] $<"
@@ -170,10 +186,18 @@ TERMINAL_LIBS= $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(W
 DESKTOP_LIBS = $(USERLIB_OBJ) $(LIBGUI_OBJ)
 
 # Link generic: ELF dibangun dari object app-nya + library grup-nya.
-$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(GUI_APPS))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/user_apps/%.o $(GUI_LIBS)
+# clock DIKECUALIKAN dari pola ini — ia di-link via SDK (ENTRY _start).
+$(filter-out $(ELF_DIR)/clock.elf,$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(GUI_APPS)))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/user_apps/%.o $(GUI_LIBS)
 	@mkdir -p $(ELF_DIR)
 	@echo "[LD] $(notdir $@) (libui toolkit + png)"
 	$(LD) $(LDFLAGS) $< $(GUI_LIBS) -o $@
+
+# clock: GUI libs + SDK crt/lib/ld (LLVM libc). libc.a PALING AKHIR
+# (archive: simbol diambil kiri-ke-kanan).
+$(ELF_DIR)/clock.elf: $(OBJ_DIR)/user_apps/clock.o $(GUI_LIBS) $(SDK_CRT) $(SDK_LIB)
+	@mkdir -p $(ELF_DIR)
+	@echo "[LD-SDK] clock.elf (libui toolkit + Kyuzen C SDK)"
+	$(LD) -m elf_x86_64 -nostdlib -T $(SDK_LD) $< $(GUI_LIBS) $(SDK_CRT) $(SDK_LIB) -o $@
 
 $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(SIMPLE_APPS))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/user_apps/%.o $(USERLIB_OBJ)
 	@mkdir -p $(ELF_DIR)
