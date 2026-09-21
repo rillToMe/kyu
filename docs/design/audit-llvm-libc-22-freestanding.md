@@ -284,25 +284,46 @@ Fakta dari source 22.1.8 (`src/__support/freelist_heap.h/.cpp`):
 Keputusan (port layer, bukan modifikasi algoritma allocator LLVM):
 
 ```
-LLVM libc malloc/calloc/realloc/free/aligned_alloc   (src/stdlib/baremetal/*.cpp)
-        ↓ freelist_heap->allocate() ...              (algoritma freelist LLVM 22.1.8)
-__llvm_libc_22_1_8_::freelist_heap                   (definisi kuat di port layer)
-        ↓ FreeListHeap(span) di atas SATU region     (placement new dari CPP/new.h)
-sys_alloc(9) 1 MiB  →  Kyuzen uheap (page-granular)
+LLVM libc malloc/calloc/realloc/free/aligned_alloc   (entry point DISEDIAKAN port,
+        ↓ kyuzen_heap::alloc/...                     Phase 9.5 — lihat di bawah)
+kyuzen_heap (libs/libc-port/src/kyuzen_heap.hpp)      DAFTAR ARENA + routing
+        ↓ FreeListHeap(span) per arena                (algoritma freelist LLVM 22.1.8)
+sys_alloc(9) per arena / sys_free(10) bila arena khusus kosong
+        ↓
+Kyuzen uheap (page-granular, guard 1 halaman antar region)
 ```
 
 - `freelist_heap` didefinisikan ulang (kuat) di object port → member archive
   `freelist_heap.cpp.obj` **tidak pernah ditarik linker** → simbol `_end`/
   `__llvm_libc_heap_limit` tidak dibutuhkan sama sekali (diverifikasi: 0 undefined
   `_end` pada link app). Tidak ada arena statis di citra ELF, tidak ada allocator kedua.
-- Arena: `sys_alloc(9)` sebesar `KYUZEN_LIBC_ARENA_BYTES` (default 1 MiB, bisa di-
-  override saat kompilasi). uheap mengembalikan awal halaman, jadi syarat alignment
-  `Block::MIN_ALIGN` terpenuhi.
-- Bila `sys_alloc` gagal: port memanggil `__llvm_libc_exit(70)` (`KZ_EXIT_ARENA_FAILED`)
-  — bukan allocator cadangan kedua, sesuai batasan desain.
-- Ruang alamat uheap jauh lebih besar (`UHEAP_BASE 0x10000000 .. UHEAP_END 0x40000000`,
-  plafon satu alokasi 64 MiB); plafon arena adalah konsekuensi API FreeListHeap, bukan
-  keterbatasan uheap.
+- **Phase 9.5 — arena dinamis (perbaikan plafon 1 MiB).** Phase 1–9 memakai SATU region
+  `sys_alloc(9)` sebesar `KYUZEN_LIBC_ARENA_BYTES` (1 MiB) dan SATU `FreeListHeap` di
+  atasnya. `FreeListHeap` 22.1.8 tidak punya grow hook, jadi permintaan di atas itu
+  (mis. buffer layar wallpaper 8.3 MiB) selalu `NULL` → `operator new[]` → `abort()` →
+  `ud2` (BSOD INT 6) — padahal uheap sendiri sanggup 8.3 MiB.
+  Sekarang heap = **daftar arena** (`kyuzen_heap.hpp`), setiap arena satu region
+  `sys_alloc(9)` + satu instance `FreeListHeap`; algoritma freelist LLVM tetap dipakai
+  apa adanya:
+  - arena pertama diambil **lazy** saat alokasi pertama (app yang tak pernah malloc
+    tidak menahan satu halaman pun; tidak ada lagi `_start` → `exit(70)`);
+  - deret geometris 1 → 2 → 4 MiB (plafon `KYUZEN_LIBC_ARENA_MAX_BYTES`), tumbuh hanya
+    saat permintaan tak muat, ukuran arena baru selalu ≥ kebutuhan pemicunya;
+  - permintaan di atas plafon deret dilayani **arena khusus** seukuran permintaan
+    (page-aligned) dan arena itu dikembalikan via `sys_free(10)` begitu kosong;
+  - `free`/`realloc` mencari arena pemilik lewat rentang alamat (bukan asumsi "semua
+    di arena #0"); `realloc` yang tak muat di arena lama jatuh ke jalur lintas-arena;
+  - gagal = `NULL` (malloc) / `abort()` (operator new tanpa nothrow), TIDAK pernah
+    mengembalikan pointer tak valid dan tidak pernah menulis di luar blok.
+  Karena `malloc.cpp`/`free.cpp` baremetal hanya pembungkus satu baris ke SATU
+  `freelist_heap` (non-virtual), routing multi-arena mustahil tanpa menggantikan titik
+  masuk itu — maka port yang menyediakan kelima entry point stdlib (bukti `llvm-nm` di
+  kyuzen_libc_port.cpp: tidak ada member libc.a yang mereferensikan simbol namespace
+  `malloc/free/calloc/realloc/aligned_alloc`, dan pemanggil internal libc memakai
+  simbol C `malloc`).
+- uheap mengembalikan awal halaman, jadi syarat alignment `Block::MIN_ALIGN` (16 B)
+  terpenuhi; ruang alamat uheap jauh lebih besar (`UHEAP_BASE 0x10000000 ..
+  UHEAP_END 0x40000000`, plafon satu alokasi 64 MiB).
 
 ### 13.2 Syscall mapping yang dipakai port layer
 
@@ -310,7 +331,8 @@ sys_alloc(9) 1 MiB  →  Kyuzen uheap (page-granular)
 |---|---|---|
 | `__llvm_libc_exit(int)` | `int 0x80` #34 (`RAX=34, RBX=status`) | dipakai `_Exit`, `exit`, `abort`→trap, dan `_start` |
 | `__llvm_libc_errno()` | — (fungsi biasa, state global per proses) | `LIBC_ERRNO_MODE_EXTERNAL`; tanpa TLS sesuai Phase 1 |
-| backing `freelist_heap` | `int 0x80` #9 (`RBX=ukuran` → alamat) | satu region untuk seluruh heap, bukan per malloc |
+| backing arena (per arena) | `int 0x80` #9 (`RBX=ukuran` → alamat) | Phase 9.5: satu region per arena, bukan per malloc; arena diambil lazy |
+| pembebasan arena khusus | `int 0x80` #10 (`RBX=alamat region`) | hanya saat arena khusus (permintaan > plafon deret) kosong |
 | (khusus smoke test, bukan port) | #78 fork, #69 waitpid, #49 write(fd 1) | hanya di `tools/libc-phase1/libc_phase1.c` untuk pembuktian |
 
 ### 13.3 Files changed
@@ -378,7 +400,7 @@ Interpretasi per poin:
 2. **realloc 4 KiB→8 KiB** — `FreeListHeap::realloc` (alokasi baru + copy + free lama); data lama utuh.
 3. **calloc zero-init** — 64×32 byte semuanya 0.
 4. **errno** — tulis/baca lewat hook `__llvm_libc_errno`, dan `strtoimax` benar-benar menyetel `ERANGE` (jalur `libc_errno` internal libc → hook).
-5. **kasus gagal** — `malloc(8 MiB)` > arena 1 MiB → `NULL` (upstream baremetal tidak menyetel errno saat gagal).
+5. **kasus gagal** — `malloc(8 MiB)` > arena 1 MiB → `NULL` (upstream baremetal tidak menyetel errno saat gagal). *(Perilaku era Phase 1: arena tunggal. Sejak Phase 9.5 permintaan ini BERHASIL — §13.1; jalur gagal tetap `NULL` untuk permintaan di atas 64 MiB atau saat uheap penuh.)*
 6. **free + reuse** — free lalu malloc lagi berhasil (free store benar).
 7. **exit status** — anak `_Exit(7)` → `__llvm_libc_exit(7)` → `int 0x80` #34; parent `waitpid` membaca `7`. Ini bukti nyata status keluar datang dari syscall #34, bukan return `main` biasa.
 
@@ -400,7 +422,7 @@ pra-ada, tidak disentuh karena melarang perubahan kernel/FS).
 
 ### 13.7 Known limitations Phase 1
 
-1. **Arena malloc berukuran tetap** (default 1 MiB, konstanta `KYUZEN_LIBC_ARENA_BYTES`): `FreeListHeap` 22.1.8 tidak punya grow hook. Permintaan di atas arena → `NULL`. Menambah kapasitas = menaikkan konstanta (biaya: halaman uheap ditahan sejak `_start`).
+1. ~~**Arena malloc berukuran tetap** (default 1 MiB…)~~ **Diselesaikan Phase 9.5**: heap tumbuh on-demand multi-arena (`kyuzen_heap.hpp`); arena pertama `KYUZEN_LIBC_ARENA_BYTES` (1 MiB) diambil lazy, deret sampai `KYUZEN_LIBC_ARENA_MAX_BYTES` (4 MiB), permintaan besar dapat arena khusus. Batas yang tersisa: `KYUZEN_LIBC_MAX_ARENAS` (32 slot) dan plafon satu permintaan 64 MiB (`UHEAP_MAX_ALLOC`); arena khusus yang kosong dilepas ke uheap, arena deret dipertahankan sebagai working set (dipakai ulang, tanpa syscall).
 2. **malloc/calloc/realloc gagal tidak menyetel `errno`** — perilaku upstream baremetal 22.1.8 (tidak ada jalur errno di `baremetal/malloc.cpp`).
 3. **errno = satu global per proses** (tanpa TLS) — disengaja Phase 1; data race tidak relevan karena model Kyuzen single-thread per proses.
 4. **`.init_array`/`.fini_array` belum didukung port** (`libc_app.ld` sengaja tidak menaruhnya): subset Phase 1 tidak punya global constructor (heap & errno const-init). Fase yang butuh C++/global ctor harus menambah section + pemanggil `__libc_init_array` dari `_start`.
@@ -581,8 +603,8 @@ llvm-nm --undefined-only <phase2 ELF>      # kosong
    `make libc-phase*-qemu` gagal `command not found` tanpa itu — murni
    lingkungan, bukan regresi (ditemukan saat validasi Phase 2, Phase 1 lolos
    setelah PATH diperbaiki).
-8. Batasan Phase 1 (§13.7) tetap berlaku (arena 1 MiB, errno tanpa TLS,
-   tanpa `.init_array`).
+8. Batasan Phase 1 (§13.7) tetap berlaku (errno tanpa TLS, tanpa `.init_array`);
+   plafon arena 1 MiB SUDAH TIDAK berlaku sejak Phase 9.5 (heap dinamis).
 
 ### 14.8 Batas eksplisit tahap ini
 
@@ -748,7 +770,7 @@ pertama kali muncul. Batasan tetap: hanya varian `baremetal/` yang di-stage
 
 ### 16.7 Known limitations Phase 4
 
-1. Batasan Phase 1–2 (§13.7, §14.7) tetap berlaku (arena 1 MiB, errno tanpa TLS, tanpa `.init_array`, `feof`/`ferror` stub, `%f` mati, stdin belum teruji runtime).
+1. Batasan Phase 1–2 (§13.7, §14.7) tetap berlaku (errno tanpa TLS, tanpa `.init_array`, `feof`/`ferror` stub, `%f` mati, stdin belum teruji runtime); plafon arena 1 MiB dicabut Phase 9.5.
 2. Presisi waktu = detik untuk UTC (RTC), ms untuk monotonik (uptime). `tv_nsec` UTC selalu 0.
 3. WIB-shift + bungkus-jam-tanpa-carry (§16.2) adalah quirk kernel — port tidak mengoreksinya.
 4. `time.h` mendeklarasikan lebih dari yang di-link (catatan §16.1) — memakai `time()`/`difftime`/`nanosleep` = link error yang jujur.
@@ -810,7 +832,7 @@ internal LLVM, BUKAN source LLVM yang disalin):
 
 | Simbol | Mengapa dibutuhkan |
 |---|---|
-| `operator new/new[] (size_t)` | ekspresi `new`; gagal → `abort()` (kebijakan `-fno-exceptions`: throwing-new tidak boleh return NULL; arena tetap 1 MiB milik libc) |
+| `operator new/new[] (size_t)` | ekspresi `new`; gagal → `abort()` (kebijakan `-fno-exceptions`: throwing-new tidak boleh return NULL; heap = malloc libc port, dinamis sejak Phase 9.5) |
 | `operator delete/delete[] (void*)` + sized `(void*,size_t)` ×2 | ekspresi `delete`; dtor memanggil sized-delete (default C++14); ukuran diabaikan (freelist tak membutuhkannya) |
 | `operator new/new[] (size_t, nothrow_t)` + `delete` nothrow ×2 | `<new>` SDK; gagal → NULL |
 | `std::nothrow` (objek) | definisi untuk deklarasi di `<new>` |
@@ -1051,7 +1073,8 @@ make libc-phase6-qemu   # ISO uji + QEMU (harap [phase6] PASS)
    link-error jujur (FP ditunda) atau abort() keras (bila dipanggil).
 2. `functional` ter-stage tapi bukan API didukung (dependensi build).
 3. Cap `__cxa_atexit` 64 warisan Phase 5; string/vector besar dibatasi
-   arena malloc 1 MiB (panjang total smoke ≈ puluhan KiB).
+   heap dinamis (32 arena / plafon 64 MiB per permintaan sejak Phase 9.5;
+   panjang total smoke ≈ puluhan KiB).
 4. `std::string::compare/append` dkk. untuk `char` disediakan slice;
    `wchar_t` tidak (`_LIBCPP_HAS_WIDE_CHARACTERS=0`).
 5. `llvm-ar rcs` tidak menghapus member basi — rule archive `rm -f`

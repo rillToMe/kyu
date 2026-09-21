@@ -57,7 +57,11 @@ via `strtoimax`), `exit/_Exit`, `printf/fprintf/snprintf/sprintf (+v-...)`,
 
 ## 4. Limitasi (sinkron dengan audit §12–§16)
 
-- Arena malloc tetap **1 MiB** (`KYUZEN_LIBC_ARENA_BYTES`); di atasnya → NULL.
+- Heap malloc **tumbuh on-demand** sejak Phase 9.5: arena pertama 1 MiB
+  (`KYUZEN_LIBC_ARENA_BYTES`) diambil lazy pada alokasi pertama, deret geometris
+  sampai 4 MiB (`KYUZEN_LIBC_ARENA_MAX_BYTES`), permintaan besar dilayani arena
+  khusus (plafon satu permintaan 64 MiB = `UHEAP_MAX_ALLOC`). Batas: 32 arena
+  (`KYUZEN_LIBC_MAX_ARENAS`). Tidak ada lagi plafon 1 MiB seperti Phase 1–9.
 - **stdin terpetakan tapi belum teruji runtime** (hook read → #48 ada;
   harness QEMU tak memberi input deterministik tanpa berebut fd 0).
 - Tanpa `%f` (float printf dimatikan config baremetal).

@@ -19,7 +19,7 @@ bool neq(const char* a, const char* b, int n) {
     return true;
 }
 
-// Manifest "<base>.app": satu "key=value" per baris (name/color/hidden).
+// Manifest "<base>.app": satu "key=value" per baris (name/color/hidden/icon).
 // Baris tanpa '=' diabaikan. `exec` TIDAK dipakai (binary dari scan).
 void parse_manifest(const char* b, AppEntry* e, bool* hidden) {
     int i = 0;
@@ -45,6 +45,10 @@ void parse_manifest(const char* b, AppEntry* e, bool* hidden) {
             e->color = parse_color(v);
         } else if (klen == 6 && neq(k, "hidden", 6)) {
             *hidden = (vlen > 0 && v[0] != '0');
+        } else if (klen == 4 && neq(k, "icon", 4)) {
+            int n = vlen > ICON_NAME_MAX - 1 ? ICON_NAME_MAX - 1 : vlen;
+            for (int j = 0; j < n; j++) e->icon[j] = v[j];
+            e->icon[n] = '\0';
         }
     }
 }
@@ -81,6 +85,7 @@ Launcher::Launcher() : napps_(0), checksum_(0) {
     for (int i = 0; i < MAX_APPS; i++) {
         apps_[i].label[0] = '\0';
         apps_[i].elf[0] = '\0';
+        apps_[i].icon[0] = '\0';
         apps_[i].color = APP_DEFAULT;
     }
 }
@@ -105,6 +110,7 @@ bool Launcher::discover() {
         e->label[base] = '\0';
         build_app_path(e->elf, sizeof(e->elf), fn);
         e->color = APP_DEFAULT;
+        e->icon[0] = '\0';
 
         char man[32];  // "/apps/<base>.app"
         int m = 0;
@@ -137,6 +143,8 @@ bool Launcher::discover() {
         s = s * 31 + rgb24;
         for (int j = 0; apps_[i].label[j]; j++)
             s = s * 31 + static_cast<unsigned char>(apps_[i].label[j]);
+        for (int j = 0; apps_[i].icon[j]; j++)
+            s = s * 31 + static_cast<unsigned char>(apps_[i].icon[j]);
     }
     bool changed = (s != checksum_);
     checksum_ = s;
@@ -172,12 +180,57 @@ int Launcher::find_icon(Point p, int cols, int cap) const {
     return -1;
 }
 
-void Launcher::draw(Canvas& canvas) const {
-    int cols = grid_cols(canvas.width());
-    int cap = grid_cap(canvas.width(), canvas.height());
+void Launcher::icon_path(int i, char* out) const {
+    resolve_icon_path(apps_[i].icon, out, 32);
+}
+
+// Basename "/apps/<nama>.elf" == title? (cocok judul window taskbar bila
+// manifest name beda dari judul window).
+static bool elf_base_eq(const char* elf, const char* title) {
+    const char* b = elf;
+    for (int i = 0; elf[i]; i++)
+        if (elf[i] == '/') b = &elf[i + 1];
+    int i = 0;
+    while (b[i] && title[i] && b[i] == title[i]) i++;
+    if (title[i]) return false;
+    // Sisa basename harus ".elf" persis.
+    return b[i] == '.' && b[i + 1] == 'e' && b[i + 2] == 'l' &&
+           b[i + 3] == 'f' && b[i + 4] == '\0';
+}
+
+const AppEntry* Launcher::find_by_title(const char* title) const {
+    if (!title || !title[0]) return 0;
+    for (int i = 0; i < napps_; i++) {
+        int j = 0;
+        while (apps_[i].label[j] && apps_[i].label[j] == title[j]) j++;
+        if (apps_[i].label[j] == '\0' && title[j] == '\0') return &apps_[i];
+    }
+    for (int i = 0; i < napps_; i++)
+        if (elf_base_eq(apps_[i].elf, title)) return &apps_[i];
+    return 0;
+}
+
+int Launcher::draw(Canvas& canvas, const IconCache& icons, int w, int h) const {
+    int cols = grid_cols(w);
+    int cap = grid_cap(w, h);
+    int nimg = 0;
     for (int i = 0; i < cap; i++) {
         Rect r = icon_rect(i, cols);
-        canvas.fill_rect(r, apps_[i].color);
+        char path[32];
+        resolve_icon_path(apps_[i].icon, path, sizeof(path));
+        const IconPx* ic = icons.icon_for(path);
+        if (ic) {
+            // Ikon ke canvas window (libgui tak punya draw-image): RLE
+            // fill_rect per baris. Tanpa gambar -> kotak warna manifest.
+            int dx = r.x + (ICON_SZ - ic->size) / 2;
+            int dy = r.y + (ICON_SZ - ic->size) / 2;
+            if (dx < r.x) dx = r.x;
+            if (dy < r.y) dy = r.y;
+            draw_px(canvas, dx, dy, ic->px, ic->size, ic->size);
+            nimg++;
+        } else {
+            canvas.fill_rect(r, apps_[i].color);
+        }
         char lbl[LBL_MAX + 1];
         int n = slen(apps_[i].label);
         if (n > LBL_MAX) n = LBL_MAX;
@@ -188,6 +241,7 @@ void Launcher::draw(Canvas& canvas) const {
         p.y = r.y + ICON_SZ + 4;
         canvas.draw_text(lbl, p, ICON_TXT);
     }
+    return nimg;
 }
 
 }  // namespace desktop_impl

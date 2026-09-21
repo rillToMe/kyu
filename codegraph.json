@@ -1,0 +1,8 @@
+{
+  "exclude": [
+    "**/llvm-project/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**"
+  ]
+}

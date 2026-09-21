@@ -26,6 +26,9 @@ extern "C" {
 #include "launcher.hpp"
 #include "taskbar.hpp"
 #include "theme.hpp"
+#include "app_icons.hpp"
+#include "wallpaper.hpp"
+#include "app_preview.hpp"
 
 using namespace kyuzen::desktop;
 using namespace desktop_impl;
@@ -71,8 +74,13 @@ static FakeFile FS[] = {
     {"calc.elf", 0},
     {"calc.app", "name=Kalkulator\r\ncolor=0x2E7D32\r\n"},
     {"desktop.elf", 0},
-    {"desktop.app", "name=Desktop\nhidden=1\n"},
+    {"desktop.app", "name=Desktop\nhidden=1\nwallpaper=city-town.png\n"},
     {"badptr.elf", 0},
+    {"demo.elf", 0},
+    {"demo.app", "name=Demo\nicon=demo.png\n"},
+    {"demo.png", "PNG"},
+    {"default.png", "PNG"},
+    {"city-town.png", "PNG"},
     {"kyuzen.png", 0},
     {"notes.txt", 0},
 };
@@ -98,6 +106,22 @@ static int g_crash_mode = 0;  // 0 = boot normal, 1 = ada laporan baru
 static int g_kw_fail = 0;     // 1 = sys_kwm_get_windows gagal
 static int g_kw_focus2 = 0;   // ubah fokus window ke-2 (deteksi perubahan)
 static int g_last_activate = -999;
+static uint32_t g_time[6] = {2026, 9, 21, 21, 35, 0};  // RTC palsu
+static int g_img_fail = 0;  // 1 = img_decode selalu gagal
+
+// Sink fill_rect palsu. Canvas host tidak bisa dipakai untuk mengamati gambar
+// (Impl-nya milik Application), jadi jalur blit pixel (RLE) diuji lewat sink
+// ini — Canvas di app memenuhi kontrak yang sama (fill_rect(Rect, Color)).
+struct RectSink {
+    int n;
+    Rect last;
+    Color last_c;
+    void fill_rect(const Rect& r, Color c) {
+        n++;
+        last = r;
+        last_c = c;
+    }
+};
 
 struct RawEv {
     int type, p1, p2, p3, win;
@@ -174,6 +198,42 @@ void gui_draw_text(gui_window_t* w, const char* t, int x, int y,
 void gui_flush(gui_window_t* w) {
     (void)w;
 }
+uint32_t sys_file_size(char* f) {
+    int i = find_file(strip_apps(f));
+    if (i < 0) return 0;
+    // Gambar palsu: ukuran pixmap kecil; teks: panjang data.
+    if (t_streq(FS[i].name, "demo.png") || t_streq(FS[i].name, "default.png"))
+        return 100;
+    if (t_streq(FS[i].name, "city-town.png")) return 200;
+    return FS[i].data ? (uint32_t)t_slen(FS[i].data) : 0;
+}
+void sys_get_time(uint32_t* t) {
+    for (int i = 0; i < 6; i++) t[i] = g_time[i];
+}
+// CATATAN Phase 9.5: sys_alloc/sys_free TIDAK lagi dipakai modul desktop
+// (buffer wallpaper 8MB @1080p kembali ke allocator standar — heap libc port
+// tumbuh on-demand; diuji di test/libc_heap_test.cpp), jadi tidak ada stub
+// heap di sini lagi. Bila ada modul desktop yang memanggilnya kembali, link
+// test ini akan gagal keras — bukan diam-diam memakai allocator palsu.
+// png_decode palsu: 4x4 putih untuk PNG yang dikenal, null sisanya
+// (atau selalu null bila g_img_fail — jalur fallback total).
+static uint32_t g_fake_px[16];
+uint32_t* png_decode(const char* filename, int* out_w, int* out_h) {
+    if (g_img_fail) return 0;
+    const char* b = filename;
+    for (int i = 0; filename[i]; i++)
+        if (filename[i] == '/') b = &filename[i + 1];
+    if (!t_streq(b, "demo.png") && !t_streq(b, "default.png") &&
+        !t_streq(b, "city-town.png"))
+        return 0;
+    for (int i = 0; i < 16; i++) g_fake_px[i] = 0xFFFFFFFFu;
+    *out_w = 4;
+    *out_h = 4;
+    return g_fake_px;
+}
+void png_free(uint32_t* buf) {
+    (void)buf;
+}
 int sys_crash_notice(crash_notice_t* out) {
     if (!g_crash_mode) return 0;
     out->pending = 1;
@@ -196,6 +256,9 @@ int sys_kwm_get_windows(kwm_window_info_t* b, int m) {
     b[1].win_id = 2;
     b[1].active = 1;
     b[1].focused = g_kw_focus2 ? 0 : 1;
+    b[1].flags = 0;  // window biasa (BUKAN desktop). Eksplisit: field ini
+                     // tadinya tak diinisialisasi sehingga hasil tes bisa
+                     // bergantung sampah stack (bit0 = flag desktop).
     t_strcpy(b[1].title, "term");
     return 2;
 }
@@ -244,15 +307,18 @@ int main(void) {
     // --- discovery: hanya *.elf; desktop.elf hidden via manifest ---
     Launcher launcher;
     assert(launcher.discover() == true);
-    assert(launcher.count() == 3);
+    assert(launcher.count() == 4);
     assert(t_streq(launcher.entry(0).label, "Explorer"));
     assert(t_streq(launcher.entry(0).elf, "/apps/fileman.elf"));
     assert(color_eq(launcher.entry(0).color, rgb(0x15, 0x65, 0xC0)));
+    assert(t_streq(launcher.entry(0).icon, ""));
     assert(t_streq(launcher.entry(1).label, "Kalkulator"));
     assert(color_eq(launcher.entry(1).color, rgb(0x2E, 0x7D, 0x32)));
     assert(t_streq(launcher.entry(2).label, "badptr"));
     assert(t_streq(launcher.entry(2).elf, "/apps/badptr.elf"));
     assert(color_eq(launcher.entry(2).color, APP_DEFAULT));
+    assert(t_streq(launcher.entry(3).label, "Demo"));
+    assert(t_streq(launcher.entry(3).icon, "demo.png"));
     assert(launcher.discover() == false);  // tanpa perubahan FS
 
     // --- grid + hit ikon ---
@@ -300,22 +366,220 @@ int main(void) {
         assert(g_last_activate == 1);
 
         Taskbar bar;
-        assert(bar.poll(wm) == true);  // kosong → 2 window
+        assert(bar.poll(wm, launcher) == true);  // kosong → 2 window
         assert(bar.count() == 2);
         assert(bar.entry(1).focused);
         assert(bar.entry(0).is_desktop);
-        assert(bar.find_button(pt(10, 0)) == 1);    // tombol "term" (indeks 1;
-                                                     // 0 = window desktop)
-        assert(bar.find_button(pt(200, 0)) == -1);  // area kosong
-        assert(bar.poll(wm) == false);              // tanpa perubahan
+        // Slot tampil: hanya "term" (desktop difilter).
+        assert(bar.slots() == 1);
+        assert(bar.slot_window(0) == 1);
+        assert(bar.slot_app(0) == 0);  // "term" tak cocok manifest -> default
+        // Geometri slot 0 di 640x480: x=8, strip y=436.
+        {
+            Rect s0 = Taskbar::slot_rect(0, 640, 480);
+            assert(s0.x == TB_PAD && s0.y == 480 - TB_H);
+            assert(s0.width == TB_SLOT_W && s0.height == TB_H);
+            Rect i0 = Taskbar::slot_icon_rect(0, 640, 480);
+            assert(i0.width == TB_ICON_PX && i0.height == TB_ICON_PX);
+            assert(i0.x == s0.x + (TB_SLOT_W - TB_ICON_PX) / 2);
+        }
+        assert(bar.find_slot(pt(10, 440), 640, 480) == 0);
+        assert(bar.find_slot(pt(200, 440), 640, 480) == -1);  // area kosong
+        assert(bar.find_slot(pt(10, 10), 640, 480) == -1);    // atas strip
+        // Jam numerik dari RTC palsu.
+        assert(t_streq(bar.clock_time(), "21:35"));
+        assert(t_streq(bar.clock_date(), "21 09 2026"));
+        // Hover: masuk slot -> true; sama -> false; pergi -> true + -1.
+        assert(bar.update_hover(pt(10, 440), 640, 480) == true);
+        assert(bar.hovered() == 0);
+        assert(bar.update_hover(pt(10, 440), 640, 480) == false);
+        assert(bar.update_hover(pt(300, 440), 640, 480) == true);
+        assert(bar.hovered() == -1);
+        assert(bar.poll(wm, launcher) == false);  // tanpa perubahan
         g_kw_focus2 = 1;
-        assert(bar.poll(wm) == true);  // fokus berubah
+        assert(bar.poll(wm, launcher) == true);  // fokus berubah
         assert(!bar.entry(1).focused);
         g_kw_focus2 = 0;
+        // Menit berganti -> Partial (jam saja).
+        g_time[4] = 36;
+        assert(bar.poll(wm, launcher) == true);
+        assert(t_streq(bar.clock_time(), "21:36"));
+        g_time[4] = 35;
+        assert(bar.poll(wm, launcher) == true);  // kembali (tetap lapor)
         g_kw_fail = 1;
-        assert(bar.poll(wm) == false);  // gagal → false, state utuh
+        assert(bar.poll(wm, launcher) == false);  // gagal → false, state utuh
         assert(bar.count() == 2);
         g_kw_fail = 0;
+    }
+
+    // --- Phase 9: resolusi ikon terpusat ---
+    {
+        char p[32];
+        resolve_icon_path("", p, sizeof(p));
+        assert(t_streq(p, "/default.png"));
+        resolve_icon_path("demo.png", p, sizeof(p));
+        assert(t_streq(p, "/demo.png"));
+        resolve_icon_path("/x.png", p, sizeof(p));
+        assert(t_streq(p, "/x.png"));
+        // scale_nearest 2x2 -> 4x4: tiap blok 2x2 = sumber terdekat.
+        uint32_t src[4] = {0xFF000001u, 0xFF000002u, 0xFF000003u,
+                           0xFF000004u};
+        uint32_t dst[16];
+        scale_nearest(src, 2, 2, dst, 4, 4);
+        assert(dst[0] == src[0] && dst[3] == src[1]);
+        assert(dst[12] == src[2] && dst[15] == src[3]);
+        assert(dst[5] == src[0] && dst[10] == src[3]);
+        // blit_px: RLE per baris — A A B B -> 2 fill_rect (w=2) + warna tepat.
+        uint32_t row[4] = {0xFF102030u, 0xFF102030u, 0xFF405060u,
+                           0xFF405060u};
+        RectSink bs;
+        bs.n = 0;
+        blit_px(bs, 5, 7, row, 4, 1);
+        assert(bs.n == 2);
+        assert(bs.last.x == 7 && bs.last.y == 7 && bs.last.width == 2);
+        assert(color_eq(bs.last_c, rgb(0x40, 0x50, 0x60)));
+        // Cache: kustom ada, hilang -> default, semua gagal -> null.
+        IconCache icons;
+        assert(icons.icon_for("/demo.png") != 0);
+        assert(icons.icon_for("/demo.png")->size == ICON_CACHE_PX);
+        assert(icons.icon_for("/tak-ada.png") != 0);  // fallback default
+        g_img_fail = 1;
+        IconCache noimg;
+        assert(noimg.icon_for("/tak-ada.png") == 0);
+        g_img_fail = 0;
+    }
+
+    // --- Phase 9: cocok judul launcher + path ikon entri ---
+    {
+        char p[32];
+        launcher.icon_path(3, p);
+        assert(t_streq(p, "/demo.png"));
+        launcher.icon_path(0, p);
+        assert(t_streq(p, "/default.png"));
+        const AppEntry* f = launcher.find_by_title("Explorer");
+        assert(f && t_streq(f->elf, "/apps/fileman.elf"));
+        const AppEntry* c = launcher.find_by_title("calc");  // basename elf
+        assert(c && t_streq(c->label, "Kalkulator"));
+        assert(launcher.find_by_title("term") == 0);
+        assert(launcher.find_by_title("") == 0);
+    }
+
+    // --- Phase 9: wallpaper (pilih + fallback + base) ---
+    {
+        assert(Wallpaper::pick_builtin("island.png") == 0);
+        assert(Wallpaper::pick_builtin("meadow.png") == 5);
+        assert(Wallpaper::pick_builtin("asing.png") == -1);
+        assert(Wallpaper::pick_builtin("") == -1);
+        char wp[32];
+        Wallpaper::config_path(wp, sizeof(wp), "island.png");
+        assert(t_streq(wp, "/island.png"));
+        Wallpaper wall;
+        assert(!wall.has_image());
+        assert(wall.load(640, 480) == true);  // desktop.app -> city-town.png
+        assert(wall.has_image());
+        // Blit foto = RLE fill_rect per baris, dibatasi region (dipakai render
+        // Partial untuk memulihkan bekas kartu preview). Piksel uji seragam ->
+        // satu run per baris.
+        RectSink sink;
+        sink.n = 0;
+        Rect reg{16, 8, 32, 16};
+        wall.draw_photo_into(sink, reg);
+        assert(sink.n == 16);
+        assert(sink.last.x == 16 && sink.last.y == 8 + 15);
+        assert(sink.last.width == 32 && sink.last.height == 1);
+        assert(color_eq(sink.last_c, rgb(255, 255, 255)));
+        // Region melewati tepi layar: dipotong, tak digambar di luar.
+        RectSink clip;
+        clip.n = 0;
+        Rect over{-10, -10, 40, 40};
+        wall.draw_photo_into(clip, over);
+        assert(clip.n == 30);  // hanya 30 baris terlihat (y 0..29)
+        assert(clip.last.x == 0 && clip.last.y == 29 && clip.last.width == 30);
+        // Region di luar layar: tak menggambar apa pun.
+        RectSink empty;
+        empty.n = 0;
+        wall.draw_photo_into(empty, Rect{5000, 5000, 10, 10});
+        assert(empty.n == 0);
+        // Regresi BSOD INT 6 (Phase 9.5): buffer layar 1080p (8MB) sekarang
+        // dari allocator standar — heap tumbuh, jadi load() tetap sukses.
+        Wallpaper big;
+        assert(big.load(1920, 1080) == true);
+        RectSink bigsink;
+        bigsink.n = 0;
+        big.draw_photo_into(bigsink, Rect{0, 0, 1920, 1080});
+        assert(bigsink.n == 1080);  // satu run per baris
+        assert(bigsink.last.y == 1079 && bigsink.last.width == 1920);
+        g_img_fail = 1;
+        Wallpaper noimg;
+        assert(noimg.load(640, 480) == false);  // fallback gradasi
+        RectSink none;
+        none.n = 0;
+        noimg.draw_photo_into(none, Rect{0, 0, 64, 64});
+        assert(none.n == 0);  // tanpa foto: draw_bg memakai gradasi
+        g_img_fail = 0;
+    }
+
+    // --- Phase 9: gambar launcher (ikon PNG via RLE ke canvas window) ---
+    {
+        IconCache icons;
+        Canvas canvas;  // host: Impl kosong (fill_rect no-op) — hitung hasil
+        assert(launcher.draw(canvas, icons, 640, 480) == 4);
+        assert(launcher.draw(canvas, icons, 0, 0) == 1);  // kapasitas minimum
+    }
+
+    // --- Phase 9: taskbar + preview benar-benar menggambar ke canvas ---
+    {
+        WindowManager wm;
+        Taskbar bar;
+        assert(bar.poll(wm, launcher));
+        IconCache icons;
+        Canvas canvas;  // host: Impl kosong (fill_rect no-op)
+        // Satu window tampil ("term") -> satu ikon bergambar digambar.
+        assert(bar.draw(canvas, icons, 640, 480) == 1);
+        AppPreview pv;
+        Rect anchor = Taskbar::slot_rect(0, 640, 480);
+        pv.show(bar.entry(1), bar.slot_app(0), anchor, 640, 480);
+        assert(pv.drawn_rect().width == 0);  // belum digambar
+        pv.draw(canvas, icons);
+        assert(pv.drawn_rect().width == PV_W && pv.drawn_rect().height == PV_H);
+        // Kartu hilang: rect terakhir DIPERTAHANKAN (dipakai render Partial
+        // untuk memulihkan latar), lalu dikosongkan setelah draw berikutnya.
+        Rect was = pv.drawn_rect();
+        pv.hide();
+        assert(pv.drawn_rect().width == PV_W);
+        pv.draw(canvas, icons);
+        assert(pv.drawn_rect().width == 0);
+        assert(was.x == pv.drawn_rect().x && was.y == pv.drawn_rect().y);
+    }
+
+    // --- Phase 9: kartu preview (geometri + show/hide/hit) ---
+    {
+        WindowInfo w;
+        w.id = 7;
+        t_strcpy(w.title, "term");
+        w.focused = 1;
+        w.is_desktop = false;
+        Rect anchor = Taskbar::slot_rect(0, 640, 480);
+        Rect c = AppPreview::card_rect(anchor, 640, 480);
+        assert(c.width == PV_W && c.height == PV_H);
+        assert(c.y == anchor.y - PV_GAP - PV_H);  // di atas taskbar
+        assert(c.x >= 0 && c.x + PV_W <= 640);
+        AppPreview pv;
+        assert(!pv.visible());
+        pv.show(w, 0, anchor, 640, 480);
+        assert(pv.visible() && pv.window_id() == 7);
+        assert(pv.hit(pt(c.x + 4, c.y + 4)));
+        assert(!pv.hit(pt(0, 0)));
+        pv.hide();
+        assert(!pv.visible() && !pv.hit(pt(c.x + 4, c.y + 4)));
+        // Jepit kanan: anchor di tepi kanan layar.
+        Rect far;
+        far.x = 600;
+        far.y = 436;
+        far.width = 40;
+        far.height = 44;
+        Rect cc = AppPreview::card_rect(far, 640, 480);
+        assert(cc.x + PV_W <= 640);
     }
 
     // --- notifikasi crash: probe/timeout/klik ---

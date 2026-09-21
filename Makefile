@@ -1101,7 +1101,12 @@ LIBDESKTOP_LIB    = $(BUILD_DIR)/desktop/libdesktop.a
 LIBDESKTOP_ISOLATION = tools/desktop-phase8/check-desktop-isolation.sh
 # Header C bersama untuk TU framework/implementasi (userlib.h/libgui.h +
 # color_types.h — pola yang sama dipakai user_apps/Makefile CFLAGS_COMMON).
-LIBDESKTOP_SYS_INC = -I$(LIBDESKTOP_INC_SRC) -I$(INCLUDE_DIR) -Ilibs/color/include
+# `-iquote` (bukan -I) untuk $(INCLUDE_DIR): repo punya include/stdlib.h
+# (shim stb_image) yang akan MENANG atas stdlib.h milik libc++ SDK, sehingga
+# libc++ <cstdlib> (ditarik oleh <new>/std::nothrow) gagal assert. Semua header
+# repo di desktop/libdesktop di-include gaya kutip ("userlib.h"), jadi -iquote
+# cukup — lihat juga test-desktop & LIBC_PORT_CFLAGS.
+LIBDESKTOP_SYS_INC = -I$(LIBDESKTOP_INC_SRC) -iquote $(INCLUDE_DIR) -Ilibs/color/include
 
 DESKTOP_APP      ?= desktop
 DESKTOP_IMPL_DIR  = apps/$(DESKTOP_APP)
@@ -1112,7 +1117,8 @@ DESKTOP_SELECTED  = $(BUILD_DIR)/desktop/.selected
 DESKTOP_ELF       = $(ELF_DIR)/desktop.elf
 # Object C userspace yang dipakai link desktop (userlib/libgui — dibangun
 # sub-make user_apps; pola di bawah memicu sub-make itu bila berkas hilang).
-USERAPP_LIB_OBJS  = $(BUILD_DIR)/obj/user/apps/userlib.o $(BUILD_DIR)/obj/user/apps/libgui.o
+USERAPP_LIB_OBJS  = $(BUILD_DIR)/obj/user/apps/userlib.o $(BUILD_DIR)/obj/user/apps/libgui.o \
+                    $(BUILD_DIR)/obj/user/apps/png.o
 
 DTSMOKE_SRC   = tools/desktop-phase8/dtsmoke.cpp
 DTSMOKE_APP   = $(LIBC_OUT)/desktop-phase8/dtsmoke.elf
@@ -1451,10 +1457,38 @@ test-desktop: test/desktop_manifest_test
 
 DESKTOP_HOST_TUS = test/desktop_manifest_test.cpp \
                    apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp \
+                   apps/desktop/app_icons.cpp apps/desktop/wallpaper.cpp apps/desktop/app_preview.cpp \
+                   apps/desktop/desktop_shell.cpp \
                    libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
 test/desktop_manifest_test: $(DESKTOP_HOST_TUS) include/userlib.h include/libgui.h \
-                            $(LIBDESKTOP_PUBLIC_HEADERS) apps/desktop/launcher.hpp apps/desktop/taskbar.hpp apps/desktop/crash_notice.hpp apps/desktop/theme.hpp
-	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/libdesktop/include -Iapps/desktop -Ilibs/color/include -o $@ test/desktop_manifest_test.cpp apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
+                            $(LIBDESKTOP_PUBLIC_HEADERS) apps/desktop/launcher.hpp apps/desktop/taskbar.hpp apps/desktop/crash_notice.hpp apps/desktop/theme.hpp \
+                            apps/desktop/app_icons.hpp apps/desktop/wallpaper.hpp apps/desktop/app_preview.hpp apps/desktop/desktop_shell.hpp
+	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/libdesktop/include -Iapps/desktop -Ilibs/color/include -o $@ test/desktop_manifest_test.cpp apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp apps/desktop/app_icons.cpp apps/desktop/wallpaper.cpp apps/desktop/app_preview.cpp apps/desktop/desktop_shell.cpp libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
+
+# Heap user-space dinamis (Phase 9.5): test/libc_heap_test.cpp mengompilasi
+# libs/libc-port/src/kyuzen_heap.hpp APA ADANYA + FreeListHeap LLVM libc asli
+# (freelist/freetrie/freelist_heap), dengan backing store (region_alloc/free)
+# di-mock. Header heap menarik header internal libc, jadi flag-nya mengikuti
+# LIBC_PORT_DEFS (namespace internal + mode baremetal/single-thread).
+# Jalankan: make test-libc-heap
+.PHONY: test-libc-heap
+test-libc-heap: test/libc_heap_test
+	./test/libc_heap_test
+
+# freelist_heap.cpp TIDAK ikut di-link: TU itu mendefinisikan simbol global
+# `freelist_heap`, dan di test ini simbol tersebut didefinisikan oleh test
+# sendiri (di target: oleh kyuzen_libc_port.cpp). Yang dibutuhkan hanya
+# algoritma internalnya (freelist + freetrie); badan FreeListHeap ada di header.
+LIBC_HEAP_TEST_SRCS = $(LIBC_SRC)/libc/src/__support/freelist.cpp \
+                      $(LIBC_SRC)/libc/src/__support/freetrie.cpp
+test/libc_heap_test: test/libc_heap_test.cpp libs/libc-port/src/kyuzen_heap.hpp $(LIBC_HEAP_TEST_SRCS)
+# -mno-sse2 penting: tanpa itu inline_memcpy libc memuat <immintrin.h>, yang
+# menyeret <mm_malloc.h> -> <stdlib.h> milik mingw; deklarasi `free`/`abort`
+# mingw (tanpa noexcept) bentrok dengan deklarasi libc yang dipakai test ini.
+# Dengan jalur SSE2 mati, TU tetap bersih dari header C host.
+	$(HOSTCXX) -std=gnu++17 -O1 -Wall -mno-sse -mno-sse2 $(LIBC_PORT_DEFS) \
+	    -I$(LIBC_SRC)/libc -iquote libs/libc-port/src \
+	    -o $@ test/libc_heap_test.cpp $(LIBC_HEAP_TEST_SRCS)
 
 
 # ==========================================
@@ -1553,6 +1587,15 @@ MANIFESTS    = $(wildcard manifests/*.app)
 LIMINE_FILES = limine/BOOTX64.EFI limine/limine-bios.sys \
                limine/limine-bios-cd.bin limine/limine-uefi-cd.bin
 
+# Aset visual desktop Phase 9 (ikon + wallpaper). Modul non-app ditaruh kernel
+# di akar FS ("/<basename>"), dan limine.conf memuatnya dari path ISO yang sama
+# (flat, tanpa subdir) — karena itu staging-nya juga di akar $(ISO_ROOT).
+DESKTOP_ASSETS = assets/icons/default.png assets/icons/demo.png \
+                 assets/wallpaper/island.png assets/wallpaper/black-hole.png \
+                 assets/wallpaper/city-lanscaps.png \
+                 assets/wallpaper/city-town.png \
+                 assets/wallpaper/kimi-no-nawa.png assets/wallpaper/meadow.png
+
 # Sumber limine.conf untuk ISO. Default: file di root repo (perilaku lama, tidak
 # berubah). Smoke test libc Phase 1 menyuntikkan varian hasil generate lewat
 # `make boot_image.iso LIMINE_CONF=...` supaya file repo tidak pernah memuat
@@ -1563,10 +1606,12 @@ LIMINE_CONF ?= limine.conf
 boot_image.iso: $(ISO_IMAGE)
 
 $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
-              $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES)
+              $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) \
+              $(DESKTOP_ASSETS)
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@rm -f $(ISO_ROOT)/*.elf
 	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
+	@cp $(DESKTOP_ASSETS) $(ISO_ROOT)/
 	@# Opsional: app smoke test libc Phase 1/2/4/5/6/7 + SDK Phase 3 + contoh C++ (tidak diproduksi build normal).
 	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
 	@if [ -f $(LIBC_PHASE2_APP) ]; then cp $(LIBC_PHASE2_APP) $(ISO_ROOT)/libc_phase2.elf; fi

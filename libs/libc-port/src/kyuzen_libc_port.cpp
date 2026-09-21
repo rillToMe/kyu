@@ -1,6 +1,7 @@
 // ============================================================
 // KyuzenOS — LLVM libc 22.1.8 port layer (Phase 1–5: exit + errno + malloc +
-// stdio + time + init_array walk)
+// stdio + time + init_array walk · Phase 9.5: heap dinamis multi-arena +
+// entry point malloc/free/calloc/realloc/aligned_alloc)
 //
 // Satu-satunya file yang tahu cara menyambungkan LLVM libc 22.1.8 (baremetal,
 // target x86_64-pc-none-elf) ke KyuzenOS. Tidak ada header/kernel/libc Kyuzen
@@ -11,6 +12,10 @@
 //   2. `__llvm_libc_errno()`     — LIBC_ERRNO_MODE_EXTERNAL (config baremetal).
 //   3. `freelist_heap`           — instance heap yang dipakai malloc/calloc/
 //                                  realloc/free/aligned_alloc baremetal.
+//                                  Phase 9.5: heap nyata = daftar arena di
+//                                  kyuzen_heap.hpp; variabel ini tinggal alias
+//                                  kompatibilitas ke arena #0, dan kelima
+//                                  entry point-nya disediakan file ini.
 //   4. `_start`                  — crt minimal Kyuzen (bukan bagian libc);
 //                                  Phase 5: + menjalankan .init_array C++
 //                                  (weak symbol → app C tidak terpengaruh).
@@ -23,20 +28,47 @@
 // di file terpisah kyuzen_cxx_runtime.cpp — file ini hanya menambahkan walk
 // init_array agar _start tunggal melayani C dan C++.
 //
-// Arena malloc (desain Phase 1, lihat docs/design/audit-llvm-libc-22-freestanding.md §13):
-//   LLVM `FreeListHeap` (src/__support/freelist_heap.h) adalah allocator di atas
-//   SATU region contiguous dengan batas atas tetap; ctor default-nya menunjuk
-//   `_end`..`__llvm_libc_heap_limit` (arena statis di dalam citra ELF) dan TIDAK
-//   ada hook "minta tambahan memori". Karena itu tidak mungkin memetakan satu
-//   syscall #9 per malloc(): yang benar adalah mengambil satu region dari uheap
-//   Kyuzen sekali, lalu membiarkan algoritma freelist LLVM membagi-bagikannya.
+// Arena malloc — Phase 9.5: heap DINAMIS multi-arena (libs/libc-port/src/
+// kyuzen_heap.hpp). Ringkasnya, dan alasan historisnya:
+//
+//   Phase 1..9 mengambil SATU region uheap (`sys_alloc(#9)`, ukuran
+//   KYUZEN_LIBC_ARENA_BYTES = 1 MiB) dan membangun SATU `FreeListHeap` LLVM di
+//   atasnya. `FreeListHeap` (src/__support/freelist_heap.h) adalah best-fit
+//   freelist di atas satu region dengan batas atas tetap dan TIDAK punya grow
+//   hook, jadi malloc/new di atas ~1 MiB selalu NULL:
+//
+//     new uint32_t[1920*1080]  (8.3 MiB buffer layar wallpaper Phase 9)
+//         -> malloc -> FreeListHeap::allocate -> nullptr
+//         -> operator new[] -> abort() -> ud2 -> INT 6 (BSOD)
+//
+//   Padahal sys_alloc(#9) sendiri sanggup 8.3 MiB (UHEAP_MAX_ALLOC 64 MiB di
+//   include/uheap.h). Yang kurang bukan kernel, melainkan port ini: ia hanya
+//   punya SATU arena. Phase 9.5 menggantinya dengan daftar arena (setiap arena
+//   = satu region sys_alloc + satu instance FreeListHeap), tumbuh on-demand,
+//   plus jalur arena khusus untuk permintaan besar. Algoritma freelist LLVM
+//   tetap dipakai apa adanya — bukan allocator kedua/baru.
 //
 //   `freelist_heap.cpp` bawaan libc (yang membuat instance statis `_end..limit`)
 //   sengaja TIDAK ikut ter-link: definisi kuat `freelist_heap` di bawah ini
 //   sudah memenuhi simbolnya, sehingga member archive itu tidak pernah ditarik
 //   dan simbol `_end`/`__llvm_libc_heap_limit` tidak dibutuhkan sama sekali.
-//   Dengan kata lain: tidak ada arena statis di citra, tidak ada allocator
-//   kedua — hanya instance FreeListHeap di atas region sys_alloc(9).
+//
+//   Sejak Phase 9.5 entry point stdlib (malloc/free/calloc/realloc/
+//   aligned_alloc) juga DISEDIAKAN di sini, bukan lagi dari libc.a. Alasannya
+//   arsitektural: malloc.cpp/free.cpp/... baremetal hanyalah pembungkus satu
+//   baris `freelist_heap->allocate(...)` (non-virtual, statically dispatched ke
+//   SATU arena), sehingga routing multi-arena mustahil tanpa mengganti titik
+//   masuk itu. Bukti bahwa ini aman (arsip libc.a 22.1.8, `llvm-nm`):
+//     - tidak ada satu pun member yang mereferensikan `_ZN19__llvm_libc_22_1_8_
+//       {6mallocEm,4freeEPv,6callocEmm,7reallocEPvm,13aligned_allocEmm}`;
+//     - pemanggil internal libc memakai simbol C `malloc` (mis. strdup.cpp.obj);
+//     - kelima member stdlib/baremetal adalah SATU-SATUNYA pemakai global
+//       `freelist_heap` (tetap didefinisikan kuat di bawah untuk kompatibilitas).
+//   Karena definisi kuat di object reguler (crt.o, selalu lebih dulu dari
+//   libc.a pada urutan link SDK) sudah memenuhi simbolnya, kelima member itu
+//   tidak pernah ditarik — dan bila kelak ada member libc baru yang memanggil
+//   `malloc` dari dalam namespace libc (mis. asprintf/vasprintf_internal.h),
+//   alias namespace-nya pun sudah disediakan di bagian bawah file ini.
 //
 // Referensi audit: docs/design/audit-llvm-libc-22-freestanding.md (§13).
 // ============================================================
@@ -44,6 +76,7 @@
 #include <errno.h>   // deklarasi publik hook errno (dicek compiler)
 #include <stddef.h>  // size_t
 
+#include "kyuzen_heap.hpp"  // heap dinamis multi-arena (Phase 9.5)
 #include "src/__support/CPP/new.h"  // placement new gaya libc (pengganti <new>)
 #include "src/__support/CPP/span.h"
 #include "src/__support/freelist_heap.h"
@@ -57,6 +90,7 @@
 //   RAX = nomor, RBX/RCX/RDX/RSI/RDI = arg1..5, hasil di RAX.
 // ------------------------------------------------------------
 #define KZ_SYS_ALLOC      9    // RBX = ukuran byte -> alamat user / 0
+#define KZ_SYS_FREE      10    // RBX = alamat region (base) -> bebas ke pmm
 #define KZ_SYS_EXIT_CODE 34    // RBX = status -> proc_exit(status)
 #define KZ_SYS_READ      48    // RBX = fd, RCX = buf, RDX = count -> byte / -1
 #define KZ_SYS_WRITE     49    // RBX = fd, RCX = buf, RDX = count -> byte / -1
@@ -72,22 +106,24 @@ static inline void *kyuzen_sys_alloc(size_t size) {
   return ret;
 }
 
-// ------------------------------------------------------------
-// Ukuran arena malloc. Bisa di-override saat kompilasi
-// (`-DKYUZEN_LIBC_ARENA_BYTES=...`); 1 MiB = 256 halaman uheap.
-//
-// Plafon ini adalah konsekuensi API FreeListHeap 22.1.8 (tidak ada grow hook),
-// bukan pilihan bebas: permintaan di atasnya mengembalikan NULL. Ruang alamat
-// uheap sendiri jauh lebih besar (UHEAP_BASE 0x10000000 .. UHEAP_END 0x40000000),
-// jadi menaikkan angka ini hanya soal berapa halaman fisik yang mau ditahan.
-// ------------------------------------------------------------
-#ifndef KYUZEN_LIBC_ARENA_BYTES
-#define KYUZEN_LIBC_ARENA_BYTES (1u << 20)
-#endif
+// Bebaskan region uheap milik task ini (kernel/uheap.c mencocokkan BASE region;
+// pointer asing/stale diabaikan kernel, bukan panic).
+static inline void kyuzen_sys_free(void *region) {
+  __asm__ volatile("int $0x80"
+                   :
+                   : "a"((long)KZ_SYS_FREE), "b"(region)
+                   : "memory");
+}
 
-// Status keluar bila arena tidak bisa diambil dari uheap (bukan kesalahan app,
-// tapi tidak ada gunanya lanjut: malloc akan selalu NULL).
-#define KZ_EXIT_ARENA_FAILED 70
+// ------------------------------------------------------------
+// Knob heap (semua di kyuzen_heap.hpp, bisa di-override dengan -D):
+//   KYUZEN_LIBC_ARENA_BYTES      ukuran arena pertama + satuan deret (1 MiB)
+//   KYUZEN_LIBC_ARENA_MAX_BYTES  plafon deret geometris (4 MiB)
+//   KYUZEN_LIBC_MAX_ARENAS       jumlah slot tabel arena (32)
+//   KYUZEN_LIBC_MAX_ALLOC_BYTES  plafon satu permintaan = UHEAP_MAX_ALLOC (64 MiB)
+// Tidak ada lagi status keluar "arena gagal": arena diambil LAZY saat alokasi
+// pertama, dan kegagalannya = malloc mengembalikan NULL (bukan exit saat boot).
+// ------------------------------------------------------------
 
 // ------------------------------------------------------------
 // errno — LIBC_ERRNO_MODE_EXTERNAL: libc tidak menyimpan errno sendiri, ia
@@ -293,44 +329,90 @@ extern "C" bool __llvm_libc_timespec_get_utc(struct kyuzen_timespec *ts) {
   return true;
 }
 
+// ------------------------------------------------------------
+// Backing store heap: satu region uheap per arena.
+//
+// syscall #9 mengembalikan awal halaman (UHEAP_BASE + kelipatan 4096) dengan
+// 1 halaman guard tak ter-map antar region, dan #10 (sys_free) memvalidasi
+// kepemilikan lewat BASE region (kernel/uheap.c: uheap_free cocokkan `base`),
+// jadi pointer yang dikembalikan harus persis pointer yang diterima.
+//
+// Kegagalan = NULL: heap menolak permintaan itu, TIDAK mematikan proses (beda
+// dengan Phase 1..9 yang exit(70) saat arena boot gagal diambil).
+// ------------------------------------------------------------
+namespace kyuzen_heap {
+
+void *region_alloc(size_t bytes) { return kyuzen_sys_alloc(bytes); }
+void region_free(void *region) { kyuzen_sys_free(region); }
+
+} // namespace kyuzen_heap
+
 namespace LIBC_NAMESPACE_DECL {
 
 // Definisi kuat yang MENGGANTIKAN `freelist_heap.cpp` milik libc (simbol ini
 // hanya boleh punya satu definisi di seluruh program; definisi di object
-// reguler menang atas member archive). Null sampai `kyuzen_libc_heap_init()`
-// dipanggil — `_start` selalu melakukannya sebelum `main`, jadi malloc tidak
-// pernah melihat pointer kosong.
+// reguler menang atas member archive).
+//
+// Sejak Phase 9.5 heap nyata hidup di kyuzen_heap.hpp (daftar arena); variabel
+// ini hanya kompatibilitas simbol dan selalu disinkronkan ke arena #0
+// (kyuzen_heap::detail::sync_libc_global). Null selama belum ada arena —
+// artinya belum ada alokasi sama sekali, bukan heap yang tak siap.
 FreeListHeap *freelist_heap = nullptr;
 
-// Storage untuk objek FreeListHeap (FreeListHeap tidak copyable: FreeStore
-// menghapus copy/assign — lihat src/__support/freestore.h). Konstruksi in-place
-// lewat placement new di bawah.
-alignas(FreeListHeap) static unsigned char
-    kyuzen_heap_storage[sizeof(FreeListHeap)];
+// Dipanggil `_start` sebelum `main` (kontrak Phase 1). Sejak Phase 9.5 heap
+// LAZY: tidak ada sys_alloc saat boot, arena pertama diambil saat alokasi
+// pertama. Fungsi sengaja tetap ada supaya crt tetap satu jalur dan app yang
+// tidak pernah malloc tidak menahan satu halaman pun.
+void kyuzen_libc_heap_init() {}
 
-static bool kyuzen_heap_ready = false;
+} // namespace LIBC_NAMESPACE_DECL
 
-// Ambil satu region contiguous dari uheap Kyuzen (syscall #9) dan bangun
-// FreeListHeap di atasnya. Idempoten.
+// ------------------------------------------------------------
+// Entry point stdlib (Phase 9.5): malloc/free/calloc/realloc/aligned_alloc.
 //
-// Kegagalan syscall #9 (OOM task / task tanpa AS) TIDAK memunculkan allocator
-// cadangan: program keluar dengan status KZ_EXIT_ARENA_FAILED. Alternatifnya
-// adalah arena statis di .bss/citra — bertentangan dengan desain Phase 1
-// ("bukan _end..__llvm_libc_heap_limit").
-void kyuzen_libc_heap_init() {
-  if (kyuzen_heap_ready)
-    return;
+// Semantik SETIA pada versi baremetal LLVM 22.1.8 yang digantikan (lihat
+// src/stdlib/baremetal/*.cpp) supaya perilaku app tidak berubah selain
+// hilangnya plafon 1 MiB:
+//   - size 0 -> NULL (bukan pointer unik); errno TIDAK disentuh;
+//   - operator new/new[] (kyuzen_cxx_runtime.cpp) memanggil malloc ini, jadi
+//     jalur C++ ikut membaik tanpa perubahan terpisah;
+//   - free(ptr asing) = no-op (perilakunya UB di C; no-op tak bisa merusak).
+//
+// `noexcept` disamakan dengan deklarasi hdr/func/*.h libc (sudah ikut lewat
+// CPP/new.h) — deklarasi ulang tanpa noexcept akan ditolak compiler.
+// ------------------------------------------------------------
+extern "C" void *malloc(size_t size) noexcept {
+  return kyuzen_heap::alloc(size);
+}
 
-  void *region = kyuzen_sys_alloc(KYUZEN_LIBC_ARENA_BYTES);
-  if (region == nullptr)
-    __llvm_libc_exit(KZ_EXIT_ARENA_FAILED);
+extern "C" void free(void *ptr) noexcept { kyuzen_heap::free(ptr); }
 
-  cpp::byte *begin = static_cast<cpp::byte *>(region);
-  // uheap selalu mengembalikan awal halaman (UHEAP_BASE + kelipatan 4096),
-  // jadi syarat alignment Block (MIN_ALIGN) sudah terpenuhi.
-  freelist_heap = ::new (static_cast<void *>(kyuzen_heap_storage))
-      FreeListHeap(cpp::span<cpp::byte>(begin, begin + KYUZEN_LIBC_ARENA_BYTES));
-  kyuzen_heap_ready = true;
+extern "C" void *calloc(size_t num, size_t size) noexcept {
+  return kyuzen_heap::calloc(num, size);
+}
+
+extern "C" void *realloc(void *ptr, size_t size) noexcept {
+  return kyuzen_heap::realloc(ptr, size);
+}
+
+extern "C" void *aligned_alloc(size_t alignment, size_t size) {
+  return kyuzen_heap::aligned_alloc(alignment, size);
+}
+
+// Alias namespace libc: LLVM_LIBC_FUNCTION mendefinisikan `malloc` C *dan*
+// `LIBC_NAMESPACE::malloc` (lihat src/__support/common.h, alias gnu). Tanpa
+// definisi ini, member libc yang memanggil malloc dari dalam namespace (mis.
+// vasprintf_internal.h) akan menarik malloc.cpp.obj → tabrakan definisi
+// `malloc` dengan milik port. Implementasinya memakai `::malloc` (bukan
+// rekursi ke dirinya sendiri).
+namespace LIBC_NAMESPACE_DECL {
+
+void *malloc(size_t size) noexcept { return ::malloc(size); }
+void free(void *ptr) noexcept { ::free(ptr); }
+void *calloc(size_t num, size_t size) noexcept { return ::calloc(num, size); }
+void *realloc(void *ptr, size_t size) noexcept { return ::realloc(ptr, size); }
+void *aligned_alloc(size_t alignment, size_t size) {
+  return ::aligned_alloc(alignment, size);
 }
 
 } // namespace LIBC_NAMESPACE_DECL
