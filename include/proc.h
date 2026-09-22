@@ -86,6 +86,15 @@ typedef struct {
     char     name[16];
 } proc_info_t;
 
+// Kernel-internal argv/list helpers (defined in kernel/proc/proc.c,
+// consumed by kernel/syscall/sys_proc.c — usercopy boundary, bounded).
+// proc_copy_in_argv tidak di sini: butuh ucopy_ctx_t (usercopy.h) dan hanya
+// dipakai satu TU — deklarasinya tetap lokal di sys_proc.c.
+int proc_build_argv(uint64_t* stack_top_inout, int argc,
+                    char kargv[][PROC_MAX_ARG_LEN], uint64_t* argv_out);
+void proc_basename(const char* path, char* out, uint32_t cap);
+int proc_fill_list(proc_info_t* kbuf, int max);
+
 // --- Pure validators (host-testable, no scheduler) ---
 
 // 1 = argc usable for a new process, 0 = reject.

@@ -5,7 +5,6 @@
 #include "userlib.h"   // file_info_t (ABI sys_get_file_list)
 #include "kyuzenfs.h"  // kfs_* shim API (pengganti extern lokal di syscall.c lama)
 #include "vfs.h"       // SYS_RENAME / SYS_STAT
-#include "cred.h"      // cred_current_is_root (sys_fs_format)
 #include "heap.h"
 
 int sys_fs_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) {

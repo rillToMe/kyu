@@ -10,9 +10,10 @@
 #include "crash_notice.h"  // SYS_CRASH_NOTICE
 #include "crash_archive.h" // crash_archive_notice
 
-// Tanpa header publik (dipindahkan verbatim dari syscall.c lama).
-extern fs_node_t tty_node;
-
+// tty_node: deklarasi kanonis di tty.h (di-include di atas).
+// scheduler_lock (kernel/sched/core.c) tidak punya owner header dan dipakai
+// lintas TU (proc.c, kernel_userlib.c juga extern manual) — tetap lokal di
+// sini; membuat sched.h adalah out-of-scope phase ini.
 // Guards task cred transitions (defined in kernel/sched/core.c).
 extern spinlock_t scheduler_lock;
 

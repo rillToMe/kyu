@@ -22,16 +22,14 @@
 task_t* syscall_current_task(void);
 
 // Counter: setiap sys_yield menambahkannya; timer membaca + mereset
-// tiap tick untuk CPU idle tracking. Definisi di sys_system.c.
+// tiap tick untuk CPU idle tracking. Definisi di sys_system.c; deklarasi
+// kanonis di sini (konsumen timer.c/kernel_userlib.c memakai extern sendiri
+// yang tidak diubah phase ini).
 extern volatile uint32_t yield_counter;
 
-// Diagnostik panic (kernel/panic/): konteks syscall TERAKHIR.
-// Definisi di syscall.c (dispatcher); best-effort, tanpa lock.
-extern volatile uint64_t g_last_syscall_num;
-extern volatile int32_t  g_last_syscall_task;
-extern volatile uint64_t g_last_syscall_arg0;
-extern volatile uint64_t g_last_syscall_arg1;
-extern volatile uint64_t g_last_syscall_arg2;
+// Diagnostik panic g_last_syscall_* TIDAK dideklarasikan di sini: definisi di
+// syscall.c, konsumen (kernel/panic) memakai deklarasinya sendiri di
+// panic_internal.h — satu-satunya TU lain. Tidak ada yang perlu header ini.
 
 int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st);
 int sys_mem_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st);

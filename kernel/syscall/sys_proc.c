@@ -8,19 +8,17 @@
 #include "uheap.h"
 #include "kwm.h"
 #include "heap.h"
+#include "shell.h"     // user_shell, g_shell_return_rsp (legacy exec-chain)
+#include "serial.h"    // serial_print/hex (blok debug HEAP_WATCH_DEBUG)
 
-// Tanpa header publik (bukan bagian kontrak subsystem): deklarasi lokal
-// dipindahkan verbatim dari syscall.c lama — bukan abstraksi baru.
-extern int proc_build_argv(uint64_t* stack_top_inout, int argc,
-                           char kargv[][PROC_MAX_ARG_LEN], uint64_t* argv_out);
+// Tetap lokal (tanpa owner header, dipakai >1 TU — bukan header misc baru):
+// - proc_copy_in_argv (butuh ucopy_ctx_t; satu-satunya pemakai di sini)
+// - flush_event_queue (kernel/sync/event.c; sync.h hanya mutex/sem/condvar)
+// - flush_kbd_buffer (drivers/keyboard.c; tidak ada keyboard.h)
 extern int proc_copy_in_argv(const ucopy_ctx_t* uc, uint64_t u_argv, int argc,
                              char kargv[][PROC_MAX_ARG_LEN], uint32_t* total_out);
-extern void proc_basename(const char* path, char* out, uint32_t cap);
-extern int proc_fill_list(proc_info_t* kbuf, int max);
 extern void flush_event_queue(int task_id);
 extern void flush_kbd_buffer(void);
-extern void user_shell(void);
-extern uint64_t g_shell_return_rsp;
 
 // Per-address-space cookie generator: increments for each new AS.
 // FIX_003: increment atomik (SMP) — dua exec bersamaan tidak boleh
@@ -179,8 +177,6 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
         }
 #ifdef HEAP_WATCH_DEBUG
         {
-            extern void serial_print(const char* s);
-            extern void serial_print_hex(uint64_t v);
             serial_print("[EXEC] kfname=[");
             serial_print(kfname);
             serial_print("] rbx=");
@@ -243,7 +239,6 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
         uint64_t entry = elf_load_file(kfname, &new_stack_top, new_pml4);
 
         // 3. Set RIP & RSP untuk IRETQ
-        extern uint64_t g_shell_return_rsp;
         if (entry != 0) {
             r->rip = entry;
             // New app runs on its own 256KB stack (deep decode chains overflow
@@ -254,8 +249,6 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
             r->cs = 0x1B;  // user code (GDT[3] | RPL3)
             r->ss = 0x23;  // user data (GDT[4] | RPL3)
 #ifdef HEAP_WATCH_DEBUG
-            extern void serial_print(const char* s);
-            extern void serial_print_hex(uint64_t v);
             serial_print("[EXEC] ring3 cs=");
             serial_print_hex(r->cs);
             serial_print(" ss=");

@@ -2,30 +2,16 @@
 #include <stdint.h>
 #include "task.h"
 #include "usercopy.h"
-#include "userlib.h"   // kyuzen_event_t, kwm_rect_update_t, kwm_window_info_t
+#include "userlib.h"   // kyuzen_event_t, kwm_rect_update_t (user ABI)
+#include "kwm.h"       // KWM API + kwm_window_info_t (via kwm_abi.h)
+#include "gfx.h"       // draw_* primitif + kwm_set_cursor
 #include "display.h"   // display_get_mode (sys_get_screen_size)
 #include "smap.h"      // user_access_begin/end (pengecualian shared #2)
 #include "heap.h"
 
-// Tanpa header publik (dipindahkan verbatim dari syscall.c lama):
-// draw_* langsung + kwm_* lewat local extern — userlib.h hanya membawa
-// tipe ABI + wrapper sys_*, bukan deklarasi fungsi kernelnya.
-extern void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
-extern void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer);
-extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
-extern void kwm_set_cursor(int kind);
-extern int kwm_create_window(int, int, uint32_t, uint32_t);
-extern void kwm_update_window(int, uint32_t*);
-extern void kwm_destroy_window(int);
-extern int kwm_window_owner(int);
-extern uint64_t kwm_window_canvas_bytes(int);
-extern int kwm_create_desktop(void);
-extern int kwm_set_title(int win_id, const char* title);
-extern int kwm_get_windows(kwm_window_info_t*, int);
-extern int kwm_activate_window(int win_id);
-extern int kwm_update_window_rect(int, int32_t, int32_t, uint32_t, uint32_t, uint32_t*);
-extern int kwm_window_dims(int, uint32_t*, uint32_t*);
-extern int kwm_set_window_opaque(int);
+// pop_event/flush_event_queue (kernel/sync/event.c) tidak punya owner header
+// (sync.h hanya mutex/sem/condvar) dan dipakai lintas TU — deklarasi tetap
+// lokal di sini; membuat header event.h adalah out-of-scope phase ini.
 extern int pop_event(int task_id, kyuzen_event_t* out);
 
 int sys_kwm_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) {

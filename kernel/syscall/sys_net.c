@@ -5,7 +5,9 @@
 #include "net_socket.h"
 #include "heap.h"
 
-// Tanpa header publik (dipindahkan verbatim dari syscall.c lama).
+// kernel_ping (kernel/net/net_ping.c) tidak punya owner header (net_socket.h
+// hanya TCP client) dan hanya dipakai satu TU di sini — tetap lokal; membuat
+// header baru untuk satu function adalah overkill di phase ini.
 extern int kernel_ping(const char *host);
 
 int sys_net_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) {

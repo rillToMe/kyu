@@ -6,10 +6,11 @@
 #include "pmm.h"       // pmm_get_total/used_ram
 #include "kyuzenfs.h"  // kfs_get_total/used_space
 #include "pci.h"       // acpi_poweroff, system_reboot (deklarasi existing)
+#include "rtc.h"       // rtc_read_time
 
-// Tanpa header publik (dipindahkan verbatim dari syscall.c lama).
+// get_cpu_string (kernel/cpu.c) tidak punya owner header kernel (deklarasi
+// user-ABI ada di userlib.h) dan hanya dipakai satu TU di sini — tetap lokal.
 extern void get_cpu_string(char* buffer);
-extern void rtc_read_time(uint32_t*);
 
 // Counter: setiap kali sys_yield dipanggil, tambah counter ini.
 // Timer membaca dan mereset setiap tick untuk menentukan apakah CPU idle.

@@ -5,6 +5,7 @@
 #include <stddef.h>   // size_t
 #include "proc.h"     // P0 Phase 2: PROC_* bounds, proc_info_t, wait/exit ABI
 #include "crash_notice.h"  // sys_crash_notice: notifikasi crash (boot setelah panic)
+#include "kwm_abi.h"  // kwm_window_info_t kanonis (shared kernel<->user, syscall 61)
 
 // --- STRUKTUR PESAN EVENT (GUI) ---
 #define EVENT_NONE          0
@@ -207,19 +208,8 @@ int sys_kwm_set_window_opaque(int win_id);
 int sys_kwm_set_cursor(int kind);
 
 // --- Phase 10: Desktop window + taskbar (syscall 59-63) ---
-// Info window utk syscall 61 (layout identik dgn kwm_window_info_t di
-// include/kwm.h — ABI x86_64, tanpa #pragma pack).
-typedef struct {
-    uint32_t win_id;      // slot KWM + 1; 0 = kosong (konvensi event win_id)
-    uint8_t  active;
-    uint8_t  focused;     // 1 = pemegang fokus keyboard (tint titlebar)
-    int32_t  x, y;
-    uint32_t width, height, z_index;
-    int32_t  owner_task;
-    uint32_t flags;
-    char     title[32];
-} kwm_window_info_t;
-
+// kwm_window_info_t: definisi kanonis di include/kwm_abi.h (dipakai kernel
+// juga — satu layout untuk syscall 61, jangan duplikasi di sini).
 int sys_kwm_create_desktop(void);        // -> win_id / -1 (frameless full-screen z=0)
 int sys_kwm_set_title(int win_id, const char* title);   // 0 / -1 (hanya pemilik)
 int sys_kwm_get_windows(kwm_window_info_t* buf, int max);   // -> jumlah / -1
