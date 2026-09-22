@@ -43,7 +43,7 @@ void     panic_monotonic_reset(void); // program PIT ch2 (sekali, saat masuk pan
 uint64_t panic_monotonic_ms(void);    // ms sejak reset (host: jam g_panic_test_ms)
 int      panic_read_key(void);        // 'r' / 's' / 'd'; 0 = tidak ada input
 
-// --- Crash log persisten (kernel/panic_log.c) -------------------------
+// --- Crash log persisten (kernel/debug/panic_log.c) -------------------------
 // Disimpan di RAM reserved (halaman pertama PMM — alamatnya deterministik
 // lintas warm-reboot) dan bertahan karena warm reset tidak menghapus DRAM.
 #define PANIC_LOG_SIGNATURE 0xDEADC0DEL

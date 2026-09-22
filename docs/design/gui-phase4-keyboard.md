@@ -25,7 +25,7 @@ Layout event keyboard (param1/param2/param3):
   saja dilepas setelah Shift lebih dulu dilepas).
 - Modifier: `KEY_MOD_SHIFT/CTRL/ALT/CAPS` = `0x01/0x02/0x04/0x08`,
   didefinisikan di `userlib.h` (mirror di `drivers/keyboard.c`).
-- `EVENT_KEY_RELEASE` = 5 ditambahkan di `kernel/event.c` + `userlib.h`
+- `EVENT_KEY_RELEASE` = 5 ditambahkan di `kernel/sync/event.c` + `userlib.h`
   (pola yang sama seperti `EVENT_SCROLL` kemarin).
 
 ## Perilaku baru di driver (`drivers/keyboard.c`)
@@ -90,5 +90,5 @@ ketikan berikutnya ikut tertahan sebagai shortcut.
 |---|---|
 | `drivers/keyboard.c` | handler baru: key up, modifier per-sisi (L/R + E0), CapsLock, prefix E0, decouple event ↔ TTY buffer |
 | `include/userlib.h` | `EVENT_KEY_RELEASE` (5), `KEY_MOD_*`, dokumentasi layout P1–P3 |
-| `kernel/event.c` | mirror `EVENT_KEY_RELEASE` |
+| `kernel/sync/event.c` | mirror `EVENT_KEY_RELEASE` |
 | `roadmap/GUI_ROADMAP.md` | checklist Phase 4 ditandai selesai |

@@ -8,7 +8,7 @@
 > **Konteks**: Phase 8 memberi Advanced Widgets (ListView/Table/TreeView/
 > ScrollView/Menu/MenuBar/Tab/Toolbar). Phase 9 menambahkan **Desktop Services**
 > sesuai roadmap: Clipboard, Dialog, Notification, Drag & Drop, Cursor,
-> Shortcut, Settings. Semua kerjaan userspace toolkit (`libs/widget/` +
+> Shortcut, Settings. Semua kerjaan userspace toolkit (`libs/gui/widget/` +
 > `include/libui.h`) — kecuali **Cursor**, yang butuh satu syscall kernel kecil
 > (compositor pemilik satu-satunya kursor mouse).
 
@@ -36,11 +36,11 @@
 | `kernel/gfx/compositor.c` | 2 bitmap kursor baru (I-beam, hand) 12×16 + `g_cursor_kind` + `kwm_set_cursor()` (validasi 0..2, mark cursor rect dirty) + selector bitmap di draw loop. |
 | `kernel/syscall.c` | Syscall **58** `sys_kwm_set_cursor`: validasi kind, call `kwm_set_cursor`, return 0/-1. |
 | `include/gfx.h` | Deklarasi `kwm_set_cursor`. |
-| `apps/userlib.c` | Wrapper `int sys_kwm_set_cursor(int kind)` (int 0x80, RAX=58). |
+| `libs/core/userlib.c` | Wrapper `int sys_kwm_set_cursor(int kind)` (int 0x80, RAX=58). |
 | `include/userlib.h` | Deklarasi `sys_kwm_set_cursor`. |
 | `include/libui.h` | ~20 deklarasi C ABI baru + 2 tipe callback (`ui_dialog_cb`, `ui_drop_cb`) + enum kursor. |
-| `libs/widget/` | Clipboard buffer, field DnD+kursor di `Widget`, Ctrl+C/V/X di TextBox, `Dialog` class + state modal Window, toast notification, DnD state + ghost, shortcut registry, Settings save/load, wrapper extern "C". |
-| `user_apps/widget_demo.c` | Toolbar Dialog/Notif, menu Edit → clipboard, shortcut Ctrl+N, tab Setelan baru. |
+| `libs/gui/widget/` | Clipboard buffer, field DnD+kursor di `Widget`, Ctrl+C/V/X di TextBox, `Dialog` class + state modal Window, toast notification, DnD state + ghost, shortcut registry, Settings save/load, wrapper extern "C". |
+| `apps/widget_demo.c` | Toolbar Dialog/Notif, menu Edit → clipboard, shortcut Ctrl+N, tab Setelan baru. |
 | `roadmap/GUI_ROADMAP.md` | Phase 9 → SELESAI. |
 
 ## C ABI (include/libui.h)
@@ -105,7 +105,7 @@ void kwm_set_cursor(int kind) {
 → return 0, else -1. Bitmap hand-made 12×16 (I-beam: batang vertikal dengan
 serif; hand: jari menunjuk), dua warna: 1=putih, 2=hitam.
 
-## Toolkit internal (libs/widget/)
+## Toolkit internal (libs/gui/widget/)
 
 ### Widget base — field baru + 3 setter
 
@@ -230,7 +230,7 @@ Blob biner polos, tanpa parsing — `ui_theme_t` fixed-width (struct C 6×uint32
 layout sama dgn `ui::Theme`). Load menolak file yang bukan theme (panjang ≠ 24
 atau semua nol).
 
-## Demo (user_apps/widget_demo.c)
+## Demo (apps/widget_demo.c)
 
 Window 360×400 tetap. Tambahan:
 - Toolbar: tombol **Dialog** (buka `ui_dialog_show` "Konfirmasi" Ya/Tidak) &
@@ -258,11 +258,11 @@ Window 360×400 tetap. Tambahan:
 ## File
 
 - `include/libui.h` — C ABI Phase 9 (clipboard/shortcut/dialog/notif/dnd/cursor/settings).
-- `libs/widget/` — toolkit: clipboard, Dialog class, toast, DnD, shortcut, cursor bridge, settings, wrapper extern "C".
+- `libs/gui/widget/` — toolkit: clipboard, Dialog class, toast, DnD, shortcut, cursor bridge, settings, wrapper extern "C".
 - `kernel/gfx/compositor.c` — bitmap kursor + `kwm_set_cursor`.
 - `kernel/syscall.c` — syscall 58.
-- `include/gfx.h`, `apps/userlib.c`, `include/userlib.h` — deklarasi/wrapper cursor.
-- `user_apps/widget_demo.c` — showcase Phase 9.
+- `include/gfx.h`, `libs/core/userlib.c`, `include/userlib.h` — deklarasi/wrapper cursor.
+- `apps/widget_demo.c` — showcase Phase 9.
 - `roadmap/GUI_ROADMAP.md` — Phase 9 → SELESAI.
 
 ## Belum ada (phase depan / batas sengaja)

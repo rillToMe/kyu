@@ -12,7 +12,7 @@
 //   - format ukuran berkas human-readable,
 //   - probe metadata gambar tanpa decode penuh (header saja).
 //
-// Implementasi: apps/media.c (library bersama user-space, pola apps/png.c —
+// Implementasi: libs/media/media.c (library bersama user-space, pola libs/media/png.c —
 // dikompilasi sekali, di-link oleh app yang membutuhkannya). Gallery dan
 // ImageView memakainya; VideoPlayer/AudioPlayer/DocumentViewer kelak cukup
 // menambah baris di tabel ekstensi di media.c.
@@ -69,7 +69,7 @@ media_type_t media_type_of(const char* path);
 int media_is_image(const char* path);
 
 // 1 = gambar yang benar-benar bisa didekode DEKODER YANG ADA (hari ini PNG +
-// BMP; lihat tabel di apps/media.c). App HANYA boleh menawarkan format yang
+// BMP; lihat tabel di libs/media/media.c). App HANYA boleh menawarkan format yang
 // lolos fungsi ini — jangan pernah mengiklankan format yang belum ada
 // dekodernya.
 int media_is_supported_image(const char* path);
@@ -122,7 +122,7 @@ void media_format_info(const char* name, int width, int height,
 int media_probe_image(const char* path, int* w, int* h, const char** fmt);
 
 // ------------------------------------------------------------
-// Dekode piksel — implementasi di apps/png.c (stb_image: PNG + BMP).
+// Dekode piksel — implementasi di libs/media/png.c (stb_image: PNG + BMP).
 // Hasil = buffer ARGB8888 (byte alpha), wajib dibebaskan dengan image_free().
 // ------------------------------------------------------------
 uint32_t* image_decode(const char* filename, int* out_w, int* out_h);

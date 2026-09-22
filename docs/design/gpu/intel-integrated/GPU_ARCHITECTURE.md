@@ -4,9 +4,9 @@
 ## 1. Subsystem Boundaries
 
 ```
-Application (user_apps/)
+Application (apps/)
     |
-   libui (libs/widget/)
+   libui (libs/gui/widget/)
     |
    KWM (kernel/gfx/kwm.c)
     |

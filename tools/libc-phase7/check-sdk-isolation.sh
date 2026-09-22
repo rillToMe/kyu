@@ -13,7 +13,7 @@ fi
 
 patterns=(
   "third_party/stdlib/llvm-project"
-  "libs/libc-port"
+  "libs/c/libc-port"
   "build/libc"
   "build/libcxx"
 )

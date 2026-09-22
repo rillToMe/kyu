@@ -54,8 +54,8 @@ kfs_file_entry_t (32B): filename[23] | flags | start_sector | size_bytes
 | File | Perubahan |
 |---|---|
 | `kernel/syscall.c` | Syscall **24** `sys_get_file_list` kini `(path, buffer, max)` — RBX=path, RCX=buffer, RDX=max; path user di-copy ke kernel via `strncpy_from_user` (pola boundary-copy yang sudah ada, bukan invent baru). Syscall **64** `sys_mkdir(path)` → `kfs_create_folder`. |
-| `apps/userlib.c` + `include/userlib.h` | Wrapper `sys_get_file_list(path, buffer, max)` 3-arg + `sys_mkdir`. |
-| Caller: `user_apps/desktop.c`, `fileman.c`, `terminal.c`, `viewer.c`, `badptr.c`, `test/desktop_manifest_test.c` | Sisip argumen `"/"`. |
+| `libs/core/userlib.c` + `include/userlib.h` | Wrapper `sys_get_file_list(path, buffer, max)` 3-arg + `sys_mkdir`. |
+| Caller: `system/desktop/`, `fileman.c`, `terminal.c`, `viewer.c`, `badptr.c`, `tests/host/unit/desktop_manifest_test.c` | Sisip argumen `"/"`. |
 
 **Keputusan backward-compat: opsi (b) rebuild-all.** Tidak ada kontrak ABI
 publik (OS masih development, semua ELF di-rebuild bareng tiap boot) → syscall
@@ -67,11 +67,11 @@ publik (OS masih development, semua ELF di-rebuild bareng tiap boot) → syscall
 | File | Perubahan |
 |---|---|
 | `kernel/kernel.c` | Sebelum instalasi module Limine: pastikan `/apps` ada (`kfs_create_folder` sekali). Routing module: `.elf`/`.app` → `/apps/<nama>`, yang lain (`kyuzen.png`, `logo.png`) → root. |
-| `kernel/elf.c` | `elf_load_file`: bare name (tanpa `/`) di-resolve ke `/apps/<nama>`; path absolut dipakai apa adanya. |
-| `user_apps/desktop.c` | `discover_apps` scan `/apps` + baca manifest `/apps/<base>.app`. `e->elf` tetap bare name (spawn resolve via loader). |
-| `apps/shell.c` + `user_apps/terminal.c` | Pre-check ELF (`sys_file_exists`) → `/apps/<nama>`. |
-| `user_apps/badptr.c` | Cek `/apps/badptr.elf`. |
-| `test/desktop_manifest_test.c` | Stub `sys_file_exists`/`sys_read_file_to_buffer` strip prefix `/apps/`. |
+| `kernel/proc/elf.c` | `elf_load_file`: bare name (tanpa `/`) di-resolve ke `/apps/<nama>`; path absolut dipakai apa adanya. |
+| `system/desktop/` | `discover_apps` scan `/apps` + baca manifest `/apps/<base>.app`. `e->elf` tetap bare name (spawn resolve via loader). |
+| `system/shell.c` + `apps/terminal.c` | Pre-check ELF (`sys_file_exists`) → `/apps/<nama>`. |
+| `apps/badptr.c` | Cek `/apps/badptr.elf`. |
+| `tests/host/unit/desktop_manifest_test.c` | Stub `sys_file_exists`/`sys_read_file_to_buffer` strip prefix `/apps/`. |
 
 **Satu titik resolve ELF.** `sys_spawn` (57), `sys_exec` (33), `sys_load_elf`
 (25), dan `kernel_userlib` semua memanggil `elf_load_file`. Resolve bare-name
@@ -88,12 +88,12 @@ konfigurasi. Routing `kernel.c` adalah choke point yang sebenarnya.
 
 ## Verifikasi
 
-- **Host self-check** (`test/kyuzenfs_dir_test.c`, pola `-iquote test -iquote
+- **Host self-check** (`tests/host/unit/kyuzenfs_dir_test.c`, pola `-iquote test -iquote
   include`, ATA+heap+spinlock di-mock di RAM): format → `mkdir /apps` →
   `create_file("/apps/test.elf")` → list `/apps` (1 file, `is_folder=0`) →
   list `/` (folder, `is_folder=1`) → duplikat ditolak per-folder → nested
   `/a/b/c.elf` → delete path-aware, folder tak bisa dihapus.
-- **Host self-check** (`test/desktop_manifest_test.c`): `discover_apps` scan
+- **Host self-check** (`tests/host/unit/desktop_manifest_test.c`): `discover_apps` scan
   `/apps`, manifest `/apps/<base>.app` ter-parsing (hidden `desktop.elf`).
 - **Manual QEMU** (user): desktop launcher dari `/apps`; `mkdir` + `ls` di
   Terminal; root hanya `apps` + file user; `start <app>` jalan; regresi

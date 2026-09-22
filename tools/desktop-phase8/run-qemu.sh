@@ -6,7 +6,7 @@
 #   1. disk image BARU (alat first-boot: password root + login shell)
 #   2. keystroke dikirim lewat monitor QEMU (HMP `sendkey`) — hanya setelah
 #      penanda yang relevan muncul di serial, bukan berbasis timer buta
-#   3. login otomatis men-spawn desktop (apps/login.c) — TANPA perintah
+#   3. login otomatis men-spawn desktop (system/login.c) — TANPA perintah
 #      `start`, kecuali KYUZEN_TEST_START diisi (mis. "dtsmoke" untuk smoke
 #      konsol framework yang berjalan berdampingan dengan desktop)
 #   4. bukti diambil dari COM1 (konsol di-mirror ke serial): marker startup

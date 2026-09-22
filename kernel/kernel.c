@@ -221,7 +221,7 @@ void kernel_main(void) {
     init_paging(0); // paging.c membaca CR3 langsung, parameter tidak dipakai
     init_heap();
 
-    // CRASH LOG PERSISTEN (kernel/panic_log.c). Halaman fisik PERTAMA yang
+    // CRASH LOG PERSISTEN (kernel/debug/panic_log.c). Halaman fisik PERTAMA yang
     // dialokasikan PMM: alamatnya deterministik di setiap boot, jadi log dari
     // boot sebelumnya (warm-reboot tidak menghapus DRAM) ketemu di tempat yang
     // sama. Disiapkan di sini supaya panic paling awal pun sudah tercatat.
@@ -325,7 +325,7 @@ void kernel_main(void) {
     kprint_quiet = 0;
     boot_state("  OK  ", "Filesystem", "KyuzenFS V4 (extent)");
 
-    // CRASHDUMP DISK (kernel/crashdump.c): 8 sektor terakhir disk — area yang
+    // CRASHDUMP DISK (kernel/debug/crashdump.c): 8 sektor terakhir disk — area yang
     // SAMA dengan yang disisihkan KyuzenFS (KZFS_CRASHDUMP_SECTORS), jadi
     // snapshot panic tidak pernah menimpa data file. ATA polling murni.
     {

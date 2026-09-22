@@ -10,7 +10,7 @@
 // DESCRIPTION (refcounted heap object owning buffer + offset + flags).
 // dup()/dup2() install a second entry on the SAME description — one
 // offset, one buffer, one dirty flag. close() drops one reference;
-// the last close flushes + frees. See kernel/vfs_fd.c.
+// the last close flushes + frees. See kernel/fs/vfs_fd.c.
 
 #define VFS_MAX_FDS      16     // per task
 #define VFS_MAX_PATH     23     // matches kfs filename limit (22 + null)

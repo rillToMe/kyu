@@ -15,7 +15,7 @@
 
   <img src="docs/screenshots/desktop.png" alt="Kyuzen OS Desktop - Calculator, File Manager, and terminal running concurrently" width="85%" />
 
-  <i>Concurrent GUI apps (spawned as independent Ring-3 tasks) over a composited desktop - Calculator &amp; File Manager side by side.</i>
+  <!-- <i>Concurrent GUI apps (spawned as independent Ring-3 tasks) over a composited desktop - Calculator &amp; File Manager side by side.</i> -->
 </div>
 
 ---
@@ -35,9 +35,9 @@
 
 ## About
 
-Kyuzen OS is a monolithic operating system written from scratch in C, C++, and Rust — no standard library, no starter code. It boots on bare metal (BIOS & UEFI) into a higher-half 64-bit kernel with preemptive multi-core scheduling, memory-protected Ring-3 applications, a composited window manager, its own filesystem, and a TCP/IP stack.
+Kyuzen OS is a monolithic operating system written from scratch in C, C++, and Rust - no standard library, no starter code. It boots on bare metal (BIOS & UEFI) into a higher-half 64-bit kernel with preemptive multi-core scheduling, memory-protected Ring-3 applications, a composited window manager, its own filesystem, and a TCP/IP stack.
 
-Everything on screen — every pixel, window, and keystroke — is produced by code in this repository.
+Everything on screen - every pixel, window, and keystroke - is produced by code in this repository.
 
 ## Feature Highlights
 
@@ -64,7 +64,7 @@ Everything on screen — every pixel, window, and keystroke — is produced by c
 - Framebuffer graphics primitives on a **DisplayBuffer / Viewport** abstraction
 - **Compositor**: dirty-region tracking + double buffering (no flicker, cheap repaints)
 - **KWM window manager**: drag, z-order, per-task window ownership
-- **Widget toolkit** (`libs/widget/`): layered architecture — core/primitives/layout/containers/chrome/dialog/window
+- **Widget toolkit** (`libs/gui/widget/`): layered architecture - core/primitives/layout/containers/chrome/dialog/window
 - **libdesktop**: high-level C++ desktop SDK (Application, Window Manager, Canvas, Events)
 - Intel integrated GPU driver + VirtIO virtual GPU support
 
@@ -102,7 +102,7 @@ Everything on screen — every pixel, window, and keystroke — is produced by c
 | `widget_demo` | Widget toolkit showcase |
 | `badptr` | Ring-3 isolation self-test |
 
-App binaries ship as `.elf` files (plus optional `<name>.app` manifests) stored under **`/apps/`** on the KyuzenFS disk. The desktop launcher scans `/apps`, and the ELF loader resolves bare names — `clock`, `start calc` — to `/apps/<name>.elf` automatically. User data (`*.txt`, `*.png`, `users.sys`) stays at the root.
+App binaries ship as `.elf` files (plus optional `<name>.app` manifests) stored under **`/apps/`** on the KyuzenFS disk. The desktop launcher scans `/apps`, and the ELF loader resolves bare names - `clock`, `start calc` - to `/apps/<name>.elf` automatically. User data (`*.txt`, `*.png`, `users.sys`) stays at the root.
 
 <details>
 <summary><b>Shell quick tour (click to expand)</b></summary>
@@ -127,26 +127,26 @@ Typing any app name (`clock`, `calc`, `fileman`…) execs it in place;
 
 Kyuzen OS provides a C and C++ SDK for building userspace applications:
 
-### C SDK (`sdk/c/`)
+### C SDK (`libs/c/`, staged to `build/sdk/c/`)
 - Full LLVM libc (stdio, stdlib, string, math, …)
 - CRT entry point (`crt.o`) + linker script (`app.ld`)
 - Headers staged to `build/sdk/c/include/`
 
-### C++ SDK (`sdk/cpp/`)
+### C++ SDK (`libs/cpp/`, staged to `build/sdk/cpp/`)
 - libc++ subset (string, vector, algorithm, memory, type_traits, …)
-- C++ runtime (`cxxrt.o` — `operator new/delete`, `__cxa_pure_virtual`, guards)
+- C++ runtime (`cxxrt.o` - `operator new/delete`, `__cxa_pure_virtual`, guards)
 - `kyuzen-c++` wrapper compiler script
-- **libdesktop** — high-level desktop C++ library:
-  - `Application` — event loop + window lifecycle
-  - `WindowManager` — window creation, z-order, focus
-  - `Canvas` — drawing surface abstraction
-  - `Event` — input/window/system event types
-  - `System` — desktop service queries
+- **libdesktop** - high-level desktop C++ library:
+  - `Application` - event loop + window lifecycle
+  - `WindowManager` - window creation, z-order, focus
+  - `Canvas` - drawing surface abstraction
+  - `Event` - input/window/system event types
+  - `System` - desktop service queries
 
 ### Rust SDK (`rust/`)
 - `no_std` userspace with custom allocator
-- `kyuzen-sys` — raw syscall bindings
-- `kyuzen-gui` — Slint-based GUI framework
+- `kyuzen-sys` - raw syscall bindings
+- `kyuzen-gui` - Slint-based GUI framework
 - Built with `cargo build --release`
 
 Build all: `make apps` (C + C++ user apps + libdesktop + desktop)
@@ -227,8 +227,12 @@ Default credentials: **root** / **1**
 | Directory | Main Function |
 | --- | --- |
 | `arch/x86/` | Architecture code: GDT/TSS, IDT, ISR/LAPIC/SMP entry (ASM) |
-| `kernel/` | Core: PMM, VMM/paging, heap, ELF loader, syscalls, event queue |
+| `kernel/` | Core: syscalls, ELF loader, event queue, display, strings (`kernel.c cpu.c syscall.c kprint.c string.c display.c timer_callbacks.c`) |
+| `kernel/mm/` | Memory management: PMM, VMM/paging, heap, uheap |
 | `kernel/sched/` | Scheduler: run queues, lifecycle, blocking/sleep |
+| `kernel/sync/` | Synchronization: spinlock, mutex/sem/condvar, events, wait queues |
+| `kernel/proc/` | Process model: exit/wait, boundary copy, ELF load |
+| `kernel/debug/` | Diagnostics & crash handling: BSOD persist, crashdump, RAM log |
 | `kernel/smp/` | Multi-core bring-up |
 | `kernel/gfx/` | Compositor, KWM window manager, framebuffer |
 | `kernel/fs/` | KyuzenFS V4: superblock, inode, extents, dirs, vnode, block cache |
@@ -238,20 +242,22 @@ Default credentials: **root** / **1**
 | `drivers/net/` | e1000 NIC driver + lwIP port |
 | `drivers/graphics/` | Intel integrated GPU, VirtIO virtual GPU |
 | `graphics/` | Display abstraction, backend, memory management |
-| `fs/` | VFS abstraction + fd layer |
-| `apps/` | Kernel-side apps (shell, login, desktop) & libgui/userlib shims |
-| `user_apps/` | Ring-3 ELF applications (fileman, clock, calc, terminal, …) |
-| `libs/widget/` | Widget toolkit: layered (core → primitives → layout → containers → window) |
-| `libs/libdesktop/` | High-level C++ desktop library (Application, WindowManager, Canvas, Events) |
-| `libs/color/` | Shared color library: RGBA, blending, HSL/HSV, UI utilities |
-| `libs/libc-port/` | LLVM libc port layer + C++ runtime |
-| `sdk/c/` | C SDK: LLVM libc + CRT + linker script |
-| `sdk/cpp/` | C++ SDK: libc++ subset + kyuzen-c++ wrapper + app linker |
+| `system/` | Core OS components: kernel shell/login/zen, desktop, shell engine + CLI utils |
+| `apps/` | Ring-3 end-user ELF applications (fileman, clock, calc, terminal, gallery, …) + build (`Makefile`, `app.ld`) |
+| `tests/host/` | Host-side tests (unit + QEMU probes, no QEMU needed for unit) |
+| `tests/target/` | In-OS test ELFs (fork/fd/pipe/kill/wait suites, `test-desktop`) |
+| `libs/core/` | Core user-space libraries (`userlib.c` syscall wrappers, `libgui.c`, `userutil.c`) |
+| `libs/gui/widget/` | Widget toolkit: layered (core → primitives → layout → containers → window) |
+| `libs/gui/libdesktop/` | High-level C++ desktop library (Application, WindowManager, Canvas, Events) |
+| `libs/gui/color/` | Shared color library: RGBA, blending, HSL/HSV, UI utilities |
+| `libs/c/` | C SDK sources (LLVM libc boundary + `libc-port`) — staged to `build/sdk/c/` |
+| `libs/cpp/` | C++ SDK sources (libc++ subset + `kyuzen-c++` wrapper) — staged to `build/sdk/cpp/` |
+| `libs/media/` | Shared image/media library (`png.c` decoder, `media.c` abstraction) |
 | `rust/` | Rust userspace: kyuzen-sys (syscall bindings), kyuzen-gui (Slint) |
 | `third_party/net/lwip/` | lwIP TCP/IP stack (vendored) |
 | `third_party/stdlib/` | LLVM libc + libc++ sources |
 | `tools/` | Host tools (mkfs.kyuzenfs, desktop verification) |
-| `test/` | Host-side tests (manifest, widget, heap, desktop) |
+| `tests/` | `host/unit/` (manifest, widget, heap, desktop), `host/probes/` (QEMU harness), `target/` (in-OS test ELFs) |
 | `docs/` | Design docs, screenshots, troubleshooting |
 | `limine/` | Pre-built bootloader binaries |
 | `build/` | Build output (gitignored): `obj/`, `bin/`, `apps/`, `sdk/`, `boot_image.iso` |
@@ -277,7 +283,7 @@ Default credentials: **root** / **1**
 
 ## License
 
-Distributed under the **MIT License** — free to use, modify, and redistribute. See [`LICENSE`](LICENSE).
+Distributed under the **MIT License** - free to use, modify, and redistribute. See [`LICENSE`](LICENSE).
 
 <br/>
 <div align="center">

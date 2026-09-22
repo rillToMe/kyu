@@ -44,7 +44,7 @@ prototipe membuktikan biaya per-command jauh lebih mahal daripada per-kata
 PIO: `rep insw` (string I/O).** 256 `inw` dalam loop C diganti **satu
 instruksi** `rep insw`. Tetap perintah `READ SECTORS` yang sama, tetap polling,
 tanpa IRQ, tanpa alokasi, tanpa PCI — jadi tetap aman untuk jalur panic
-(`crashdump.c` mensyaratkan polling tanpa interrupt, `kernel/crashdump.c:9-11`).
+(`crashdump.c` mensyaratkan polling tanpa interrupt, `kernel/debug/crashdump.c:9-11`).
 Kehati-hatian: butuh helper baru di `include/io.h` (belum ada `insw`/`outsw`,
 lihat `include/io.h:1-39`) dan **wajib `cld` sebelum `rep`** (kalau DF=1, data
 ditulis mundur → korupsi memori). Perkiraan gain di TCG: kecil–sedang (§4.3),
@@ -64,7 +64,7 @@ tapi di hardware asli ini jalur PIO cepat yang kanonik (2–4×).
 3. Tapi memutuskan pindah ke DMA sekarang = menerima prasyarat yang **hari ini
    tidak ada**: PCI config *write* (bus-master enable), pencarian BAR4,
    PRDT, alamat fisik untuk buffer DMA (heap kernel ada di
-   `0xFFFF900000000000`, di luar HHDM — `kernel/heap.c:40-47`; preseden
+   `0xFFFF900000000000`, di luar HHDM — `kernel/mm/heap.c:40-47`; preseden
    `pmm_alloc_page + hhdm_offset` ada di `graphics/memory/gpu_alloc.c:9-31`),
    plus verifikasi bahwa polling BMDMA benar-benar selesai di TCG tanpa IRQ
    (§6, P4). Ini perubahan arsitektur, bukan tweak lokal — dan **IRQ14 tidak
@@ -105,7 +105,7 @@ Yang paling menentukan: (1) target QEMU/TCG saja atau hardware asli juga,
 **Konsekuensi:** DMA yang mengandalkan interrupt IDE butuh: gate IDT baru +
 stub ISR + helper unmask slave + EOI ke **dua** PIC + keputusan routing di SMP.
 Kalau salah satu lupa, bukan "I/O lambat" — tapi **#GP / panic** saat interrupt
-pertama datang. Ditambah: prinsip crashdump (`kernel/crashdump.c:9-11`,
+pertama datang. Ditambah: prinsip crashdump (`kernel/debug/crashdump.c:9-11`,
 "POLLING ATA PIO — tidak ada interrupt") **melarang** interrupt di jalur panic.
 **Kesimpulan: DMA harus polling BMDMA, bukan IRQ** (§4.4/§4.5).
 
@@ -176,13 +176,13 @@ terpisah.
 
 | Pemanggil | Baris | Catatan |
 |---|---|---|
-| `kernel/crashdump.c` | `:75`, `:122`, `:134`, `:237`, `:243` | pakai `ata_read_sector`/`ata_write_sector` **langsung**, tanpa lock, konteks panic |
+| `kernel/debug/crashdump.c` | `:75`, `:122`, `:134`, `:237`, `:243` | pakai `ata_read_sector`/`ata_write_sector` **langsung**, tanpa lock, konteks panic |
 | `kernel/fs/bcache.c` | `:26-27` (extern), `:121`, `:184`, `:210`, `:228`, `:243` | `ata_read_block4k`/`ata_write_block4k`; satu-satunya jalur data normal |
 | `kernel/fs/kfs_super.c` | `:154` | `ata_get_total_sectors()` (IDENTIFY) saat mount |
 | `kernel/kernel.c` | `:345-347` | IDENTIFY saat boot → `crashdump_init(total - 8)` |
 | `legacy/kernel/kyuzenfs_v3.c` | banyak | **dead code — tidak dibangun** (tidak ada referensi `legacy` di Makefile) |
 | `tools/mkfs.kyuzenfs.c` | `:96` | hanya komentar |
-| Mock host (harus ikut berubah kalau signature berubah) | `test/panic_test.c:192-233`, `test/kyuzenfs_v4_test.c`, `test/kyuzenfs_dir_test.c`, `test/kyuzenfs_xcheck.c:19-40` | masing-masing mendefinisikan `ata_*` sendiri |
+| Mock host (harus ikut berubah kalau signature berubah) | `tests/host/unit/panic_test.c:192-233`, `tests/host/unit/kyuzenfs_v4_test.c`, `tests/host/unit/kyuzenfs_dir_test.c`, `tests/host/unit/kyuzenfs_xcheck.c:19-40` | masing-masing mendefinisikan `ata_*` sendiri |
 
 Bootloader **tidak** memakai `drivers/ata.c` (Limine membaca ISO lewat BIOS/UEFI),
 jadi boot-from-ISO tidak terpengaruh. Yang terpengaruh saat bring-up kernel:
@@ -339,7 +339,7 @@ selesai (tanpa interrupt sama sekali → memenuhi prinsip crashdump).
 | 1 | BMDMA ada di device | **Ada** (BAR4 I/O terdeteksi) | probe `info qtree` (read-only) |
 | 2 | PCI config **write** (set bus-master enable bit di offset 0x04) | **Tidak ada** — `pci.c` cuma punya `pci_read_word` yang bahkan truncate ke 16 bit | `drivers/pci.c:9-20`, `include/pci.h:18-19` |
 | 3 | Baca BAR4 32-bit | **Tidak ada helper**; harus baca dua word (0x20 + 0x22) atau tambah `pci_read_dword` | `drivers/pci.c:19` |
-| 4 | Alamat fisik buffer DMA | Heap kernel di `0xFFFF900000000000` **di luar HHDM** → `virt − hhdm_offset` tidak berlaku | `kernel/heap.c:40-47`, `kernel/kernel.c:64,84,183-186`, `include/pmm.h:9` |
+| 4 | Alamat fisik buffer DMA | Heap kernel di `0xFFFF900000000000` **di luar HHDM** → `virt − hhdm_offset` tidak berlaku | `kernel/mm/heap.c:40-47`, `kernel/kernel.c:64,84,183-186`, `include/pmm.h:9` |
 | 5 | PRDT di memori fisik valid | Butuh buffer dari `pmm_alloc_page()` + `hhdm_offset` (preseden sudah ada) | `graphics/memory/gpu_alloc.c:9-31` |
 | 6 | Sink data = `b->data` di pool bcache (kmalloc 1 MB, **tidak** page-aligned & tidak kontigu) | butuh bounce buffer + memcpy 4 KB, atau API `virt_to_phys` baru di `paging.c` | `include/bcache.h:31-38`, `kernel/fs/bcache.c:184` |
 | 7 | Polling BMDMA selesai di TCG tanpa IRQ | **Belum diverifikasi** — QEMU menyelesaikan AIO di main loop/thread iothread; wajib prototipe P4 | §6 |
@@ -496,9 +496,9 @@ tidak boleh menulis `disk.img` asli, dan di-revert sebelum laporan
 
 ### 7.1 Test ekuivalensi di level protokol (deterministik, host)
 
-Pola sudah ada: `test/panic_test.c:192-233` dan `test/kyuzenfs_xcheck.c:19-40`
+Pola sudah ada: `tests/host/unit/panic_test.c:192-233` dan `tests/host/unit/kyuzenfs_xcheck.c:19-40`
 mendefinisikan mock `ata_*` sendiri. Untuk redesign ini mock-nya harus naik
-kelas: **model device ATA** (`test/ata_devmodel.*`) yang menegakkan aturan
+kelas: **model device ATA** (`tests/host/unit/ata_devmodel.*`) yang menegakkan aturan
 (BSY/DRQ per sektor, `READ SECTORS` count>1, `READ MULTIPLE`, `READ DMA`
 opsional, LBA→offset, injeksi ERR/DF/timeout), bukan array byte pasif.
 
@@ -532,7 +532,7 @@ interpretasi offset blok vs sektor).
 
 ### 7.3 Regresi boot & bring-up (QEMU headless)
 
-Pola harness sudah ada (`test/_ui_probe.py` + `serial.log` dari `make run`):
+Pola harness sudah ada (`tests/host/unit/_ui_probe.py` + `serial.log` dari `make run`):
 boot headless, lalu assert dari log serial: (a) mount KyuzenFS sukses,
 (b) baris `[CRASHDUMP] area siap di LBA ...` menghitung `total − 8` yang sama,
 (c) IDENTIFY mengembalikan jumlah sektor yang sama, (d) satu baca file ujung
@@ -649,9 +649,9 @@ Plafon PIO turunan: 2 byte ÷ 1,2 µs = **≈ 1,7 MB/s** (TCG). Cocok dengan
 |---|---|---|
 | 0 | `drivers/ata.c` (instrumentasi), `kernel/kernel.c` (panggilan), harness QEMU | sementara, di-revert |
 | 1 | `drivers/ata.c`, `include/io.h` (+ test baru §7.1/§7.2) | permanen, di balik flag |
-| 2 | `drivers/ata.c`, `drivers/pci.c`, `include/pci.h`, (opsional `kernel/paging.c`/`include/paging.h`) | permanen, di balik flag |
+| 2 | `drivers/ata.c`, `drivers/pci.c`, `include/pci.h`, (opsional `kernel/mm/paging.c`/`include/paging.h`) | permanen, di balik flag |
 | 3 | `kernel/fs/bcache.c`, `drivers/ata.c` (jalur tulis) | ticket terpisah |
-| tidak disentuh | `kernel/crashdump.c` (kecuali keputusan §9 #5), `include/ata.h` API lama, `kernel/fs/kfs_*.c`, `disk.img` | — |
+| tidak disentuh | `kernel/debug/crashdump.c` (kecuali keputusan §9 #5), `include/ata.h` API lama, `kernel/fs/kfs_*.c`, `disk.img` | — |
 
 ### D. Snapshot bukti (saat dokumen ini ditulis)
 
@@ -678,15 +678,15 @@ Plafon PIO turunan: 2 byte ÷ 1,2 µs = **≈ 1,7 MB/s** (TCG). Cocok dengan
 | Helper port I/O (tanpa `insw`) | `include/io.h:1-39` |
 | Gate IDT IRQ yang ada | `arch/x86/idt.c:83-87` |
 | Remap + mask PIC (IRQ14 tertutup) | `drivers/keyboard.c:63-67` |
-| Prinsip crashdump (polling, tanpa IRQ) | `kernel/crashdump.c:9-21`, call site `:75,122,134,237,243` |
+| Prinsip crashdump (polling, tanpa IRQ) | `kernel/debug/crashdump.c:9-21`, call site `:75,122,134,237,243` |
 | bcache baca 1 blok + lock saat I/O | `kernel/fs/bcache.c:179-184` |
 | Model bcache (1 MB, 256 blok) | `include/bcache.h:19-45` |
 | Locking FS (order `fs_lock → bcache_lock`) | `kernel/fs/kfs_internal.h:24-32` |
-| Heap di luar HHDM | `kernel/heap.c:40-47` |
+| Heap di luar HHDM | `kernel/mm/heap.c:40-47` |
 | Preseden DMA (pmm + hhdm) | `graphics/memory/gpu_alloc.c:9-31` |
 | PCI baca saja (tanpa write) | `drivers/pci.c:9-20`, `include/pci.h:18-19` |
 | Argumen QEMU (tanpa KVM) | `Makefile:487-494` |
-| Target test yang ada | `Makefile:294-346`; `test/panic_test.c:192-233`; `test/kyuzenfs_xcheck.c:19-40` |
+| Target test yang ada | `Makefile:294-346`; `tests/host/unit/panic_test.c:192-233`; `tests/host/unit/kyuzenfs_xcheck.c:19-40` |
 
 ---
 

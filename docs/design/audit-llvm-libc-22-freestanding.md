@@ -6,7 +6,7 @@
 > **Dokumen pembanding**: `docs/design/audit-llvm-libc-freestanding.md` (audit pertama, dibuat saat
 > vendored tree masih LLVM 24.0.0-dev).
 > **Target**: `x86_64-pc-none-elf` → `LIBC_TARGET_OS = "baremetal"` — **identik dengan triple yang
-> sudah dipakai** `Makefile` (kernel) dan `user_apps/Makefile` (host toolchain clang/ld.lld/llvm-ar 22.1.8).
+> sudah dipakai** `Makefile` (kernel) dan `apps/Makefile` (host toolchain clang/ld.lld/llvm-ar 22.1.8).
 
 ---
 
@@ -66,12 +66,12 @@ Yang 22 punya tapi tak tercatat di audit 24 (nilai tambah):
 |---|---|---|
 | `libc/config/baremetal/x86_64/entrypoints.txt` | subset riscv (string/ctype/stdbit/errno/locale/stdlib-int + malloc/exit/stdio/time sesuai fase) | LLVM config |
 | `libc/config/baremetal/x86_64/headers.txt` | salin riscv (assert…wctype; `setjmp`, `fenv` tunda) | LLVM config |
-| Shim userspace (mis. `user_apps/libc_port/`): `_start` | asm entry: teruskan `RDI=argc, RSI=argv` (SysV-compliant, `RSP%16==0`), panggil `__libc_init_array()` bila di-link, lalu `main` | KyuzenOS |
+| Shim userspace (mis. `apps/libc_port/`): `_start` | asm entry: teruskan `RDI=argc, RSI=argv` (SysV-compliant, `RSP%16==0`), panggil `__libc_init_array()` bila di-link, lalu `main` | KyuzenOS |
 | Shim: `__llvm_libc_exit` | → int 0x80 #34 (`sys_exit_code`) | KyuzenOS |
 | Shim: struct `__llvm_libc_stdio_cookie` + 3 objek cookie + `__llvm_libc_stdio_read/write` | → fd 0/1/2 via int 0x80 #48/#49 | KyuzenOS |
 | Shim: `__llvm_libc_errno` | fungsi `int*` yang menunjuk variabel errno global app | KyuzenOS |
 | Shim: `__llvm_libc_timespec_get_utc/active` | → #20 RTC (detik → epoch perlu days-from-civil) + #14 uptime ms | KyuzenOS |
-| `user_apps/app.ld` (ekstensi) | `.init_array/.fini_array` + simbol `__init_array_start/end`, `__preinit_array_*`, `__fini_array_*`; `_end` + `__llvm_libc_heap_limit` (bila freelist heap statis) | KyuzenOS (linker script app, bukan kernel) |
+| `apps/app.ld` (ekstensi) | `.init_array/.fini_array` + simbol `__init_array_start/end`, `__preinit_array_*`, `__fini_array_*`; `_end` + `__llvm_libc_heap_limit` (bila freelist heap statis) | KyuzenOS (linker script app, bukan kernel) |
 | (opsional) instansiasi `freelist_heap` | `FreeListHeap(span)` di atas region `sys_alloc`(9) bila tidak mau heap statis linker | KyuzenOS |
 
 Tidak ada file LLVM yang perlu dimodifikasi isinya — hanya direktori config baru.
@@ -115,7 +115,7 @@ Fase subset (string/ctype/stdlib/errno/malloc/stdio/time) nol perubahan kernel:
 
 ## 8. Apakah app linker script perlu perubahan? — **Ya**
 
-`user_apps/app.ld` saat ini: hanya `PT_LOAD` text/data, `ENTRY(main)`, discard `.comment/.note*/.gnu*/.eh_frame*/.debug*` — **tidak men-emit** `.init_array/.fini_array` maupun simbol heap. Perlu:
+`apps/app.ld` saat ini: hanya `PT_LOAD` text/data, `ENTRY(main)`, discard `.comment/.note*/.gnu*/.eh_frame*/.debug*` — **tidak men-emit** `.init_array/.fini_array` maupun simbol heap. Perlu:
 1. Section + simbol `__init_array_start/end`, `__preinit_array_*`, `__fini_array_start/end` (agar `__libc_init_array()` jalan — ini pengganti "loader tidak menjalankan .init_array", konsisten dengan aturan widget "tanpa global ctor" karena inisialisasi jalan dari `_start` shim, bukan loader kernel).
 2. `_end` + `__llvm_libc_heap_limit` bila memakai freelist heap statis (atau instansiasi `FreeListHeap(span)` atas region `sys_alloc` — pilih salah satu; simbol linker = jalur paling murah).
 3. `.note*`/`.gnu*` tetap di-discard — tidak masalah karena tidak ada PT_TLS/PT_DYNAMIC di subset.
@@ -257,7 +257,7 @@ Peringatan CMake yang tersisa (2, keduanya benign & tidak muncul lagi sebagai er
 
 ### 12.8 Batas eksplisit tahap ini
 
-Belum dan sengaja belum dikerjakan: `_start`/crt, vendor hook apa pun, malloc/heap, stdio, time, fenv, C++/libc++abi/libunwind, integrasi ke aplikasi Kyuzen (`app.ld`, `user_apps/Makefile`), dan Phase 1 berikutnya.
+Belum dan sengaja belum dikerjakan: `_start`/crt, vendor hook apa pun, malloc/heap, stdio, time, fenv, C++/libc++abi/libunwind, integrasi ke aplikasi Kyuzen (`app.ld`, `apps/Makefile`), dan Phase 1 berikutnya.
 
 ---
 
@@ -286,7 +286,7 @@ Keputusan (port layer, bukan modifikasi algoritma allocator LLVM):
 ```
 LLVM libc malloc/calloc/realloc/free/aligned_alloc   (entry point DISEDIAKAN port,
         ↓ kyuzen_heap::alloc/...                     Phase 9.5 — lihat di bawah)
-kyuzen_heap (libs/libc-port/src/kyuzen_heap.hpp)      DAFTAR ARENA + routing
+kyuzen_heap (libs/c/libc-port/src/kyuzen_heap.hpp)      DAFTAR ARENA + routing
         ↓ FreeListHeap(span) per arena                (algoritma freelist LLVM 22.1.8)
 sys_alloc(9) per arena / sys_free(10) bila arena khusus kosong
         ↓
@@ -341,7 +341,7 @@ Kyuzen uheap (page-granular, guard 1 halaman antar region)
 |---|---|---|
 | `libc/config/baremetal/x86_64/entrypoints.txt` | dimodifikasi (dari Phase 0) | +8: `abort`, `_Exit`, `calloc`, `exit`, `free`, `malloc`, `realloc`, `atexit` (`atexit` dipaksa karena `exit.cpp` memanggil `__cxa_finalize`; `exit_deps` baremetal tidak menyertakan `.atexit`) |
 | `libc/config/baremetal/x86_64/headers.txt` | dimodifikasi | +`libc.include.stdlib` (hdrgen kini menghasilkan `stdlib.h`) |
-| `libs/libc-port/src/kyuzen_libc_port.cpp` | baru | port layer: `__llvm_libc_exit`, `__llvm_libc_errno`, `freelist_heap` + `kyuzen_libc_heap_init`, `_start` + `kyuzen_libc_start_c` |
+| `libs/c/libc-port/src/kyuzen_libc_port.cpp` | baru | port layer: `__llvm_libc_exit`, `__llvm_libc_errno`, `freelist_heap` + `kyuzen_libc_heap_init`, `_start` + `kyuzen_libc_start_c` |
 | `tools/libc-phase1/libc_phase1.c` | baru | smoke test app (malloc/calloc/realloc/free, pola, errno, kasus gagal, exit status via waitpid) |
 | `tools/libc-phase1/libc_app.ld` | baru | linker script app: `ENTRY(_start)`, 2 PT_LOAD, `.init_array` **tidak** dimasukkan (tidak dibutuhkan) |
 | `tools/libc-phase1/run-qemu.sh` | baru | automasi QEMU: disk uji segar, keystroke lewat monitor HMP berbasis marker serial, watchdog + hard kill |
@@ -434,7 +434,7 @@ pra-ada, tidak disentuh karena melarang perubahan kernel/FS).
 
 ### 13.8 Batas eksplisit tahap ini
 
-Belum dan sengaja belum dikerjakan: stdio (`__llvm_libc_stdio_read/write` + cookie), time (`__llvm_libc_timespec_get_*`), fenv/libm, threads/TLS, dynamic linking, C++/libc++abi/libunwind, integrasi ke `user_apps/Makefile` global, dan perubahan apa pun di `kernel/`.
+Belum dan sengaja belum dikerjakan: stdio (`__llvm_libc_stdio_read/write` + cookie), time (`__llvm_libc_timespec_get_*`), fenv/libm, threads/TLS, dynamic linking, C++/libc++abi/libunwind, integrasi ke `apps/Makefile` global, dan perubahan apa pun di `kernel/`.
 
 ---
 
@@ -500,7 +500,7 @@ hook. `ssize_t` LLVM = `long` di x86_64 LP64 — hook dideklarasikan `long`
 
 | File | Jenis | Isi |
 |---|---|---|
-| `libs/libc-port/src/kyuzen_libc_port.cpp` | dimodifikasi | §14.2: cookie struct + 3 objek + read/write hooks (satu-satunya bagian port yang tahu stdio) |
+| `libs/c/libc-port/src/kyuzen_libc_port.cpp` | dimodifikasi | §14.2: cookie struct + 3 objek + read/write hooks (satu-satunya bagian port yang tahu stdio) |
 | `libc/config/baremetal/x86_64/entrypoints.txt` | dimodifikasi | +19 entrypoint stdio (§14.4) |
 | `libc/config/baremetal/x86_64/headers.txt` | dimodifikasi | +`libc.include.stdio` (hdrgen kini menghasilkan `stdio.h`) |
 | `tools/libc-phase2/libc_phase2.c` | baru | smoke test runtime (§14.5) |
@@ -610,7 +610,7 @@ llvm-nm --undefined-only <phase2 ELF>      # kosong
 
 Belum dan sengaja belum dikerjakan: scanf runtime test, `asprintf`,
 `putc/getc`, time (`__llvm_libc_timespec_get_*`), fenv/libm, threads/TLS,
-dynamic linking, C++/libc++abi/libunwind, integrasi ke `user_apps/Makefile`
+dynamic linking, C++/libc++abi/libunwind, integrasi ke `apps/Makefile`
 global, dan perubahan apa pun di `kernel/`.
 
 ---
@@ -620,7 +620,7 @@ global, dan perubahan apa pun di `kernel/`.
 Phase 3 tidak menambah entrypoint/hook apa pun — ia mengemas hasil Phase 0–2
 menjadi SDK yang dapat dipakai developer tanpa mengenal internal LLVM.
 Dokumen boundary: `docs/design/kyuzen-c-sdk.md`; sumber boundary yang
-di-commit: `sdk/c/linker/app.ld` + `sdk/c/README.md`; staging generated
+di-commit: `libs/c/linker/app.ld` + `libs/c/README.md`; staging generated
 (`build/sdk/c/`: `include/` + `lib/libc.a` + `crt/crt.o` + `linker/app.ld`)
 lewat `make sdk-c` (dengan guard anti-stale dan anti-`third_party`);
 app uji `tools/libc-phase3/sdk_smoke.c` lolos QEMU (`[phase3] PASS`, ELF
@@ -700,12 +700,12 @@ Konversi port setia pada field yang dilaporkan.
 |---|---|---|
 | `libc/config/baremetal/x86_64/entrypoints.txt` | dimodifikasi | +35: 13 time + 18 stdlib + 2 string + `time.h` di headers; komentar klasifikasi per grup |
 | `libc/config/baremetal/x86_64/headers.txt` | dimodifikasi | +`libc.include.time` |
-| `libs/libc-port/src/kyuzen_libc_port.cpp` | dimodifikasi | §16.2: `#14`/`#20` defines + 2 hook time + days-from-civil |
+| `libs/c/libc-port/src/kyuzen_libc_port.cpp` | dimodifikasi | §16.2: `#14`/`#20` defines + 2 hook time + days-from-civil |
 | `tools/libc-phase4/sdk_smoke.c` | baru | smoke test via SDK (§16.5) |
 | `tools/libc-phase4/run-qemu.sh` | baru | automasi QEMU (pola Phase 1/2: disk segar, sendkey via monitor, watchdog; marker `[phase4]`) |
 | `Makefile` | aditif | `libc-phase4`, `libc-phase4-qemu` (compile+link MURNI via SDK), `LIBC_PHASE4_*`, copy `libc_phase4.elf` ke ISO bila ada, conf uji `build/libc/iso4/`; guard `sdk-c` +`time.h`/`qsort`/`timespec_get`; stage `llvm-libc-macros/baremetal/` (§16.6); komentar archive Phase 0–4 |
 | `docs/design/kyuzen-c-sdk.md` | modifikasi | §4a (API baru + yang ditunda), §5 (backend waktu), §6 (target baru) |
-| `sdk/c/README.md` | modifikasi | archive/crt Phase 0–4 + ringkasan batasan Phase 4 |
+| `libs/c/README.md` | modifikasi | archive/crt Phase 0–4 + ringkasan batasan Phase 4 |
 | `docs/design/audit-llvm-libc-22-freestanding.md` | modifikasi | bagian §16 ini |
 
 ### 16.4 Build & artifact
@@ -817,7 +817,7 @@ murni menghasilkan tepat 7 undefined (klasifikasi):
 | compiler-rt builtins | 2. | TIDAK ADA yang dibutuhkan (link bersih tanpa satu pun) |
 | `throw`/`__cxa_throw`/personality/unwind | 6. exceptions | DEFER (STOP condition — `-fno-exceptions`, tidak tersentuh) |
 | `typeid`/`dynamic_cast`/RTTI | 7. RTTI | DEFER (STOP condition — `-fno-rtti`, tidak tersentuh) |
-| `<new>` placement/nothrow | 8. header | IMPLEMENT minimal (`sdk/cpp/include/new`) |
+| `<new>` placement/nothrow | 8. header | IMPLEMENT minimal (`libs/cpp/include/new`) |
 | aligned-new (`align_val_t`) | 8. | DEFER (hanya untuk tipe over-aligned; dipakai = link error jujur) |
 
 Temuan audit tambahan: pada `-O2`, ctor global TRIVIAL ter-constant-fold
@@ -825,7 +825,7 @@ clang (tidak ada `.init_array`, tidak ada `__cxa_atexit` — probe awal tidak
 menunjukkannya). Smoke test memakai ctor ber-side-effect (`printf`) agar
 jalur dynamic-initzee sungguhan teruji, bukan inisialisasi statis.
 
-### 17.2 Simbol runtime yang ditambahkan (`libs/libc-port/src/kyuzen_cxx_runtime.cpp)
+### 17.2 Simbol runtime yang ditambahkan (`libs/c/libc-port/src/kyuzen_cxx_runtime.cpp)
 
 File konsumen-libc biasa (flag freestanding + header SDK, BUKAN flag
 internal LLVM, BUKAN source LLVM yang disalin):
@@ -838,7 +838,7 @@ internal LLVM, BUKAN source LLVM yang disalin):
 | `std::nothrow` (objek) | definisi untuk deklarasi di `<new>` |
 | `__cxa_guard_acquire/release/abort` | static-local; single-thread (byte flag; `abort` = bug runtime, tak terjangkau tanpa exception) |
 | `void *__dso_handle` | argumen dso `__cxa_atexit` (satu DSO statis) |
-| `__cxa_pure_virtual` | pure-virtual call = bug → `abort()` (pola sama `libs/widget/.../runtime.cpp`; ODR: satu definisi) |
+| `__cxa_pure_virtual` | pure-virtual call = bug → `abort()` (pola sama `libs/gui/widget/.../runtime.cpp`; ODR: satu definisi) |
 | `__cxa_atexit/__cxa_finalize/atexit` | §17.3 — definisi milik C++ (cap 64 entri, LIFO, re-entrancy aman) |
 
 Jalur alokasi: `new → operator new → malloc (LLVM libc) → freelist_heap (port) → sys_alloc #9`. TIDAK ada allocator kedua. Jalur bebas: `delete → free`.
@@ -860,12 +860,12 @@ berlaku di sana (mereka tak punya dtor global).
 
 ### 17.4 Startup: `_start` tunggal melayani C dan C++
 
-Dua perubahan di `libs/libc-port/src/kyuzen_libc_port.cpp` (crt.o dipakai
+Dua perubahan di `libs/c/libc-port/src/kyuzen_libc_port.cpp` (crt.o dipakai
 ulang kedua SDK — perilaku C identik, bukti: regresi §17.7):
 
 1. **Init walk**: setelah `heap_init`, panggil `.init_array` via weak
    `__init_array_start/end` (dideklarasikan sebagai data weak;
-   `&simbol` = alamat, 0 bila tak didefinisikan). App C (script sdk/c
+   `&simbol` = alamat, 0 bila tak didefinisikan). App C (script libs/c
    tanpa section ini) melihat keduanya NULL → loop dilewati.
    Pelajaran implementasi (didokumentasikan agar tak terulang):
    membandingkan ISI (`*start != null`) alih-alih ALAMAT melewatkan array
@@ -876,7 +876,7 @@ ulang kedua SDK — perilaku C identik, bukti: regresi §17.7):
    `__cxa_finalize` + hook). Memotong jalur ini membuat dtor terdaftar
    namun tak pernah jalan.
 
-Linker: `sdk/cpp/linker/app.ld` = script C + `.init_array`
+Linker: `libs/cpp/linker/app.ld` = script C + `.init_array`
 (`__init_array_start/end`, ikut `.ctors` legacy). `ENTRY(_start)`,
 `RDI=argc/RSI=argv/RSP%16==0`, 2 PT_LOAD — tak berubah. `.fini_array`
 sengaja tak di-stage (teardown lewat `__cxa_atexit`, bukan fini walk).
@@ -885,16 +885,16 @@ sengaja tak di-stage (teardown lewat `__cxa_atexit`, bukan fini walk).
 
 | File | Jenis | Isi |
 |---|---|---|
-| `libs/libc-port/src/kyuzen_cxx_runtime.cpp` | baru | §17.2 (10 operator + guard ×3 + dso + pure_virtual + cxa ×3) |
-| `libs/libc-port/src/kyuzen_libc_port.cpp` | dimodifikasi | §17.4 (init walk + return-via-exit) |
-| `sdk/cpp/linker/app.ld` | baru | script C++ (+ `.init_array`) |
-| `sdk/cpp/include/new` | baru | `<new>` minimal |
-| `sdk/cpp/README.md` | baru | boundary + flag + aturan + perintah |
+| `libs/c/libc-port/src/kyuzen_cxx_runtime.cpp` | baru | §17.2 (10 operator + guard ×3 + dso + pure_virtual + cxa ×3) |
+| `libs/c/libc-port/src/kyuzen_libc_port.cpp` | dimodifikasi | §17.4 (init walk + return-via-exit) |
+| `libs/cpp/linker/app.ld` | baru | script C++ (+ `.init_array`) |
+| `libs/cpp/include/new` | baru | `<new>` minimal |
+| `libs/cpp/README.md` | baru | boundary + flag + aturan + perintah |
 | `tools/libc-phase5/sdk_smoke.cpp` | baru | smoke C++ (§17.6) |
 | `tools/libc-phase5/run-qemu.sh` | baru | automasi QEMU (pola fase lama + `hello` + syarat dtor) |
 | `Makefile` | aditif | `sdk-cpp`, `sdk-cpp-smoke[-qemu]`, `libc-phase5` alias, `LIBC_CXXRT_*`/`SDK_CPP_*`, guard anti-`third_party` + anti-header-libc++, copy `libc_phase5.elf` ke ISO, conf `build/libc/iso5/` |
 | `docs/design/kyuzen-c-sdk.md` | modifikasi | §8 (fondasi C++) |
-| `sdk/c/README.md` | modifikasi | pointer: C++ tinggal di `sdk/cpp`, C tak berubah |
+| `libs/c/README.md` | modifikasi | pointer: C++ tinggal di `libs/cpp`, C tak berubah |
 | `docs/design/audit-llvm-libc-22-freestanding.md` | modifikasi | bagian §17 ini |
 
 ### 17.6 Hasil smoke test QEMU (bukti serial COM1)
@@ -961,7 +961,7 @@ dan perubahan apa pun di `kernel/`.
 | Pertanyaan audit | Hasil |
 |---|---|
 | Header freestanding | 8 subset + `new` + `functional` bisa dipakai dengan site config sendiri |
-| `__config_site` | WAJIB ada (di-include `<__config>`); CMake tak pernah dijalankan → `sdk/cpp/include/__config_site` milik Kyuzen (ABI v1/`__1`, threads 0, locale/fs/terminal/clock/unicode/widechar/tzdb 0, hardening NONE + assertion QUICK_ENFORCE=trap) |
+| `__config_site` | WAJIB ada (di-include `<__config>`); CMake tak pernah dijalankan → `libs/cpp/include/__config_site` milik Kyuzen (ABI v1/`__1`, threads 0, locale/fs/terminal/clock/unicode/widechar/tzdb 0, hardening NONE + assertion QUICK_ENFORCE=trap) |
 | `__assertion_handler` | JUGA generated-CMake → adaptasi vendor default di SDK (tanpa cabang C++03) |
 | Exception paths | `__throw_*` header-inline → `_LIBCPP_VERBOSE_ABORT` (no-exceptions) → butuh `verbose_abort.cpp` |
 | RTTI/threads/TLS/locale/FS/FP/dynamic/libc++abi-penuh | tidak tersentuh subset (verifikasi: 0 simbol §18.6) |
@@ -998,9 +998,9 @@ entrypoint-nya aktif (bukan "semua fungsi upstream").
 |---|---|---|
 | `stdexcept.o` | `libcxx/src/stdexcept.cpp` | kelas exception + ctor/dtor/vtable (dipakai __throw_* header-inline) |
 | `verbose_abort.o` | `libcxx/src/verbose_abort.cpp` | `__libcpp_verbose_abort` (vfprintf+abort; fail keras) |
-| `shims.o` | `libs/libc-port/src/kyuzen_libcxx_shims.cpp` (milik Kyuzen) | stub asm `jmp abort` untuk strtof/strtod/strtold (direferensikan string.cpp hulu via as_float_helper; tipe FP tak bisa dikompilasi -mno-sse) |
-| `string_inst.o` | `libs/libc-port/src/kyuzen_libcxx_string_inst.cpp` (milik Kyuzen) | `template class std::basic_string<char>` — emisi member non-inline yang ditahan extern-template (compare/append/dll); badan = template header hulu verbatim |
-| `sort_inst.o` | `libs/libc-port/src/kyuzen_libcxx_sort_inst.cpp` (milik Kyuzen) | definisi `__sort` + instantiation non-FP verbatim dari algorithm.cpp hulu |
+| `shims.o` | `libs/c/libc-port/src/kyuzen_libcxx_shims.cpp` (milik Kyuzen) | stub asm `jmp abort` untuk strtof/strtod/strtold (direferensikan string.cpp hulu via as_float_helper; tipe FP tak bisa dikompilasi -mno-sse) |
+| `string_inst.o` | `libs/c/libc-port/src/kyuzen_libcxx_string_inst.cpp` (milik Kyuzen) | `template class std::basic_string<char>` — emisi member non-inline yang ditahan extern-template (compare/append/dll); badan = template header hulu verbatim |
+| `sort_inst.o` | `libs/c/libc-port/src/kyuzen_libcxx_sort_inst.cpp` (milik Kyuzen) | definisi `__sort` + instantiation non-FP verbatim dari algorithm.cpp hulu |
 
 Tiga TU Kyuzen = slicing, bukan implementasi ulang (didokumentasikan per
 file; dapat dihapus bila kebijakan FP berubah). `__throw_bad_alloc`
@@ -1101,12 +1101,12 @@ dan perubahan apa pun di `kernel/`.
 
 | File | Jenis | Isi |
 |---|---|---|
-| `sdk/cpp/include/kyuzen/{config,app,panic}.hpp` | baru, publik | §9 kyuzen-c-sdk.md (versi 7.0, `app_main`+`run`, `panic`) |
-| `sdk/cpp/bin/kyuzen-c++` | baru, publik | sumber wrapper (di-stage executable) |
+| `libs/cpp/include/kyuzen/{config,app,panic}.hpp` | baru, publik | §9 kyuzen-c-sdk.md (versi 7.0, `app_main`+`run`, `panic`) |
+| `libs/cpp/bin/kyuzen-c++` | baru, publik | sumber wrapper (di-stage executable) |
 | `examples/cpp/{hello,containers,strings}/*.cpp` | baru, publik | ELF contoh via wrapper (C-linkage `main` tetap) |
 | `tools/libc-phase7/{sdk_smoke.cpp,run-qemu.sh,check-sdk-isolation.sh}` | baru | smoke + harness + guard 0-referensi |
 | `Makefile` | aditif | stage `kyuzen/`+wrapper, `cpp-app[-run]`, `cpp-examples`, `cpp-sdk-isolation`, `libc-phase7[-qemu]`, guard SSE/x87 per-ELF, copy ISO opsional |
-| `sdk/cpp/README.md`, `kyuzen-c-sdk.md` §9 | modifikasi | dokumentasi boundary + wrapper + contoh |
+| `libs/cpp/README.md`, `kyuzen-c-sdk.md` §9 | modifikasi | dokumentasi boundary + wrapper + contoh |
 
 `memory.hpp` tidak dibuat (keputusan tercatat): duplikasi `make_unique`.
 
@@ -1150,7 +1150,7 @@ Isolasi: `0 forbidden application references` (4 pola × semua source app).
 Ukuran: `libc_phase7.elf` 94.568 B; `cpp_hello` 33.080 B;
 `cpp_containers` 94.032 B; `cpp_strings` 53.192 B — semua 0 undefined,
 0 SSE, 0 x87. App C (phase1/2/3/4): 0 simbol C++; `make apps` (19 ELF +
-cargo release) hijau; `user_apps/`+`rust/`+`kernel/` tak tersentuh.
+cargo release) hijau; `apps/`+`rust/`+`kernel/` tak tersentuh.
 
 ### 19.5 Batas eksplisit tahap ini
 

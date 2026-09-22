@@ -21,17 +21,17 @@
 3. **Piksel (Image)**. libgui tidak punya fungsi blit, tapi `gui_window_t.canvas`
    adalah member publik → apps menulis langsung (pola `blit_fit` viewer.c).
    PNG decode sudah ada di repo (`include/stb_image.h`, `STBI_ONLY_PNG`,
-   memori wired ke `sys_alloc`/`sys_free`) → diekstrak jadi `apps/png.c` bersama.
+   memori wired ke `sys_alloc`/`sys_free`) → diekstrak jadi `libs/media/png.c` bersama.
 
 ## Perubahan file
 
 | File | Perubahan |
 |---|---|
 | `include/libui.h` | Deklarasi C ABI 5 widget baru. |
-| `apps/png.c` | **Baru** — decode PNG bersama: `png_decode(path,&w,&h) → uint32_t* XRGB8888` + `png_free`. |
-| `libs/widget/` | 5 class widget + `Window::run` focus/drag/release + `Painter::image()` + extern `png_decode`. |
-| `user_apps/widget_demo.c` | Demo diperluas: semua 5 widget + label/button (regresi). |
-| `user_apps/Makefile` | `PNG_OBJ = png.o` + aturan compile + link `WIDGET_ELF` + `APP_OBJS`. |
+| `libs/media/png.c` | **Baru** — decode PNG bersama: `png_decode(path,&w,&h) → uint32_t* XRGB8888` + `png_free`. |
+| `libs/gui/widget/` | 5 class widget + `Window::run` focus/drag/release + `Painter::image()` + extern `png_decode`. |
+| `apps/widget_demo.c` | Demo diperluas: semua 5 widget + label/button (regresi). |
+| `apps/Makefile` | `PNG_OBJ = png.o` + aturan compile + link `WIDGET_ELF` + `APP_OBJS`. |
 | `roadmap/GUI_ROADMAP.md` | Phase 7 → SELESAI. |
 
 **Tema tidak berubah** — widget baru memakai warna yang ada: TextBox fill
@@ -66,7 +66,7 @@ ui_widget_t* ui_image_create(ui_window_t* win, const char* filename, int w, int 
 // rect widget w×h; PNG dimuat dari KyuzenFS saat create; nearest-neighbor scale
 ```
 
-## Toolkit internal (libs/widget/)
+## Toolkit internal (libs/gui/widget/)
 
 ### Widget — 3 virtual baru + flag focus
 
@@ -134,10 +134,10 @@ set_focus(Widget* n): if (n==focused) return;
 - **Image**: `uint32_t* px; int iw,ih;` — `png_decode` di konstruktor; file
   hilang → `px=0` → placeholder rect `button_bg`. Draw: `p.image(x,y,w,h,px,iw,ih)`.
 
-`png_decode`/`png_free` dideklarasikan di `libs/widget/include/primitives/image.hpp` sebagai
+`png_decode`/`png_free` dideklarasikan di `libs/gui/widget/include/primitives/image.hpp` sebagai
 `extern "C" uint32_t* png_decode(const char*, int*, int*); extern "C" void png_free(uint32_t*);`
 
-## apps/png.c (baru)
+## libs/media/png.c (baru)
 
 Konfigurasi stb_image disalin verbatim dari viewer.c:
 
@@ -159,7 +159,7 @@ Konfigurasi stb_image disalin verbatim dari viewer.c:
 (`0xFF000000 | r<<16 | g<<8 | b`) → bebas buffer raw + stb → return buffer.
 `png_free` → `sys_free`. Dipakai Image widget; dilink ke app yang memakainya.
 
-## Demo (user_apps/widget_demo.c)
+## Demo (apps/widget_demo.c)
 
 Window ±340×380, VBox spacing 10, memakai seluruh 5 widget + regresi label/button:
 
@@ -184,10 +184,10 @@ Window ±340×380, VBox spacing 10, memakai seluruh 5 widget + regresi label/but
 ## File
 
 - `include/libui.h` — C ABI 5 widget baru.
-- `apps/png.c` — decode PNG bersama (stb_image, XRGB8888).
-- `libs/widget/` — toolkit C++: Painter::image, focus/grab, 5 widget, wrapper extern "C".
-- `user_apps/widget_demo.c` — demo app C.
-- `user_apps/Makefile` — `PNG_OBJ`, aturan `png.o`, link `WIDGET_ELF`.
+- `libs/media/png.c` — decode PNG bersama (stb_image, XRGB8888).
+- `libs/gui/widget/` — toolkit C++: Painter::image, focus/grab, 5 widget, wrapper extern "C".
+- `apps/widget_demo.c` — demo app C.
+- `apps/Makefile` — `PNG_OBJ`, aturan `png.o`, link `WIDGET_ELF`.
 - `Makefile` (top) — shortcut `widget_demo.elf`; `boot_image.iso` ikut salin (tidak berubah).
 
 ## Belum ada (Phase 8+)

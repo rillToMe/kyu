@@ -6,7 +6,7 @@
 // (color_blend_alpha) dan di sini hanya memakai aa_cov.
 //
 // INTEGER SAJA: kernel dan app dibangun dengan -mno-sse -mno-sse2 -msoft-float
-// (Makefile:76, user_apps/Makefile:41) dan kernel tidak pernah mengaktifkan
+// (Makefile:76, apps/Makefile:41) dan kernel tidak pernah mengaktifkan
 // OSFXSR/fxsave — tidak ada float/SSE yang boleh dipakai. Alpha memakai skala
 // 0..255 (setara Q0.8), pembagian /255 saja.
 //

@@ -3,7 +3,7 @@
 
 // =====================================================================
 // VNode — abstraksi file/direktori generik yang memisahkan VFS (layer fd
-// per-task di kernel/vfs_fd.c) dari concrete filesystem (KyuzenFS V4 di
+// per-task di kernel/fs/vfs_fd.c) dari concrete filesystem (KyuzenFS V4 di
 // kernel/fs/kyuzenfs_v4.c).
 //
 // Kontrak:

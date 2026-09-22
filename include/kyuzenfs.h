@@ -40,7 +40,7 @@ int kfs_resolve_dir(char* path, uint32_t* out_dir_id);
 int kfs_create_folder(char* path);
 int kfs_get_file_list(char* path, void* buffer, int max_entries);
 
-// --- Resolusi path (dipakai lapisan fd di kernel/vfs_fd.c) ---------------
+// --- Resolusi path (dipakai lapisan fd di kernel/fs/vfs_fd.c) ---------------
 // Satu-satunya jalur resolusi path di KyuzenFS. Semua bentuk path ditangani
 // di sini supaya shim kfs_* dan fd API tidak pernah berbeda pendapat:
 //

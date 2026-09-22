@@ -1,7 +1,7 @@
 # Desain: Image Viewer (galeri PNG) — Phase 11
 
 > **Status**: SELESAI (2026-09-19).
-> **Cakupan**: `user_apps/viewer.c` (UI baru) + 4 API libui baru
+> **Cakupan**: `apps/viewer.c` (UI baru) + 4 API libui baru
 > (`ui_image_set_fit`, `ui_image_natural_size`, `ui_scrollview_set_pan`,
 > `ui_listview_set_selected`).
 > **Verifikasi**: `make test-libui-theme` (37 PASS, termasuk 12 cek baru),

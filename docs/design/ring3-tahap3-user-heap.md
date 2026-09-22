@@ -3,9 +3,9 @@
 > **Status**: **SELESAI & TERVERIFIKASI** (2026-07-26) — boot `-smp 4` bersih,
 > `badptr.elf` 27 PASS / 0 FAIL (ring 3), fileman GUI jalan, viewer decode
 > `kyuzen.png` sukses (stbi = churn alloc/realloc/free terberat di uheap).
-> **Scope**: `kernel/uheap.c` (BARU), `kernel/elf.c` (stack user range),
-> `kernel/heap.c` (US=0), `kernel/usercopy.c` (predikat final),
-> `kernel/paging.c` (`vmm_unmap_page_from`), `kernel/syscall.c` (9/10/19 +
+> **Scope**: `kernel/mm/uheap.c` (BARU), `kernel/proc/elf.c` (stack user range),
+> `kernel/mm/heap.c` (US=0), `kernel/proc/usercopy.c` (predikat final),
+> `kernel/mm/paging.c` (`vmm_unmap_page_from`), `kernel/syscall.c` (9/10/19 +
 > teardown), `kernel/sched/lifecycle.c`, `include/{uheap,task,elf,paging,usercopy}.h`.
 
 ## Tujuan
@@ -15,7 +15,7 @@ lagi alamat heap kernel. Bug app (pointer liar/stale) tidak bisa lagi
 menyentuh metadata kernel — paling jauh #PF di app itu sendiri.
 
 1. `sys_alloc`/`sys_free`/`sys_realloc` (9/10/19) dari **ring 3** dilayani
-   allocator region user range milik AS caller (`kernel/uheap.c`), bukan
+   allocator region user range milik AS caller (`kernel/mm/uheap.c`), bukan
    `kmalloc`. Caller **ring 0** (shell/login/zen via int 0x80) tetap kmalloc.
 2. Stack app pindah dari `kmalloc` ke user range AS
    (`[USER_STACK_TOP-256KB, USER_STACK_TOP)`, elf.c).
@@ -37,7 +37,7 @@ menyentuh metadata kernel — paling jauh #PF di app itu sendiri.
 
 ### 1. Allocator region page-granular, metadata di heap KERNEL
 
-`kernel/uheap.c`: model brk — `uheap_brk` per-task maju terus; tiap alokasi =
+`kernel/mm/uheap.c`: model brk — `uheap_brk` per-task maju terus; tiap alokasi =
 `ceil(size/4096)` halaman + **1 guard page tidak di-map** (overflow lintas
 region → #PF, bukan korupsi diam-diam). Region dicatat sebagai linked list
 `uheap_region_t {base, size, pages}` di **heap kernel** (`task_t.uheap_regions`)

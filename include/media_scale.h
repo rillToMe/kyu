@@ -127,7 +127,7 @@ static inline void media_sharpen_rgba(uint32_t* px, int w, int h,
             }
             const uint32_t v = mid[x];
             const uint32_t a = v >> 24;
-            // Cast gaya C: header ini ikut dikompilasi sebagai C (apps/media.c).
+            // Cast gaya C: header ini ikut dikompilasi sebagai C (libs/media/media.c).
             int sa = (int)a + ((int)a - (int)(acc_a / 9)) * amount_pct / 100;
             if (sa < 0) sa = 0;
             if (sa > 255) sa = 255;

@@ -4,7 +4,7 @@
 > **Branch**: `feature/64bit-migration`
 > **Commit fix**: `7f89077` — *FIX: Pseudo heap corruption - heap page mapped to BIOS ROM*
 > **Status**: **TERPECAHKAN** — terverifikasi di QEMU (`-smp 4` + NIC e1000)
-> **Artefak debugging**: folder [`Resolve/26-07-26/`](../../Resolve/26-07-26/) (log serial, skrip, disassembly)
+> **Artefak debugging**: folder [`Resolve/26-07-26/`](Resolve/(2026-07-26) - heap-corruption/) (log serial, skrip, disassembly)
 
 ---
 
@@ -200,7 +200,7 @@ meliputi jalur exec/exit berulang dan 6 alokasi PNG (`0x2CA30`):
 
 ## 8. Teknik debugging yang bisa dipakai ulang
 
-Semua artefak ada di [`Resolve/26-07-26/`](../../Resolve/26-07-26/). Untuk masalah serupa
+Semua artefak ada di [`Resolve/26-07-26/`](Resolve/(2026-07-26) - heap-corruption/). Untuk masalah serupa
 ("memori berubah sendiri"):
 
 1. **Build instrumentasi**: `make heap-watch` (atau `make boot_image.iso

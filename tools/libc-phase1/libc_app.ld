@@ -1,9 +1,9 @@
 /* ============================================================
  * Kyuzen OS — Linker script app yang memakai LLVM libc (Phase 1)
  *
- * Sama dengan user_apps/app.ld (satu PT_LOAD di 0x4000000 + satu PT_LOAD
+ * Sama dengan apps/app.ld (satu PT_LOAD di 0x4000000 + satu PT_LOAD
  * data; .eh_frame/.note/.gnu dibuang) dengan SATU perbedaan: entry point
- * adalah `_start` dari port layer libc (libs/libc-port/src/kyuzen_libc_port.cpp),
+ * adalah `_start` dari port layer libc (libs/c/libc-port/src/kyuzen_libc_port.cpp),
  * bukan `main`. Kernel melompat ke e_entry dengan RDI=argc, RSI=argv; `_start`
  * lalu memanggil main dan meneruskan return value ke __llvm_libc_exit (#34).
  *

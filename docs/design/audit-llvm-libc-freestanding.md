@@ -10,7 +10,7 @@
 
 Dari `libc/docs/porting.md` + `libc/cmake/modules/LLVMLibCArchitectures.cmake`:
 
-1. **Triple** menentukan OS: `x86_64-pc-none-elf` / `x86_64-unknown-none-elf` → `LIBC_TARGET_OS = "none"` → **baremetal** (LLVMLibCArchitectures.cmake:160). Triple ini **identik** dengan yang sudah dipakai Makefile kernel & `user_apps/Makefile` — tidak perlu triple baru.
+1. **Triple** menentukan OS: `x86_64-pc-none-elf` / `x86_64-unknown-none-elf` → `LIBC_TARGET_OS = "none"` → **baremetal** (LLVMLibCArchitectures.cmake:160). Triple ini **identik** dengan yang sudah dipakai Makefile kernel & `apps/Makefile` — tidak perlu triple baru.
 2. **Config dir**: `libc/config/baremetal/` berisi `config.json` (errno external, thread single, printf tanpa float, math no-errno/no-except) + subdirektori per-arch `entrypoints.txt` + `headers.txt`. Yang ada: `aarch64`, `arm`, `riscv`. **Gap**: belum ada `config/baremetal/x86_64/`.
 3. **OSUtil layer**: `libc/src/__support/OSUtil/baremetal/` **tidak punya lapisan syscall sama sekali** — semua akses OS lewat *vendor hooks* `extern "C"` yang disediakan port layer (lihat §4).
 4. **Startup**: `libc/startup/baremetal/init.cpp`+`fini.cpp` (arch-neutral) menjalankan `__preinit_array`/`__init_array`/`__fini_array`. `crt1` per-arch hanya ada untuk aarch64/arm — untuk x86_64 CMake hanya warning *"Cannot build 'crt1.o' for x86_64 yet"*. Artinya `_start` + pemanggilan `main` menjadi tugas shim KyuzenOS.
@@ -18,7 +18,7 @@ Dari `libc/docs/porting.md` + `libc/cmake/modules/LLVMLibCArchitectures.cmake`:
 
 ## 2. Syscall / ABI yang sudah tersedia di kernel
 
-Konvensi trap (dari `kernel/syscall.c` + `apps/userlib.c`):
+Konvensi trap (dari `kernel/syscall.c` + `libs/core/userlib.c`):
 
 ```
 int $0x80   ; RAX = nomor, RBX = arg1, RCX = arg2, RDX = arg3, RSI = arg4, RDI = arg5
@@ -52,7 +52,7 @@ int $0x80   ; RAX = nomor, RBX = arg1, RCX = arg2, RDX = arg3, RSI = arg4, RDI =
 
 - Entry: `RDI = argc`, `RSI = argv` (P0 Phase 2) — **sudah SysV-compliant** untuk pemanggilan `main`; shim `_start` cukup meneruskan register.
 - Stack: IRETQ entry → `RSP % 16 == 0` di `_start` — sesuai SysV process-entry requirement.
-- ELF loader (`kernel/elf.c`) **hanya mem-parse `PT_LOAD`** (p_type == 1); zero-fill `p_memsz > p_filesz` (BSS) sudah benar. `PT_TLS`/`PT_DYNAMIC` diabaikan → binari harus statis, tanpa TLS — **cocok** untuk freestanding subset.
+- ELF loader (`kernel/proc/elf.c`) **hanya mem-parse `PT_LOAD`** (p_type == 1); zero-fill `p_memsz > p_filesz` (BSS) sudah benar. `PT_TLS`/`PT_DYNAMIC` diabaikan → binari harus statis, tanpa TLS — **cocok** untuk freestanding subset.
 - `uheap`: region page-granular `[0x10000000, 0x40000000)`, plafon alokasi tunggal 64 MB, model brk/region (bukan mmap generik).
 - **Tidak ada**: auxv, environ, signal, vdso, TLS syscall, mmap/mprotect generik, futex, clock_gettime ns.
 

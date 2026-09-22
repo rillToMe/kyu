@@ -14,10 +14,10 @@
 ```
 Application (C / Rust / Zig / ...)
   ↓  Public GUI C ABI  (include/libui.h)     ← opaque handle, extern "C"
-  ↓  extern "C" wrappers                     ← libs/widget/abi/libui_abi.cpp
+  ↓  extern "C" wrappers                     ← libs/gui/widget/abi/libui_abi.cpp
 Modern C++ Toolkit  (namespace ui)           ← Widget/Window/Button/Label/Layout/Painter/Theme
   ↓
-libgui renderer (C, apps/libgui.c)           ← gui_create_window/draw_rect/draw_text
+libgui renderer (C, libs/core/libgui.c)           ← gui_create_window/draw_rect/draw_text
   ↓
 KWM + Display Buffer (Phase 5)
 ```
@@ -42,7 +42,7 @@ KWM + Display Buffer (Phase 5)
 - **Vtables di `.rodata`** (PT_LOAD R-X, app.ld), non-PIE base tetap
   `0x4000000` → relokasi selesai di link time, tidak butuh runtime reloc.
 - `userlib.h`/`libgui.h` tidak punya `extern "C"` guard → dibungkus
-  `extern "C" { ... }` di libs/widget/include/runtime/platform.hpp (dulu apps/libui.cpp).
+  `extern "C" { ... }` di libs/gui/widget/include/runtime/platform.hpp (dulu apps/libui.cpp).
 
 ## C ABI (include/libui.h)
 
@@ -118,9 +118,9 @@ while running:
 ## File
 
 - `include/libui.h` — Public C ABI (opaque handle, extern "C" guard).
-- `libs/widget/` — toolkit C++ (namespace ui) + runtime stubs + wrapper extern "C" (dulu satu `apps/libui.cpp`, kini dipecah per-layer — lihat `widget-split.md`).
-- `user_apps/widget_demo.c` — demo app C murni memakai C ABI.
-- `user_apps/Makefile` — `CXX=clang++`, `CXXFLAGS_LIB`, target `widget_demo.elf`
+- `libs/gui/widget/` — toolkit C++ (namespace ui) + runtime stubs + wrapper extern "C" (dulu satu `apps/libui.cpp`, kini dipecah per-layer — lihat `widget-split.md`).
+- `apps/widget_demo.c` — demo app C murni memakai C ABI.
+- `apps/Makefile` — `CXX=clang++`, `CXXFLAGS_LIB`, target `widget_demo.elf`
   (link `widget_demo.o + userlib.o + libgui.o + libui.o`).
 - `Makefile` (top) — shortcut `widget_demo.elf`; `boot_image.iso` ikut salin.
 - `limine.conf` — module `widget_demo.elf` (auto-install ke KyuzenFS saat boot).

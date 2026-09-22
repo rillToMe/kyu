@@ -2,8 +2,8 @@
 
 > **Status**: **SELESAI & TERVERIFIKASI** (2026-07-26) — app jalan di CPL 3,
 > 0 panic, jalur PNG end-to-end sukses di `-smp 4`
-> **Scope**: Hanya ELF apps (`user_apps/*.elf`). App kernel-side
-> (`apps/login.c`, `apps/shell.c`, `apps/zen.c`) tetap Ring 0.
+> **Scope**: Hanya ELF apps (`apps/*.elf`). App kernel-side
+> (`system/login.c`, `system/shell.c`, `system/zen.c`) tetap Ring 0.
 
 ## Tujuan
 
@@ -87,7 +87,7 @@ ISR jalan normal → `iretq` balik ke CPL 3. Semua ISR existing tidak berubah.
 
 ## Temuan saat implementasi (bug yang diperbaiki)
 
-1. **`hlt` di userland** — `apps/userlib.c` `sys_yield()` mengeksekusi `hlt`
+1. **`hlt` di userland** — `libs/core/userlib.c` `sys_yield()` mengeksekusi `hlt`
    langsung: legal di CPL 0, `#GP` di CPL 3 → BOSD di SEMUA app. Fix: `hlt`
    pindah ke sisi kernel syscall 4.
 2. **Gate `int 0x80` = interrupt gate, bukan trap** — `0xEE` mematikan IF saat
@@ -103,9 +103,9 @@ ISR jalan normal → `iretq` balik ke CPL 3. Semua ISR existing tidak berubah.
 |------|-----|
 | `arch/x86/gdt.c` | TSS per-CPU (deskriptor GDT `5+2*cpu`, 37 entri), `tss_set_rsp0`, `tss_load_cpu` |
 | `arch/x86/gdt_flush.asm` | `tss_flush_sel(selector)` |
-| `kernel/task.c` | Syscall stack permanen 16 KB × `SMP_MAX_CPUS` di `tasking_init`; RSP0 BSP |
+| `kernel/sched/` | Syscall stack permanen 16 KB × `SMP_MAX_CPUS` di `tasking_init`; RSP0 BSP |
 | `kernel/kernel.c` | `smp_ap_main`: `tss_set_rsp0` + `tss_load_cpu` per AP |
 | `kernel/syscall.c` | `sys_exec`: frame `cs=0x1B, ss=0x23`; syscall 4: `sti; hlt` di kernel |
-| `apps/userlib.c` | `sys_yield` tanpa `hlt` userland |
-| `apps/kernel_userlib.c` | wrapper `sys_exec` (33) untuk sisi kernel |
-| `apps/shell.c` | launch app via `sys_exec` (bukan CALL langsung) |
+| `libs/core/userlib.c` | `sys_yield` tanpa `hlt` userland |
+| `libs/core/kernel_userlib.c` | wrapper `sys_exec` (33) untuk sisi kernel |
+| `system/shell.c` | launch app via `sys_exec` (bukan CALL langsung) |

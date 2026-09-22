@@ -5,8 +5,8 @@
 > dan `git diff` bersih, `HEAD` masih `18389eb`, dan `disk.img` tidak tersentuh.
 > File ini satu-satunya artefak yang tersisa.
 >
-> Tanggal: 19 Sep 2026 · Basis kode: `libs/widget/include/primitives/image.hpp`
-> + `apps/png.c` + `core/painter.hpp` (kode yang sama dengan `apps/libui.cpp`
+> Tanggal: 19 Sep 2026 · Basis kode: `libs/gui/widget/include/primitives/image.hpp`
+> + `libs/media/png.c` + `core/painter.hpp` (kode yang sama dengan `apps/libui.cpp`
 > baris 1287–1333 sebelum pemecahan).
 
 ---
@@ -50,10 +50,10 @@ Yang **tidak** jadi masalah: `Painter::image()` = 16.6 ns/pixel (5.85 ms untuk
 Semua angka di laporan ini **diukur di bare metal (QEMU, kernel + ring-3 asli)**,
 bukan disimulasikan di host. Caranya:
 
-- **Instrumentasi sementara** di `apps/png.c` (pembungkus waktu per fase +
+- **Instrumentasi sementara** di `libs/media/png.c` (pembungkus waktu per fase +
   penghitung `sys_alloc`/`sys_free`/`sys_realloc`) dan di
   `core/painter.hpp` (akumulator biaya blit). Ditambah app ring-3 sementara
-  (`user_apps/_pngprof.c`, `void main(int argc, char* argv[])`) yang:
+  (`apps/_pngprof.c`, `void main(int argc, char* argv[])`) yang:
   kalibrasi TSC lewat `sys_uptime()`+`sys_sleep(300)`, jalankan microbenchmark
   alokator, `png_decode()` tiap file **dua kali** (pass 1 = cache FS dingin,
   pass 2 = langsung sesudahnya), lalu frame pertama lewat `ui_window_run()` +
@@ -61,11 +61,11 @@ bukan disimulasikan di host. Caranya:
 - Timing pakai `rdtsc` (CR4.TSD tidak diset → aman di ring 3), dikalibrasi:
   **2 607 724 cycle/ms ≈ 2.61 GHz** (QEMU `-cpu max`, 4 vCPU, 1 GB).
 - Sample disuntikkan ke **salinan** `disk.img` (`test_disk_prof.img`) memakai
-  kode KyuzenFS V4 yang asli di host (pola `test/kyuzenfs_xcheck.c`);
+  kode KyuzenFS V4 yang asli di host (pola `tests/host/unit/kyuzenfs_xcheck.c`);
   `disk.img` asli tidak pernah ditulis. Hasil `prof.txt` diambil kembali dari
   image dengan cara yang sama.
 - QEMU headless (`-display none -vga std`), monitor TCP untuk login (`root`,
-  `1`) + `sendkey`, pola `test/_ui_probe.py`.
+  `1`) + `sendkey`, pola `tests/host/unit/_ui_probe.py`.
 
 Semua file di atas (instrumentasi, app, alat host, runner, sample, salinan
 image) sudah **dihapus/di-revert** (§7).
@@ -116,7 +116,7 @@ Satuan **mikrodetik**, `pass 1` = cache FS dingin, `pass 2` = langsung sesudah.
   kecil/sedang, **0.57 MB/s** untuk `big6mb.png`.
 - `stbi` = `stbi_load_from_memory` (inflate + unfilter + RGBA). Ini **termasuk**
   alokasi internal stb (lihat §5).
-- `convert` = loop `apps/png.c:43` (RGBA bytes → XRGB8888, byte per byte).
+- `convert` = loop `libs/media/png.c:43` (RGBA bytes → XRGB8888, byte per byte).
   ~3.1 ms/MB, konsisten di semua sample.
 - `alloc_*` = `sys_alloc` milik `png.c` sendiri (buffer file + buffer output).
 
@@ -171,7 +171,7 @@ Rantainya:
 
 Jadi syscall 13 **menolak** file > 8 MB dan mengembalikan 0 — tapi:
 
-- `apps/png.c:34` → `sys_read_file_to_buffer((char*)filename, (char*)raw, fsize);`
+- `libs/media/png.c:34` → `sys_read_file_to_buffer((char*)filename, (char*)raw, fsize);`
   **nilai kembaliannya dibuang.** Tidak ada `if (!rc) return 0;`.
 - Akibatnya `stbi_load_from_memory` diberi buffer yang isinya nol
   (`uheap_alloc` sudah men-zero-kan halaman), gagal, `png_decode` mengembalikan 0,
@@ -186,17 +186,17 @@ kegagalannya senyap. (Ditemukan saat profiling, **tidak diperbaiki** di sini.)
 
 ## 5. Titik terberat di kode (dengan nomor baris)
 
-### 5.0 Titik terberat di `apps/png.c` itu sendiri
+### 5.0 Titik terberat di `libs/media/png.c` itu sendiri
 
 `png_decode` hanya punya 6 baris yang benar-benar bekerja. Porsi waktunya
 (pass 1, dari tabel §3):
 
-| Baris `apps/png.c` | Apa yang terjadi di situ | Porsi waktu |
+| Baris `libs/media/png.c` | Apa yang terjadi di situ | Porsi waktu |
 |---|---|---|
 | `:29` `sys_file_size()` | syscall 12 → `kfs_get_file_size` → *path walk* + baca inode. Dingin: **11.8 ms** untuk file 46 KB; hangat 82 µs | 0.1–15% |
 | `:32` `sys_alloc(fsize)` | buffer isi file; map + zero halaman (≈2.4 ms/MB) | 0.1–0.2% |
 | **`:34` `sys_read_file_to_buffer()`** | **syscall 13 = 4× path walk + `kmalloc(fsize)` buffer bounce + baca disk sektor-per-sektor + `copy_to_user(fsize)`. Nilai baliknya dibuang** | **42–90%** ← terberat |
-| `:37` `stbi_load_from_memory()` | inflate + unfilter + RGBA; **termasuk alokasi internal stb** (`STBI_MALLOC` = `sys_alloc`, `apps/png.c:20`) | 9–36% |
+| `:37` `stbi_load_from_memory()` | inflate + unfilter + RGBA; **termasuk alokasi internal stb** (`STBI_MALLOC` = `sys_alloc`, `libs/media/png.c:20`) | 9–36% |
 | `:41` `sys_alloc(iw * ih * 4)` | buffer output **kedua** seukuran pixel RGBA | 0.2–4% |
 | `:43` loop konversi | RGBA→XRGB8888 byte-per-byte, 1 pass | 0.2–6% |
 | `:54` `png_free()` | `sys_free` buffer output (dipanggil caller) | — |
@@ -265,7 +265,7 @@ satu file.
 | `big6mb.png` | 2 304 000 | 1223.7 ms | 531 ns |
 
 Build-nya `STBI_ONLY_PNG`, `STBI_NO_SIMD`, dan `-mno-sse`/`-msoft-float`
-(`user_apps/Makefile`) — semuanya benar untuk bare-metal, tapi artinya inflate +
+(`apps/Makefile`) — semuanya benar untuk bare-metal, tapi artinya inflate +
 unfilter + konversi RGBA berjalan skalarnya. Untuk PNG RGBA penuh, ~300–530 ns
 per pixel adalah biaya CPU nyata yang tidak bisa dihilangkan tanpa mengubah
 arsitektur (mis. SIMD/`-msse2` jika CPU dianggap mendukung, atau decode
@@ -273,12 +273,12 @@ bertahap dengan progress indicator).
 
 ### 5.4 Alokator user (uheap): ~2.4–2.6 ms per MB
 
-`kernel/uheap.c:35` `uheap_alloc`:
+`kernel/mm/uheap.c:35` `uheap_alloc`:
 
 ```
-kernel/uheap.c:50    phys_addr_t pa = pmm_alloc_page();              // per 4 KB
-kernel/uheap.c:58    memset((void*)(pa + hhdm_offset), 0, 4096);     // zero per halaman
-kernel/uheap.c:66    t->uheap_brk = brk + pages * 4096 + 4096;       // brk HANYA MAJU
+kernel/mm/uheap.c:50    phys_addr_t pa = pmm_alloc_page();              // per 4 KB
+kernel/mm/uheap.c:58    memset((void*)(pa + hhdm_offset), 0, 4096);     // zero per halaman
+kernel/mm/uheap.c:66    t->uheap_brk = brk + pages * 4096 + 4096;       // brk HANYA MAJU
 ```
 
 Diukur di bare metal (bukan estimasi):
@@ -313,12 +313,12 @@ Yang penting: alokasi ini **bukan** penyebab utama "terasa berat" (<1% untuk
 file besar), tapi dia (a) membuat pemborosan buffer nyata dan (b) punya batas
 yang bisa habis setelah membuka banyak gambar.
 
-### 5.5 Dua buffer pixel penuh + pass konversi byte-per-byte (`apps/png.c`)
+### 5.5 Dua buffer pixel penuh + pass konversi byte-per-byte (`libs/media/png.c`)
 
 ```
-apps/png.c:37   uint8_t* px = stbi_load_from_memory(raw, fsize, &iw, &ih, 0, 4);  // RGBA, iw*ih*4
-apps/png.c:41   uint32_t* out = (uint32_t*)sys_alloc(iw * ih * 4);                // buffer KEDUA
-apps/png.c:43   for (int i = 0; i < iw * ih; i++) { ... }                         // 1 pass per byte
+libs/media/png.c:37   uint8_t* px = stbi_load_from_memory(raw, fsize, &iw, &ih, 0, 4);  // RGBA, iw*ih*4
+libs/media/png.c:41   uint32_t* out = (uint32_t*)sys_alloc(iw * ih * 4);                // buffer KEDUA
+libs/media/png.c:43   for (int i = 0; i < iw * ih; i++) { ... }                         // 1 pass per byte
 ```
 
 stb sudah mengembalikan buffer penuh, lalu `png.c` mengalokasikan **array kedua
@@ -373,10 +373,10 @@ intinya jelas: **buka ulang gallery viewer = baca disk ulang penuh.**
 ## 7. Temuan struktural (TIDAK diperbaiki — di luar scope task ini)
 
 1. **Decode resolusi penuh untuk tampilan kecil.**
-   `user_apps/widget_demo.c:279` → `ui_image_create(win, "kyuzen.png", 64, 64)`:
+   `apps/widget_demo.c:279` → `ui_image_create(win, "kyuzen.png", 64, 64)`:
    PNG 1024×1024 (1 048 576 px, buffer 4 MB) di-decode penuh untuk ditampilkan
    64×64 (4 096 px) → **99.6% kerja dibuang**.
-   `user_apps/viewer.c:35-36` (`IMG_W` = 446, `IMG_H` = 374) + `viewer.c:172-175`
+   `apps/viewer.c:35-36` (`IMG_W` = 446, `IMG_H` = 374) + `viewer.c:172-175`
    (`ui_image_set_file` lalu `ui_image_set_fit`): gambar 1920×1200 ditampilkan
    446×278 → **94.6% pixel hasil decode dibuang**. Tidak ada jalur
    "decode/scale-down hanya sebesar yang ditampilkan".
@@ -392,13 +392,13 @@ intinya jelas: **buka ulang gallery viewer = baca disk ulang penuh.**
 6. **Blit tanpa cache hasil skala** (§5.6): biaya render ∝ pixel *tampilan*
    × 16.6 ns di setiap frame; zoom/geser mahal.
 7. **`Image` decode di dalam constructor, sinkron, tanpa progress**
-   (`libs/widget/include/primitives/image.hpp`) — untuk `big6mb.png` itu
+   (`libs/gui/widget/include/primitives/image.hpp`) — untuk `big6mb.png` itu
    13.4 detik membeku; `Window::run` tidak bisa menggambar apa pun sebelum
    selesai.
-8. **File manager bukan penyebab**: `user_apps/fileman.c:49-56` tidak
+8. **File manager bukan penyebab**: `apps/fileman.c:49-56` tidak
    men-decode apa pun — untuk `.png` dia hanya menulis **nama file** ke
    `view.tmp` lalu `sys_exec("viewer.elf")`. Tidak ada thumbnail per file.
-   Begitu juga `user_apps/desktop.c` (wallpaper digambar manual, bukan lewat
+   Begitu juga `system/desktop/` (wallpaper digambar manual, bukan lewat
    `Image`/`png_decode`), dan tidak ada app kernel-side yang men-decode PNG.
 
 ---
@@ -446,19 +446,19 @@ Yang dipakai sementara lalu **dihapus/di-revert**:
 
 | Artefak sementara | Nasib |
 |---|---|
-| instrumentasi di `apps/png.c` | `git checkout --` → kembali persis |
-| instrumentasi di `libs/widget/include/core/painter.hpp` | `git checkout --` |
-| definisi global di `libs/widget/src/core/painter.cpp` | `git checkout --` |
-| aturan build `_pngprof.elf` di `user_apps/Makefile` | `git checkout --` |
-| `user_apps/_pngprof.c` (+ `.o`/`.d`) | dihapus |
-| `test/_kzfs_img_tmp.c` + `.exe` (alat host) | dihapus |
-| `test/_pngprof_run.py` (runner QEMU) | dihapus |
-| `test/_pngprof_tmp/` (3 sample + prof.txt + serial.log + screendump) | dihapus |
-| `build/_pngprof.elf`, `libs/widget/build/**` berinstrumentasi | dihapus + `make -C user_apps clean` |
+| instrumentasi di `libs/media/png.c` | `git checkout --` → kembali persis |
+| instrumentasi di `libs/gui/widget/include/core/painter.hpp` | `git checkout --` |
+| definisi global di `libs/gui/widget/src/core/painter.cpp` | `git checkout --` |
+| aturan build `_pngprof.elf` di `apps/Makefile` | `git checkout --` |
+| `apps/_pngprof.c` (+ `.o`/`.d`) | dihapus |
+| `tests/host/unit/_kzfs_img_tmp.c` + `.exe` (alat host) | dihapus |
+| `tests/host/unit/_pngprof_run.py` (runner QEMU) | dihapus |
+| `tests/host/unit/_pngprof_tmp/` (3 sample + prof.txt + serial.log + screendump) | dihapus |
+| `build/_pngprof.elf`, `libs/gui/widget/build/**` berinstrumentasi | dihapus + `make -C user_apps clean` |
 | `test_disk_prof.img` (salinan disk untuk profiling) | dihapus |
 
 `disk.img` asli tidak pernah ditulis (semua penyuntikan ke salinannya).
 
-Reproduksi (kalau nanti perlu diulang): lihat §2 — pola `test/_ui_probe.py` +
-pola mock FS `test/kyuzenfs_xcheck.c`; tak ada dependensi baru yang perlu
+Reproduksi (kalau nanti perlu diulang): lihat §2 — pola `tests/host/unit/_ui_probe.py` +
+pola mock FS `tests/host/unit/kyuzenfs_xcheck.c`; tak ada dependensi baru yang perlu
 di-install.

@@ -53,7 +53,7 @@ Sisanya tetap privat per-file: `cpu_runqueues[]` + `run_queue_t` (runqueue.c),
    sebelum `kfree`. Slot-reaper di `create_task_prio` adalah sisi lain dari
    invarian ini — keduanya **sengaja satu file** (`lifecycle.c`).
 4. **Blocking dua fase**: `block_prepare()` + `block_park()` di bawah lock
-   objek menutup lost-wakeup window (dipakai `kernel/wait.c`). Seluruh state
+   objek menutup lost-wakeup window (dipakai `kernel/sync/wait.c`). Seluruh state
    machine-nya utuh di `block.c`.
 
 ## Constraint ABI (yang membuat pemindahan aman)

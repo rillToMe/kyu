@@ -113,7 +113,7 @@ int main(int argc, char **argv) {
     if (size_mb > 2048) size_mb = 2048; // LBA28 guard (alamat sektor 32-bit)
 
     uint64_t total_sectors = size_mb * 1024 * 1024 / 512;
-    // Ekor disk disisihkan untuk crashdump panic (kernel/crashdump.c) — sama
+    // Ekor disk disisihkan untuk crashdump panic (kernel/debug/crashdump.c) — sama
     // seperti format di kernel (kernel/fs/kfs_super.c). Keduanya memakai
     // KZFS_CRASHDUMP_SECTORS dari include/kyuzenfs_v4.h.
     if (total_sectors > KZFS_CRASHDUMP_SECTORS)

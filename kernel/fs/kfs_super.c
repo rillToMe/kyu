@@ -153,7 +153,7 @@ int ibm_flush(void) {
 static int kfs_format_locked(void) {
     uint32_t total_sectors = ata_get_total_sectors();
     if (total_sectors == 0) total_sectors = 204800;   // fallback QEMU
-    // Sisihkan ekor disk untuk crashdump panic (kernel/crashdump.c).
+    // Sisihkan ekor disk untuk crashdump panic (kernel/debug/crashdump.c).
     if (total_sectors > KZFS_CRASHDUMP_SECTORS)
         total_sectors -= KZFS_CRASHDUMP_SECTORS;
     uint64_t total_blocks = total_sectors / KZFS_BLOCK_SECTORS;

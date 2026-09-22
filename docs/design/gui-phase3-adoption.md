@@ -58,7 +58,7 @@ dari roadmap Phase 5 kini nyata.
 
 ### 6. Fix bug shell: perintah salah menghapus layar + history
 
-`apps/shell.c` meng-`clear_screen()` SEBELUM `sys_exec` tanpa cek file —
+`system/shell.c` meng-`clear_screen()` SEBELUM `sys_exec` tanpa cek file —
 perintah tak dikenal ikut menghapus layar, dan `tty_clear` me-reset ring
 history (scrollback hilang). Fix: `sys_file_exists(elf_filename)` dulu;
 tidak ada → cetak "Perintah tidak dikenali" tanpa clear; ada tapi gagal
@@ -88,6 +88,6 @@ dimuat → "Gagal memuat: <nama>".
 | `kernel/gfx/kwm_internal.h`, `kwm.c` | canvas = `DisplayBuffer*`; `kwm_has_active_windows()` |
 | `include/kwm.h` | deklarasi helper baru |
 | `drivers/mouse.c` | IntelliMouse wheel + routing scroll |
-| `kernel/event.c`, `include/userlib.h` | `EVENT_SCROLL` (4) |
+| `kernel/sync/event.c`, `include/userlib.h` | `EVENT_SCROLL` (4) |
 | `kernel/syscall.c` | hapus mark redundan syscall 22 |
-| `apps/shell.c` | cek file exists sebelum clear+exec |
+| `system/shell.c` | cek file exists sebelum clear+exec |

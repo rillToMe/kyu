@@ -50,15 +50,15 @@ Tiga lapisan baru di kernel/toolkit yang menjadi fondasi:
 | `kernel/gfx/compositor.c` | Composite loop `for (z = 0; ...)`; `cty = win_y + (flags&DESKTOP ? 0 : KWM_TITLEBAR_H)`; blok titlebar hanya non-desktop; `titlebar_text()` (font8x16) clamp sebelum tombol close. |
 | `kernel/syscall.c` | Syscall **59–63** (lihat bawah). |
 | `include/gfx.h` | Deklarasi API KWM baru. |
-| `apps/userlib.c` + `include/userlib.h` | Wrapper syscall 59–63 + `kwm_window_info_t` (layout = kernel). |
-| `apps/libgui.c` + `include/libgui.h` | `gui_create_desktop()`, `gui_set_window_title()`. |
-| `libs/widget/` + `include/libui.h` | **TextEdit widget**, `ui_window_set_title`, `ui_window_set_tick`, `ui_image_set_scale`, wrapper extern "C". |
-| `apps/login.c` | Setelah auth sukses → `sys_spawn("desktop.elf")` lalu `user_shell()`. |
-| `user_apps/desktop.c` (BARU, libgui) | Wallpaper + launcher ikon + taskbar. |
-| `user_apps/terminal.c` (BARU, libui) | Output TextEdit readonly + input TextBox + command loop. |
-| `user_apps/settings.c` (BARU, libui) | Preset tema + Simpan/Muat + info sistem. |
-| `user_apps/fileman.c`, `viewer.c`, `calc.c`, `notepad.c`, `clock.c`, `taskmgr.c` | Port libgui → libui (title + widget + run loop). |
-| `user_apps/Makefile` | ELF `desktop`, `terminal`, `settings`; ported app link `libui.o+png.o`; `desktop.elf` cukup `libgui.o`. |
+| `libs/core/userlib.c` + `include/userlib.h` | Wrapper syscall 59–63 + `kwm_window_info_t` (layout = kernel). |
+| `libs/core/libgui.c` + `include/libgui.h` | `gui_create_desktop()`, `gui_set_window_title()`. |
+| `libs/gui/widget/` + `include/libui.h` | **TextEdit widget**, `ui_window_set_title`, `ui_window_set_tick`, `ui_image_set_scale`, wrapper extern "C". |
+| `system/login.c` | Setelah auth sukses → `sys_spawn("desktop.elf")` lalu `user_shell()`. |
+| `system/desktop/` (BARU, libgui) | Wallpaper + launcher ikon + taskbar. |
+| `apps/terminal.c` (BARU, libui) | Output TextEdit readonly + input TextBox + command loop. |
+| `apps/settings.c` (BARU, libui) | Preset tema + Simpan/Muat + info sistem. |
+| `apps/fileman.c`, `viewer.c`, `calc.c`, `notepad.c`, `clock.c`, `taskmgr.c` | Port libgui → libui (title + widget + run loop). |
+| `apps/Makefile` | ELF `desktop`, `terminal`, `settings`; ported app link `libui.o+png.o`; `desktop.elf` cukup `libgui.o`. |
 | `kernel/kernel.c` | `serial_init()` kini selalu dipanggil (bukan hanya `HEAP_WATCH_DEBUG`). |
 | `roadmap/GUI_ROADMAP.md` | Phase 10 → SELESAI. |
 
@@ -127,7 +127,7 @@ waktu yang sama di `gui_create_desktop` (yang lolos cuma karena kebetulan
 
 ## Toolkit — TextEdit + title + tick + image scale
 
-### TextEdit (libs/widget/include/editor/textedit.hpp)
+### TextEdit (libs/gui/widget/include/editor/textedit.hpp)
 
 Class `TextEdit : public Widget`. Buffer `char text[8192]` (MAX_TEXT),
 `int len, cur, scroll_top` (baris pertama tampak), `bool readonly`. Metrik:
@@ -227,14 +227,14 @@ Pola umum: `gui_create_window`+`gui_mainloop`+draw langsung →
 
 ## Boot
 
-`apps/login.c`: setelah `sys_set_uid` + jeda → `sys_spawn("desktop.elf")`
+`system/login.c`: setelah `sys_set_uid` + jeda → `sys_spawn("desktop.elf")`
 (fail → fallback natural ke shell CLI), lalu `clear_screen()` +
 `user_shell()`. Shell CLI Ring-0 tetap hidup; keyboard saat tak ada window
 fokus → TTY (shell tak mengganggu desktop).
 
 ## Build
 
-`user_apps/Makefile`: ELF `desktop` (link `desktop.o+userlib.o+libgui.o`),
+`apps/Makefile`: ELF `desktop` (link `desktop.o+userlib.o+libgui.o`),
 `terminal` & `settings` (link `+libui.o+png.o`); 6 ported app
 `CFLAGS_APP` → `CFLAGS_LIB` (viewer O2) + link `libui.o+png.o`.
 Top-level `make boot_image.iso` = kernel + semua ELF + ISO (desktop.elf,
@@ -258,11 +258,11 @@ terminal.elf, settings.elf masuk `cp` ke `iso_root`). Per-app:
 - `kernel/gfx/kwm.c`, `kernel/gfx/compositor.c`, `kernel/gfx/kwm_internal.h` — desktop window, title, list, aktivasi.
 - `kernel/syscall.c` — syscall 59–63 (termasuk fix 63).
 - `include/gfx.h`, `include/kwm.h` — deklarasi API KWM.
-- `apps/userlib.c`, `include/userlib.h` — wrapper + `kwm_window_info_t`.
-- `apps/libgui.c`, `include/libgui.h` — `gui_create_desktop`, `gui_set_window_title`.
-- `libs/widget/`, `include/libui.h` — TextEdit, set_title, tick, image scale.
-- `apps/login.c` — spawn desktop setelah auth.
-- `user_apps/desktop.c`, `terminal.c`, `settings.c` (baru) + 6 port.
+- `libs/core/userlib.c`, `include/userlib.h` — wrapper + `kwm_window_info_t`.
+- `libs/core/libgui.c`, `include/libgui.h` — `gui_create_desktop`, `gui_set_window_title`.
+- `libs/gui/widget/`, `include/libui.h` — TextEdit, set_title, tick, image scale.
+- `system/login.c` — spawn desktop setelah auth.
+- `system/desktop/`, `terminal.c`, `settings.c` (baru) + 6 port.
 - `include/task.h` — `MAX_TASKS` 16.
 - `roadmap/GUI_ROADMAP.md` — Phase 10 → SELESAI.
 

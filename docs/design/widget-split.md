@@ -1,9 +1,9 @@
-# Desain: Pemecahan Toolkit Widget `libs/widget/`
+# Desain: Pemecahan Toolkit Widget `libs/gui/widget/`
 
 > **Status**: SELESAI (2026-09-19).
 > **Konteks**: `apps/libui.cpp` adalah satu file C++ 3.798 baris berisi seluruh
 > toolkit widget (namespace `ui`) + runtime shim + wrapper C ABI. Dokumen ini
-> mencatat pemecahannya menjadi `libs/widget/` **tanpa mengubah perilaku satu
+> mencatat pemecahannya menjadi `libs/gui/widget/` **tanpa mengubah perilaku satu
 > piksel pun** — murni pemindahan kode (refactor mekanis), bukan penulisan ulang.
 > **Verifikasi**: `make apps` (bersih dari nol), `make test-textedit`,
 > `make test-libui-theme`, `make` (kernel), `make boot_image.iso`, dan diff
@@ -22,7 +22,7 @@
 ## Layout akhir
 
 ```
-libs/widget/
+libs/gui/widget/
 ├── include/
 │   ├── runtime/     platform.hpp  memory.hpp
 │   ├── core/        theme.hpp  painter.hpp  widget.hpp
@@ -129,10 +129,10 @@ Rentang baris mengacu ke `apps/libui.cpp` sebelum pemecahan.
 
 | Jalur | Wiring |
 |-------|--------|
-| User apps | `user_apps/Makefile`: `WIDGET_SRCS = libs/widget/src/*/*.cpp + abi/libui_abi.cpp`, objek di `libs/widget/build/` (di-gitignore), di-link via `$(LIBUI_OBJ)`. Urutan link bebas — tidak ada static ctor |
+| User apps | `apps/Makefile`: `WIDGET_SRCS = libs/gui/widget/src/*/*.cpp + abi/libui_abi.cpp`, objek di `libs/gui/widget/build/` (di-gitignore), di-link via `$(LIBUI_OBJ)`. Urutan link bebas — tidak ada static ctor |
 | Rule kompilasi | `$(WIDGET_BUILD)/%.o: $(WIDGET_DIR)/%.cpp` + `-I$(WIDGET_DIR)/include -I$(INC_DIR)` |
-| `make clean` (apps) | ikut `rm -rf libs/widget/build` |
-| Host test TextEdit | `make test-textedit` — sumber `libs/widget/**/*.cpp` di-link apa adanya, 20 simbol (syscall/libgui/png) di-stub |
+| `make clean` (apps) | ikut `rm -rf libs/gui/widget/build` |
+| Host test TextEdit | `make test-textedit` — sumber `libs/gui/widget/**/*.cpp` di-link apa adanya, 20 simbol (syscall/libgui/png) di-stub |
 | Host test tema/render | `make test-libui-theme` — header per-layer di-include untuk periksa tipe internal, objek toolkit di-link; render dicek piksel-per-piksel |
 | Kernel | tidak berubah — `SRC_DIRS` hanya mengambil `*.c`, toolkit tidak pernah bagian dari `myos.bin` |
 
@@ -160,7 +160,7 @@ tersentuh.
 ## Deviasi yang disengaja
 
 1. **`include/runtime/platform.hpp` (file tambahan).** `userlib.h`/`libgui.h`/
-   `libs/color` tidak punya guard `extern "C"`; file lama membungkusnya sekali di
+   `libs/gui/color` tidak punya guard `extern "C"`; file lama membungkusnya sekali di
    kepala TU. Pindah ke satu header bersama lebih aman daripada menyalin blok itu
    ke puluhan file.
 2. **`runtime/memory.hpp` ditaruh di `include/runtime/`** — pohon `include/` yang
@@ -198,10 +198,10 @@ Masih terbuka:
 - Komentar `// Out-of-class PromptDialog (butuh Window lengkap).` di file lama
   berada di atas `Widget::set_visible`, bukan di atas definisi `PromptDialog`.
 
-Regresi empat fix di atas dikunci di `test/libui_theme_test.cpp` (section 6–9).
+Regresi empat fix di atas dikunci di `tests/host/unit/libui_theme_test.cpp` (section 6–9).
 Tiap fix diverifikasi dengan menjalankan test yang sama terhadap kode LAMA
 (gagal / SIGFPE) dan kode baru (pass) — bukan cuma "test hijau".
 
 > Catatan build: rule `test-libui-theme` di Makefile hanya mendaftarkan file
 > `.cpp` sebagai dependency, jadi mengubah header saja **tidak** memicu rebuild
-> test — `touch test/libui_theme_test.cpp` dulu sebelum menyimpulkan hasilnya.
+> test — `touch tests/host/unit/libui_theme_test.cpp` dulu sebelum menyimpulkan hasilnya.

@@ -64,7 +64,7 @@ ly = sy - (win.y + KWM_TITLEBAR_H)
   lokal. `EVENT_MOUSE_CLICK` tidak membawa koordinat — app memakai posisi dari
   MOVE terakhir.
 - App/libgui **tidak lagi** memanggil `sys_get_window_pos` (syscall 40
-  dihapus: handler, wrapper `apps/userlib.c`, deklarasi `userlib.h`, dan
+  dihapus: handler, wrapper `libs/core/userlib.c`, deklarasi `userlib.h`, dan
   semua pemakaian di-migrasi). `rel_x/rel_y` = P1/P2 event langsung.
 
 ## Protokol close: EVENT_WIN_CLOSE (6), bukan destroy paksa

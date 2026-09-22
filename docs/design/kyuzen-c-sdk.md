@@ -8,7 +8,7 @@
 ## 1. Struktur SDK
 
 ```text
-sdk/c/                      # COMMITTED: sumber boundary
+libs/c/                      # COMMITTED: sumber boundary
 ├── linker/app.ld           # linker script kanonis (ENTRY _start, 2 PT_LOAD @0x4000000)
 └── README.md               # ringkasan boundary + perintah
 
@@ -23,7 +23,7 @@ Keputusan: `include/` + `libc.a` + `crt.o` **tidak di-commit** (repo
 meng-gitignore `build/`). Tidak ada header yang diduplikasi manual; tidak ada
 source LLVM yang disalin — SDK men-stage dari sumber yang di-pin
 (`llvmorg-22.1.8` di `third_party/stdlib/llvm-project/`). Satu-satunya sumber
-port tetap `libs/libc-port/src/kyuzen_libc_port.cpp` (di luar tree LLVM).
+port tetap `libs/c/libc-port/src/kyuzen_libc_port.cpp` (di luar tree LLVM).
 
 ## 2. Alur compile/link kanonis
 
@@ -126,12 +126,12 @@ basi dengan keras, tidak pernah diam-diam memakai archive lama.
 
 Upgrade LLVM, ubah syscall ABI/loader, POSIX, dynamic linking, pthread, TLS,
 C++/libc++, ekspansi stdio, libc pengganti, duplikasi header manual, salinan
-kedua source LLVM. Sistem app lama (`user_apps/`, Rust via `app.ld`) tidak
+kedua source LLVM. Sistem app lama (`apps/`, Rust via `app.ld`) tidak
 disentuh dan tetap build.
 
 ## 8. Fondasi C++ — Phase 5–6 (bukan bagian C SDK)
 
-C++ tinggal di boundary terpisah `sdk/cpp/` (dokumen: `sdk/cpp/README.md`,
+C++ tinggal di boundary terpisah `libs/cpp/` (dokumen: `libs/cpp/README.md`,
 audit §17–§18). Dari sudut pandang C, SDK C **hampir tak berubah**:
 satu-satunya delta Phase 6 adalah stub `remove` di libc.a (selalu -1;
 dibutuhkan using-declaration libc++ `<cstdio>` — audit §18.3). App C tidak
@@ -158,14 +158,14 @@ closure header otomatis via `clang -M`; arsip `libcxxrt.a` 5 member
 
 Phase 7 tidak menambah SATU PUN header/fungsi libc++: ia mengubah fondasi
 Phase 5–6 menjadi SDK yang bisa dipakai developer tanpa tahu path LLVM,
-urutan arsip, atau flag (`sdk/cpp/README.md`, audit §19). Publik:
+urutan arsip, atau flag (`libs/cpp/README.md`, audit §19). Publik:
 
 - Header `<kyuzen/config.hpp>` (versi SDK 7.0, syarat C++17; tanpa libc++),
   `<kyuzen/app.hpp>` (tipe `app_main` + helper `kyuzen::run`; CRT `_start`
   Phase 5 tetap otoritatif — bukan entry kedua), `<kyuzen/panic.hpp>`
   (`panic(msg)` = printf + abort; terminal karena `-fno-exceptions`).
   `memory.hpp` SENGAJA tidak ada (`std::make_unique` sudah cukup).
-- Wrapper `build/sdk/cpp/bin/kyuzen-c++` (sumber: `sdk/cpp/bin/kyuzen-c++`):
+- Wrapper `build/sdk/cpp/bin/kyuzen-c++` (sumber: `libs/cpp/bin/kyuzen-c++`):
   satu perintah `kyuzen-c++ app.cpp -o app.elf` memberi flag kanonis,
   dua `-isystem` SDK, kompilasi ke object sementara, lalu link `ld.lld`
   langsung dengan urutan `app → libcxxrt.a → cxxrt.o → crt.o → libc.a`
@@ -173,6 +173,6 @@ urutan arsip, atau flag (`sdk/cpp/README.md`, audit §19). Publik:
   mendelegasikan link ke GCC — didokumentasikan di README).
 - Contoh `examples/cpp/{hello,containers,strings}` — ELF asli via wrapper.
 - Guard `tools/libc-phase7/check-sdk-isolation.sh`: 0 rujukan source app ke
-  `third_party/stdlib/llvm-project`, `libs/libc-port`, `build/libc`,
+  `third_party/stdlib/llvm-project`, `libs/c/libc-port`, `build/libc`,
   `build/libcxx`. Smoke `tools/libc-phase7` + `make libc-phase7-qemu`
   (`[phase7] PASS`), `make cpp-app(-run)`.

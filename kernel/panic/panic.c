@@ -40,7 +40,7 @@
 //   * PERSISTENSI (dua jalur, saling melengkapi):
 //       - RAM : log ringkas di halaman PMM pertama (deterministik lintas
 //               warm-reboot) -> dilaporkan panic_check_previous_log() saat boot;
-//       - DISK: crashdump raw 4KB ke ekor disk (kernel/crashdump.c) supaya
+//       - DISK: crashdump raw 4KB ke ekor disk (kernel/debug/crashdump.c) supaya
 //               selamat dari power cycle.
 //   * GUARD PANIC BERSARANG. Kalau panic terjadi lagi saat handler masih
 //     berjalan (mis. I/O crashdump memicu fault), crashdump dibatalkan dan

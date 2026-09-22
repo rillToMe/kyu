@@ -3,7 +3,7 @@
  *
  * Identik dengan tools/libc-phase1/libc_app.ld (satu PT_LOAD di 0x4000000 +
  * satu PT_LOAD data; .eh_frame/.note/.gnu dibuang): entry point adalah
- * `_start` dari port layer libc (libs/libc-port/src/kyuzen_libc_port.cpp),
+ * `_start` dari port layer libc (libs/c/libc-port/src/kyuzen_libc_port.cpp),
  * bukan `main`. Kernel melompat ke e_entry dengan RDI=argc, RSI=argv; `_start`
  * lalu memanggil main dan meneruskan return value ke __llvm_libc_exit (#34).
  *

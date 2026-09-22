@@ -300,7 +300,7 @@ void syscall_handler(registers_t *r) {
     }
     else if (syscall_num == 9) { // sys_alloc
         // FIX_005 Tahap 3: ring 3 → region user range milik AS caller
-        // (kernel/uheap.c) — pointer yang lewat boundary bukan lagi alamat
+        // (kernel/mm/uheap.c) — pointer yang lewat boundary bukan lagi alamat
         // heap kernel. Ring 0 (shell/login/zen) tetap kmalloc.
         if (uc.from_user) {
             ret_val = uheap_alloc(syscall_task, r->rbx);

@@ -1,8 +1,8 @@
-# Desain: Library Warna Modular `libs/color/`
+# Desain: Library Warna Modular `libs/gui/color/`
 
 > **Status**: SELESAI (2026-09-19) — library + wiring build + host test +
-> migrasi `kernel/gfx/compositor.c`, `apps/libgui.c` (ABI gambar),
-> konstanta dekorasi KWM (`kernel/gfx/kwm_internal.h`), toolkit `libs/widget/`
+> migrasi `kernel/gfx/compositor.c`, `libs/core/libgui.c` (ABI gambar),
+> konstanta dekorasi KWM (`kernel/gfx/kwm_internal.h`), toolkit `libs/gui/widget/`
 > (`Theme`/`Painter`/`aa_shade`), ABI tema `ui_theme_t`, dan tema 4 app
 > userspace.
 > **Verifikasi**: `make test-color`, `make` (kernel), `make apps`, dan
@@ -28,8 +28,8 @@ alokasi heap dan tanpa float/SSE.
 | `include/color_utils.h` | Palet preset (+ bentuk initializer `COLOR_WHITE_INIT`/`COLOR_BLACK_INIT`/`COLOR_TRANSPARENT_INIT`), `color_darken`/`color_lighten`, `color_get_contrast_text` |
 | `src/color_utils.c` | Implementasi utility UI |
 
-Tidak ada `libs/color/Makefile` sendiri: sumber ikut build system yang ada
-(kernel `SRC_DIRS` glob + `user_apps/Makefile` eksplisit) — lihat bagian Build.
+Tidak ada `libs/gui/color/Makefile` sendiri: sumber ikut build system yang ada
+(kernel `SRC_DIRS` glob + `apps/Makefile` eksplisit) — lihat bagian Build.
 
 ## Keputusan desain
 
@@ -39,9 +39,9 @@ Tidak ada `libs/color/Makefile` sendiri: sumber ikut build system yang ada
 | Integer murni, tanpa float/SSE | Kernel & app dibangun `-mno-sse -mno-sse2 -msoft-float` (pola yang sama dengan `include/aa_math.h`) |
 | Zero-allocation | Semua fungsi menerima/mengembalikan nilai `color_t`; tidak ada `malloc`/`kmalloc` di mana pun |
 | `FORMAT_ARGB` (default) = `0xAARRGGBB` | Sama dengan tipe warna compositor; RGBA/ABGR/BGRA untuk variasi framebuffer hardware |
-| `COLOR_RGB_INIT`/`*_INIT` = **constant expression**, bukan pemanggilan inline | Tema ditulis sebagai tabel `static const color_t`; `COLOR_RGB()`/`color_make()` adalah panggilan inline sehingga tidak sah sebagai initializer C (`initializer element is not a compile-time constant`). Nilainya identik dengan `COLOR_RGB(r, g, b)` (di-assert di `test/color_test.c`) |
+| `COLOR_RGB_INIT`/`*_INIT` = **constant expression**, bukan pemanggilan inline | Tema ditulis sebagai tabel `static const color_t`; `COLOR_RGB()`/`color_make()` adalah panggilan inline sehingga tidak sah sebagai initializer C (`initializer element is not a compile-time constant`). Nilainya identik dengan `COLOR_RGB(r, g, b)` (di-assert di `tests/host/unit/color_test.c`) |
 | HSL/HSV: hue 0..359 derajat, s/l/v 0..255 | Picker UI menampilkan derajat; hindari fixed-point yang membingungkan di API |
-| Header C/C++ compatible | toolkit `libs/widget/` (C++17; dulu `apps/libui.cpp`) memakai header yang sama; makro `COLOR_RGB`/`COLOR_RGBA` memanggil fungsi inline, bukan compound literal C |
+| Header C/C++ compatible | toolkit `libs/gui/widget/` (C++17; dulu `apps/libui.cpp`) memakai header yang sama; makro `COLOR_RGB`/`COLOR_RGBA` memanggil fungsi inline, bukan compound literal C |
 | Palet `static const` di header | Tiap TU dapat salinan sendiri (tanpa storage global bersama), bebas warning di C & C++ |
 
 ## Kontrak blending
@@ -59,7 +59,7 @@ Tidak ada `libs/color/Makefile` sendiri: sumber ikut build system yang ada
 > `rrect_grad`/`vgrad`) **harus opaque**. Warna dari ABI app datang sebagai
 > XRGB (byte alpha 0, lihat `libui.h`), jadi Theme menormalkannya lewat
 > `color_opaque(color_from_u32(...))`. Tanpa itu gradien tombol rata dengan
-> warna bawahnya — lihat `test/libui_theme_test.cpp`.
+> warna bawahnya — lihat `tests/host/unit/libui_theme_test.cpp`.
 
 Formula itu **persis sama dengan `aa_mix()`** lama. Invarian ini dikunci
 `test_aa_mix_parity` (semua cakupan 0..255 × 16 pasangan warna), supaya
@@ -72,7 +72,7 @@ utility (darken/lighten) dan diuji eksak terhadap `x / 255`.
 
 Round-trip RGB → HSL/HSV → RGB **maksimum ±3 per kanal**, akibat kuantisasi
 hue 1 derajat, s/l/v 8-bit, dan pembulatan interpolasi. Diuji tidak hanya pada
-sampel: `test/color_test.c` menyapu seluruh 256³ warna dan meng-assert batas
+sampel: `tests/host/unit/color_test.c` menyapu seluruh 256³ warna dan meng-assert batas
 ini, jadi regresi rumus konversi langsung ketahuan.
 
 ## Migrasi compositor + libgui
@@ -83,7 +83,7 @@ ini, jadi regresi rumus konversi langsung ketahuan.
   warna kursor HW memakai palet `COLOR_WHITE`/`COLOR_BLACK`/`COLOR_TRANSPARENT`.
   `aa_math.h` tinggal dipakai untuk `aa_cov` (coverage geometri).
 - `kernel/gfx/kwm_internal.h`: konstanta dekorasi jadi `static const color_t`.
-- `apps/libgui.c`: helper internal memakai `color_t`; serialisasi pixel lewat
+- `libs/core/libgui.c`: helper internal memakai `color_t`; serialisasi pixel lewat
   `color_to_u32` (alpha tetap dipaksa opaque seperti `color | 0xFF000000` dulu).
 
 ### ABI gambar libgui = `color_t`
@@ -99,16 +99,16 @@ konversi hex di batas fungsi dan pemanggil menulis warna per komponen:
 
 - `gui_window_t.canvas` tetap `uint32_t*`: itu **memori pixel** (framebuffer
   window), bukan nilai warna — konversi `color_to_u32()` terjadi sekali di
-  `_lgui_px()` dalam `apps/libgui.c`.
+  `_lgui_px()` dalam `libs/core/libgui.c`.
 - Canvas libgui selalu opaque (alpha dipaksa 255 seperti sebelumnya), jadi
   memakai `COLOR_RGBA(..., 0)` pun tetap menggambar. Mask transparansi window
   urusan compositor, bukan app.
-- Pemanggil yang ikut disesuaikan: toolkit widget `libs/widget/` (dulu `apps/libui.cpp`; helper `argb()` dihapus —
-  tidak perlu lagi membungkus pixel), `user_apps/desktop.c` (14 konstanta warna
+- Pemanggil yang ikut disesuaikan: toolkit widget `libs/gui/widget/` (dulu `apps/libui.cpp`; helper `argb()` dihapus —
+  tidak perlu lagi membungkus pixel), `system/desktop/` (14 konstanta warna
   jadi `COLOR_RGB(...)`, `parse_color()` mengembalikan `color_t` opaque,
   checksum daftar app lewat helper `rgb24()`), dan stub libgui di
-  `test/textedit_test.cpp` + `test/libui_theme_test.cpp` +
-  `test/desktop_manifest_test.c`.
+  `tests/host/unit/textedit_test.cpp` + `tests/host/unit/libui_theme_test.cpp` +
+  `tests/host/unit/desktop_manifest_test.c`.
 
 Verifikasi: build HEAD (stash) vs build sekarang dijalankan di sesi yang sama,
 9 dari 11 frame probe **identik byte-per-byte** (desktop c0–c3, notepad s1–s5);
@@ -123,10 +123,10 @@ tabel `static const color_t`, bukan lagi hex `0xAARRGGBB`:
 
 | App | Tema |
 |-----|------|
-| `user_apps/notepad.c` | `NOTEPAD_THEME` (Modern Dark) |
-| `user_apps/settings.c` | Preset Gelap/Terang/Hijau |
-| `user_apps/widget_demo.c` | Preset yang sama + tema default di `main()` |
-| `user_apps/terminal.c` | Tema terminal + `#define COLOR_PROMPT` (satu definisi untuk accent tema **dan** gaya prompt TextEdit, supaya tidak bisa menyimpang) |
+| `apps/notepad.c` | `NOTEPAD_THEME` (Modern Dark) |
+| `apps/settings.c` | Preset Gelap/Terang/Hijau |
+| `apps/widget_demo.c` | Preset yang sama + tema default di `main()` |
+| `apps/terminal.c` | Tema terminal + `#define COLOR_PROMPT` (satu definisi untuk accent tema **dan** gaya prompt TextEdit, supaya tidak bisa menyimpang) |
 
 **ABI `ui_theme_t` juga ikut pindah ke `color_t`** (lihat bagian berikutnya) —
 jadi tabel `color_t` app bisa langsung di-`ui_window_set_theme()` tanpa
@@ -161,7 +161,7 @@ terlihat dari header, bukan hanya dari implementasi.
 > tetap dimuat lewat jalur lama, lalu ditulis ulang sebagai v1 saat `Simpan`
 > berikutnya — tidak ada langkah manual yang diperlukan.
 
-## Migrasi toolkit widget (`libs/widget/`; dulu `libui.cpp`) — Theme, Painter, `aa_shade`
+## Migrasi toolkit widget (`libs/gui/widget/`; dulu `libui.cpp`) — Theme, Painter, `aa_shade`
 
 - `Theme`: 6 warna ABI + 12 lapisan turunan jadi `color_t`. Warna ABI
   dinormalkan `color_opaque()` (XRGB → opaque) dan `to_abi()` mem-pack balik
@@ -178,7 +178,7 @@ terlihat dari header, bukan hanya dari implementasi.
   `aa_cov` (coverage sudut).
 - **ABI publik `libui.h` berubah** di dua titik: `ui_theme_t` 6 × `color_t`
   dan `ui_textedit_set_prompt_style(..., color_t color)`. Semua pemanggil di
-  repo (`user_apps/notepad.c`, `settings.c`, `widget_demo.c`, `terminal.c`)
+  repo (`apps/notepad.c`, `settings.c`, `widget_demo.c`, `terminal.c`)
   ikut disesuaikan; app Rust/Zig di luar repo perlu menyesuaikan struct tema.
   File `settings.ui` lama tetap dibaca (lihat bagian format file).
 
@@ -190,13 +190,13 @@ bukan cuma di layar.
 
 | Jalur | Wiring |
 |-------|--------|
-| Kernel | `SRC_DIRS += libs/color/src`, `CFLAGS += -Ilibs/color/include` (top-level `Makefile`) |
-| User apps | `CFLAGS_COMMON += -I../libs/color/include`; objek `$(COLOR_OBJS)` + rule kompilasi di `user_apps/Makefile` — app yang memakai fungsi out-of-line menambahkan `$(COLOR_OBJS)` ke baris link-nya |
-| Host test warna | `make test-color` — mengompilasi sumber library asli di host dan mengecek header sebagai C++17 (`test/color_cxx_check.cpp`) |
-| Host test libui | `make test-libui-theme` — sumber `libs/widget/` di-*link* (header per-layer di-*include*) supaya Theme/Button bisa diperiksa; render sungguhan dicek piksel-per-piksel |
-| Host test desktop | `make test-desktop` — `user_apps/desktop.c` di-*include*; kini memeriksa `parse_color()` mengembalikan `color_t` opaque |
+| Kernel | `SRC_DIRS += libs/gui/color/src`, `CFLAGS += -Ilibs/gui/color/include` (top-level `Makefile`) |
+| User apps | `CFLAGS_COMMON += -I../libs/gui/color/include`; objek `$(COLOR_OBJS)` + rule kompilasi di `apps/Makefile` — app yang memakai fungsi out-of-line menambahkan `$(COLOR_OBJS)` ke baris link-nya |
+| Host test warna | `make test-color` — mengompilasi sumber library asli di host dan mengecek header sebagai C++17 (`tests/host/unit/color_cxx_check.cpp`) |
+| Host test libui | `make test-libui-theme` — sumber `libs/gui/widget/` di-*link* (header per-layer di-*include*) supaya Theme/Button bisa diperiksa; render sungguhan dicek piksel-per-piksel |
+| Host test desktop | `make test-desktop` — `system/desktop/` di-*include*; kini memeriksa `parse_color()` mengembalikan `color_t` opaque |
 
-`test/color_test.c` dikecualikan dari `C_SOURCES` (host test, bukan task
+`tests/host/unit/color_test.c` dikecualikan dari `C_SOURCES` (host test, bukan task
 kernel) — sama seperti host test lain yang ikut ter-glob saat
 `make conc`/`make heap-stress`.
 
@@ -226,14 +226,14 @@ disentuh (`-Wall -Wextra`), termasuk `make test-textedit` (48 PASS).
 - **ABI libgui `color_t`**: build HEAD dan build baru dijalankan di sesi QEMU
   yang sama (benchmark adil — probe ini punya frame yang memang
   nondeterministik). Hasil: `c0`–`c3`, `s1`–`s5` (9 frame, termasuk desktop
-  yang digambar `user_apps/desktop.c` lewat libgui) **identik byte-per-byte**.
+  yang digambar `system/desktop/` lewat libgui) **identik byte-per-byte**.
   Dua frame sisanya hanya beda pada teks jam kernel yang digambar live oleh
   `kernel/timer_callbacks.c` (strip hijau `#00FF00` / kuning `#FFFF00` di
   kanan-atas): dalam satu build pun frame itu ada/tiada antar-run. Cara
   memisahkannya dari regresi: jalankan probe dua kali pada build yang sama —
   frame yang beda run-to-run adalah noise jam, bukan regresi.
-- **Bukti visual**: tiga probe QEMU (`test/_menu_probe.py` c0–c3,
-  `test/_dialog_probe.py` d1–d2, `test/_ui_probe.py all` s1–s5) dibandingkan
+- **Bukti visual**: tiga probe QEMU (`tests/host/unit/_menu_probe.py` c0–c3,
+  `tests/host/unit/_dialog_probe.py` d1–d2, `tests/host/unit/_ui_probe.py all` s1–s5) dibandingkan
   byte-per-byte dengan capture pra-migrasi. Frame yang memuat tombol bergradien
   (s3 `bar cari`, s4, s5) **identik** — inilah bukti migrasi warna libui tidak
   menggeser satu piksel pun. `d1` hanya berbeda di area jam (nilai waktu), dan

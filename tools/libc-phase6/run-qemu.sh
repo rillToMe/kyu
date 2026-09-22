@@ -4,7 +4,7 @@
 #
 # Alur (tanpa interaksi manusia):
 #   1. disk image BARU (build/libc/phase6-disk.img) → boot pertama meminta
-#      password root baru (apps/login.c: first_time_setup)
+#      password root baru (system/login.c: first_time_setup)
 #   2. keystroke dikirim lewat monitor QEMU (HMP `sendkey`) — hanya setelah
 #      penanda yang relevan muncul di serial, bukan berbasis timer buta
 #   3. app dijalankan dari console shell: `start libc_phase6`

@@ -2,7 +2,7 @@
 
 > **Arsitektur**: Preemptive Multitasking via PIT IRQ0 (BSP) dan LAPIC timer (AP)
 > **Header**: `include/task.h`  
-> **Implementasi**: `kernel/task.c`, `drivers/timer.c`, `arch/x86/timer_isr.asm`, `arch/x86/lapic.c`
+> **Implementasi**: `kernel/sched/`, `drivers/timer.c`, `arch/x86/timer_isr.asm`, `arch/x86/lapic.c`
 
 ---
 
@@ -33,9 +33,9 @@ File terkait:
 |------|--------|
 | [`drivers/net/e1000/e1000.c`](drivers/net/e1000/e1000.c) | Driver Intel e1000, DMA descriptor ring, TX/RX poll |
 | [`drivers/net/port/kyuzen_netif.c`](drivers/net/port/kyuzen_netif.c) | Glue layer e1000 ↔ lwIP |
-| [`kernel/net_init.c`](kernel/net_init.c) | Init lwIP, netif, DHCP/static fallback, DNS |
-| [`kernel/net_ping.c`](kernel/net_ping.c) | ICMP Echo Request/Reply implementation |
-| [`apps/shell.c`](apps/shell.c) | Command shell `ping [host]` |
+| [`kernel/net/net_init.c`](kernel/net/net_init.c) | Init lwIP, netif, DHCP/static fallback, DNS |
+| [`kernel/net/net_ping.c`](kernel/net/net_ping.c) | ICMP Echo Request/Reply implementation |
+| [`system/shell.c`](system/shell.c) | Command shell `ping [host]` |
 
 ### Runtime Refresh Rate
 
@@ -63,7 +63,7 @@ File terkait:
 | [`include/timer.h`](include/timer.h) | Default 60Hz, API `timer_set_refresh_rate()` dan `timer_get_refresh_rate()` |
 | [`drivers/timer.c`](drivers/timer.c) | Program PIT runtime, accumulator waktu ms, CPU usage tracker |
 | [`kernel/timer_callbacks.c`](kernel/timer_callbacks.c) | Callback visual flush, cursor, network poll |
-| [`apps/shell.c`](apps/shell.c) | Command shell `refresh [60|100|144]` |
+| [`system/shell.c`](system/shell.c) | Command shell `refresh [60|100|144]` |
 
 ---
 
@@ -378,7 +378,7 @@ a global. Rules:
   `kernel/sched/lifecycle.c`). Task-local reads, no locks.
 - `sys_set_uid` (27): root-only transition of the caller's own cred
   (`uid`+`gid` move together). Non-root returns `-1`. Same policy in the
-  Ring-0 shim (`apps/kernel_userlib.c`) — console shell cannot bypass it.
+  Ring-0 shim (`libs/core/kernel_userlib.c`) — console shell cannot bypass it.
 - Kernel-enforced root-only: `fs_format` (5), `shutdown` (38), `reboot`
   (39). Shell `sudo` flag stays as UX gate; the kernel check is the boundary.
 - KWM ownership is task-id based (`owner_task == smp_current_task_id()`),
@@ -434,7 +434,7 @@ No environment variables, no `PATH` lookup yet (`/apps/` prefix only).
 
 ### fd 0/1/2
 
-Per-task, VFS-backed (`kernel/vfs_fd.c`, same table/locks/owner rules as
+Per-task, VFS-backed (`kernel/fs/vfs_fd.c`, same table/locks/owner rules as
 files — not a second subsystem). At creation each task gets
 `0=stdin` (read-only), `1=stdout`, `2=stderr` (write-only), all routed to
 the shared console TTY. `read(0)/write(1)/write(2)` work via syscalls
@@ -451,7 +451,7 @@ terminal instance (documented boundary, per-terminal routing is future).
 ### dup / dup2 (P0 Phase 4)
 
 FD entries are task-local; open descriptions are shared, reference
-counted heap objects owning buffer + offset + flags (`kernel/vfs_fd.c`).
+ counted heap objects owning buffer + offset + flags (`kernel/fs/vfs_fd.c`).
 
 - `sys_dup` (74): `dup(oldfd)` → lowest free fd on the SAME open
   description (one offset, one buffer). All kinds duplicable.
@@ -477,7 +477,7 @@ counted heap objects owning buffer + offset + flags (`kernel/vfs_fd.c`).
 
 One pipe = one `vfs_pipe_t` (bounded circular buffer, `VFS_PIPE_CAP` =
 4096 bytes) shared by exactly one `PIPE_READ` and one `PIPE_WRITE` open
-description (`kernel/vfs_fd.c`). `dup()` aliases the same endpoint
+description (`kernel/fs/vfs_fd.c`). `dup()` aliases the same endpoint
 description (side-alive flags, not fd counts: two read dups are still
 one reader). Direction enforced by description flags + kind.
 
@@ -511,7 +511,7 @@ one reader). Direction enforced by description flags + kind.
 
 ### Shell redirection + pipelines (P0 Phase 5)
 
-In `apps/shell_core.c` (shared by console + GUI terminal), no new parser:
+In `system/shell_core.c` (shared by console + GUI terminal), no new parser:
 operators must be separate tokens (`a | b`, `cmd > f`; `a>b` stays one
 word). External apps only — stage names resolve to `/apps/*.elf`
 (external wins over same-name builtins, e.g. `echo` → `echo.elf`);
@@ -544,9 +544,9 @@ builtin-only names and `start` in stages are rejected with an error.
 
 ### GUI terminal E2E (P0-FINAL)
 
-`user_apps/terminal.c` is a frontend only: it owns a KWM window +
+`apps/terminal.c` is a frontend only: it owns a KWM window +
 `TextEdit` transcript and delegates every command to the one shared
-engine (`apps/shell_core.c`) — no second shell implementation. Input
+engine (`system/shell_core.c`) — no second shell implementation. Input
 path: PS/2 → KWM focus (`focused_win_id`, set on window create and
 click-to-focus) → `kwm_route_keyboard` → the terminal task's event
 queue → `sys_get_event` → widget. Ctrl+C is intercepted as a window
@@ -581,7 +581,7 @@ the shell's 16-entry fd table would exhaust on any leak).
 | `proc_exit` / `proc_exit_kill` | syscall 34, faults, kill path | **canonical** — one `proc_do_exit` body |
 | `vfs_fork_inherit` | `task_fork` | **canonical** — fork FD clone |
 | `vfs_dup` / `vfs_dup2` | syscalls 74/75 | **canonical** — shell pipeline wiring |
-| syscall 33 `sys_exec` | `apps/shell.c`, `fileman.c` launcher | **legacy, retained** — self-replacement that intentionally destroys the caller's windows (launcher → app). Non-atomic (destroys AS before loading the new one); touches only `self`, no shared/other-task state, so it cannot corrupt the P0 lifecycle. New code uses 78+79. |
+| syscall 33 `sys_exec` | `system/shell.c`, `apps/filemanager/` launcher | **legacy, retained** — self-replacement that intentionally destroys the caller's windows (launcher → app). Non-atomic (destroys AS before loading the new one); touches only `self`, no shared/other-task state, so it cannot corrupt the P0 lifecycle. New code uses 78+79. |
 
 Nothing legacy was deleted: 33 and `spawn_redir` remain for the
 launcher and the kernel-context (task-0) fallback, both with their
@@ -634,7 +634,7 @@ converted to fork/exec).
 - Strategy: FULL PHYSICAL COPY (not COW). COW was rejected on audit:
   no page refcounts exist, `#PF` always panics (no write-fault hook),
   and TLB shootdown is local-only — remote COW invalidation is unsolved
-  debt. `vmm_clone_user_as` (`kernel/paging.c`) clones PML4[0..255]
+  debt. `vmm_clone_user_as` (`kernel/mm/paging.c`) clones PML4[0..255]
   page by page (fresh frame + 4KB HHDM copy + identical flag bits);
   kernel halves [256..511] are shared by value, never deep-copied;
   huge/empty entries are skipped exactly like
@@ -680,7 +680,7 @@ converted to fork/exec).
 - `sys_exit` (34) now takes `RBX = code` (`void sys_exit()` = exit 0,
   `sys_exit_code(n)` explicit). Syscall `-1` ≠ exit `-1`: only this path
   records `exit_code`.
-- Spawned apps terminate in `proc_exit` (`kernel/proc.c`): close FDs,
+- Spawned apps terminate in `proc_exit` (`kernel/proc/proc.c`): close FDs,
   flush event queue, destroy own KWM windows, free AS/stack/uheap, then
   `ZOMBIE` (live non-reaper parent) or `DEAD` (orphan / no parent).
   Termination and reclamation are separate: the slot is reusable only
@@ -747,7 +747,7 @@ COW/shared memory/`mmap`/ASLR (fork is full-copy), `vfork`.
 ## Process Termination & Kill (P0 Phase 3)
 
 One authoritative termination path, unchanged: every death converges on
-`proc_transition_locked()` in `kernel/proc.c` (reparent → ZOMBIE/DEAD +
+`proc_transition_locked()` in `kernel/proc/proc.c` (reparent → ZOMBIE/DEAD +
 detach stack/AS/heap), reached via `proc_exit()` (normal) or
 `proc_exit_kill()` (kill convention). There is no second cleanup
 implementation. `proc_exit()` is guarded: a racing transition (already
@@ -791,7 +791,7 @@ Kernel-enforced, userspace UID never trusted (`cred_current_is_root()`):
   out-of-range PIDs, `DEAD`/`ZOMBIE` slots (second kill fails, never
   double-cleans). Double kill while pending returns `0` (idempotent).
 
-### Sync vs async termination (`proc_kill`, `kernel/proc.c`)
+### Sync vs async termination (`proc_kill`, `kernel/proc/proc.c`)
 
 - `READY` target — synchronous: purged from every run queue
   (`scheduler_remove_task`, holds `scheduler_lock`; lock order
@@ -873,7 +873,7 @@ children auto-reap (`DEAD`, e.g. console-shell spawns from task 0 never
 zombify). No `WNOHANG` (deferred: needs no architectural change, just
 not needed yet — shell does explicit `jobs`/`reap` instead, no polling).
 
-### Shell (`jobs` / `reap` / `kill`, `apps/shell_core.c`)
+### Shell (`jobs` / `reap` / `kill`, `system/shell_core.c`)
 
 `start` stays asynchronous (no behavior change, no background reaper,
 no polling). Explicit opt-in builtins:
@@ -885,7 +885,7 @@ no polling). Explicit opt-in builtins:
   blocks the interactive shell unless the user asks.
 - `kill <pid>` — `sys_kill` wrapper (kernel authorizes).
 
-### Task Manager (`user_apps/taskmgr.c`)
+### Task Manager (`apps/taskmgr.c`)
 
 Process table (`PID/Nama/UID/State`, `ZOMBIE(125)`-style reason suffix)
 via read-only `sys_proc_list`, manual `Refresh` button (no selection
@@ -901,12 +901,12 @@ successful kill (zombies vanish once the parent reaps).
 |---|------|------|-------|
 | 73 | `sys_kill` NEW | `RBX=pid` | `0` / `-1`, parent-or-root policy |
 
-`sys_kill` wrapper in `apps/userlib.c` + `apps/kernel_userlib.c`
+`sys_kill` wrapper in `libs/core/userlib.c` + `libs/core/kernel_userlib.c`
 (same return convention). No kernel pointers exposed.
 
 ### Tests
 
-- Host `make test-kill` (`test/kill_test.c`, 18 groups): policy matrix
+- Host `make test-kill` (`tests/host/unit/kill_test.c`, 18 groups): policy matrix
   (`proc_can_kill`), PID-0/kernel-task denial, self-kill, sync-READY
   purge, async blocked wake, kill status/reason, reap-once, double-kill
   single-transition, orphan reparenting, PID-reuse-after-reap, stale PID,
@@ -944,7 +944,7 @@ design was needed.
 | [`kernel/sched/lifecycle.c`](kernel/sched/lifecycle.c) | `create_task`, cred init/inherit/accessors |
 | [`kernel/sched/core.c`](kernel/sched/core.c) | `schedule_on_cpu`, `smp_current_task_id` |
 | [`include/timer.h`](include/timer.h) | Timer API, default refresh rate, preset runtime |
-| [`kernel/task.c`](kernel/task.c) | Implementasi `create_task`, `schedule`, `yield` |
+| [`kernel/proc/proc.c`](kernel/proc/proc.c) | Implementasi `create_task`, `schedule`, `yield` |
 | [`drivers/timer.c`](drivers/timer.c) | `timer_handler`, PIT runtime refresh, scheduler quantum |
 | [`kernel/timer_callbacks.c`](kernel/timer_callbacks.c) | Timer subscribers: visual, cursor, screen flush, network poll |
 | [`arch/x86/timer_isr.asm`](arch/x86/timer_isr.asm) | ISR stub — inti dari context switch |

@@ -4,11 +4,11 @@
 #
 # Target penting:
 #   make          → Compile kernel (build/bin/myos.bin)
-#   make apps     → Compile user_apps (build/apps/*.elf)
+#   make apps     → Compile apps (build/apps/*.elf)
 #   make boot_image.iso → Build kernel + apps + ISO
 #   make run      → Build + Boot di QEMU
 #   make clean    → Bersihkan SELURUH hasil build (build/ + sisa .o/.d lama)
-#   make clean-apps → Bersihkan hasil build user_apps saja
+#   make clean-apps → Bersihkan hasil build apps saja
 #
 # --- Tata letak output ---
 # Tidak ada lagi object file di source tree; semuanya di build/:
@@ -18,7 +18,7 @@
 #       kernel/gfx/fb.c               → build/obj/kernel/gfx/fb.o
 #       drivers/net/e1000/e1000.c     → build/obj/drivers/net/e1000/e1000.o
 #   build/obj/<path sumber>.d    dependensi header (-MMD -MP), pasangan .o
-#   build/obj/user/<path>.o      object user_apps (namespace terpisah: file
+#   build/obj/user/<path>.o      object apps (namespace terpisah: file
 #                                seperti apps/userutil.c dipakai kernel DAN
 #                                user app dengan flag berbeda, jadi tidak boleh
 #                                berbagi object)
@@ -51,13 +51,13 @@ FULLSCREEN_ARG = $(if $(filter 1,$(FULLSCREEN)),-full-screen,)
 
 # Direktori sumber kernel (Ring 0).
 # Daftar eksplisit — sengaja TIDAK memakai find rekursif dari root supaya
-# third_party/*, legacy/, test/, debug/, rust/target, dan hasil build tidak
+# third_party/*, legacy/, tests/, debug/, rust/target, dan hasil build tidak
 # ikut terambil secara tidak sengaja. Sub-directory yang memang bagian kernel
 # didaftarkan langsung di sini (driver NIC & NET port lwIP punya daftar sendiri
 # di bawah karena flag-nya beda).
-SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs kernel/fs apps \
+SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched kernel/fs kernel/net kernel/mm kernel/debug kernel/sync kernel/proc libs/core system \
            kernel/panic \
-           graphics graphics/backend graphics/backend/intel graphics/memory drivers/graphics/hw libs/color/src
+           graphics graphics/backend graphics/backend/intel graphics/memory drivers/graphics/hw libs/gui/color/src
 
 
 # ==========================================
@@ -133,7 +133,7 @@ ISO_IMAGE  = $(BUILD_DIR)/boot_image.iso
 # hanya memilih default saat boot — jalur lama tetap ada sebagai fallback.
 # Contoh pakai: make ATA_READ_PATH_DEFAULT=1 boot_image.iso
 ATA_READ_PATH_DEFAULT ?= 0
-CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw -Ilibs/color/include -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT)
+CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw -Ilibs/gui/color/include -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT)
 
 # Flags compiler untuk unit lwIP:
 #   - Mewarisi semua flag kernel (freestanding, mcmodel, mno-red-zone, dll.)
@@ -153,20 +153,23 @@ LDFLAGS = -flavor gnu -T linker.ld -m elf_x86_64 --build-id=none -nostdlib
 C_SOURCES_RAW = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
 ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 
-# Exclude file user-space — dikompilasi terpisah oleh user_apps/Makefile,
+# Exclude file user-space — dikompilasi terpisah oleh apps/Makefile,
 # BUKAN bagian dari kernel Ring 0 (myos.bin).
-#   apps/userlib.c  → berisi int $0x80 syscall wrappers
-#   apps/libgui.c   → GUI framework (mendefinisikan font8x16, dll)
-#   apps/media.c    → library media user-space (dipakai gallery/imageview):
+#   libs/core/userlib.c → berisi int $0x80 syscall wrappers
+#   libs/core/libgui.c  → GUI framework (mendefinisikan font8x16, dll)
+#   libs/media/media.c → library media user-space (dipakai gallery/imageview):
 #                     seluruh isinya lewat syscall user-space, tidak ada
 #                     pemakai di Ring 0 → jangan ikut jadi dead code kernel.
 # Juga exlude test host-side (punya main()/assert.h/stdio.h) yang dijalankan di
 # host, bukan sebagai task QEMU — dikompilasi freestanding akan fatal (assert.h
 # tidak ada). aa_math_test / desktop_manifest_test / kyuzenfs_dir_test /
-# virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
+# virtqueue_test / cred_test ada di tests/host/unit/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
-C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c apps/media.c \
-                        test/aa_math_test.c test/desktop_manifest_test.cpp test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c                        test/virtqueue_test.c test/virtio_gpu_cmd_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c test/ata_devmodel_test.c,\
+# Util CLI system/cat.c + system/echo.c adalah ELF user-space (ENTRY main,
+# dibangun apps/Makefile) — bukan task kernel, jadi dikecualikan juga.
+C_SOURCES = $(filter-out libs/core/userlib.c libs/core/libgui.c libs/media/media.c \
+                         system/cat.c system/echo.c \
+                        tests/host/unit/aa_math_test.c tests/host/unit/desktop_manifest_test.cpp tests/host/unit/kyuzenfs_dir_test.c tests/host/unit/kyuzenfs_v4_test.c tests/host/unit/kyuzenfs_xcheck.c tests/host/unit/panic_test.c                        tests/host/unit/virtqueue_test.c tests/host/unit/virtio_gpu_cmd_test.c tests/host/unit/cred_test.c tests/host/unit/proc_test.c tests/host/unit/kill_test.c tests/host/unit/fd_test.c tests/host/unit/pipe_test.c tests/host/unit/fork_test.c tests/host/unit/color_test.c tests/host/unit/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
 
 # --- Pemetaan sumber → object (generik, tidak ada daftar object manual) ---
@@ -215,7 +218,7 @@ OBJ_DIRS = $(sort $(dir $(ALL_OBJS)))
 $(OBJ_DIRS):
 	@mkdir -p $@
 
-# Tahap 2: Compile C (kernel/arch/drivers/fs/apps)
+# Tahap 2: Compile C (kernel/arch/drivers/apps)
 $(OBJ_DIR)/%.o: %.c | $(OBJ_DIRS)
 	$(CC) $(CFLAGS) -std=c11 -c $< -o $@
 
@@ -235,15 +238,15 @@ $(OBJ_DIR)/$(LWIP_PORT_DIR)/%.o: $(LWIP_PORT_DIR)/%.c | $(OBJ_DIRS)
 
 # net_init.c: butuh LWIP_CFLAGS karena include lwIP headers (dhcp.h, dns.h, dll)
 # Aturan ini OVERRIDE aturan generic $(OBJ_DIR)/%.o:%.c untuk file ini saja.
-$(OBJ_DIR)/kernel/net_init.o: kernel/net_init.c | $(OBJ_DIRS)
+$(OBJ_DIR)/kernel/net/net_init.o: kernel/net/net_init.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # net_ping.c: butuh LWIP_CFLAGS karena include lwIP raw/icmp/dns headers
-$(OBJ_DIR)/kernel/net_ping.o: kernel/net_ping.c | $(OBJ_DIRS)
+$(OBJ_DIR)/kernel/net/net_ping.o: kernel/net/net_ping.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # net_socket.c: butuh LWIP_CFLAGS karena include lwIP tcp headers
-$(OBJ_DIR)/kernel/net_socket.o: kernel/net_socket.c | $(OBJ_DIRS)
+$(OBJ_DIR)/kernel/net/net_socket.o: kernel/net/net_socket.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # Tahap 1: Compile Assembly
@@ -272,15 +275,15 @@ compile_commands:
 HOSTCC = clang
 HOSTCXX = clang++
 .PHONY: test-virtqueue
-test-virtqueue: test/virtqueue_test
-	./test/virtqueue_test
+test-virtqueue: tests/host/unit/virtqueue_test
+	./tests/host/unit/virtqueue_test
 
-test/virtqueue_test: test/virtqueue_test.c \
+tests/host/unit/virtqueue_test: tests/host/unit/virtqueue_test.c \
                      drivers/graphics/hw/virtqueue.c \
                      drivers/graphics/hw/virtqueue.h \
                      drivers/graphics/hw/virtio_gpu_regs.h \
                      graphics/memory/gpu_alloc.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/virtqueue_test.c \
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/virtqueue_test.c \
 	    drivers/graphics/hw/virtqueue.c \
 	    -Idrivers/graphics/hw -Igraphics/memory
 
@@ -291,69 +294,69 @@ test/virtqueue_test: test/virtqueue_test.c \
 # QEMU apa adanya dan membandingkan isi rect hasilnya.
 # Jalankan: make test-virtio-cmd
 .PHONY: test-virtio-cmd
-test-virtio-cmd: test/virtio_gpu_cmd_test
-	./test/virtio_gpu_cmd_test
+test-virtio-cmd: tests/host/unit/virtio_gpu_cmd_test
+	./tests/host/unit/virtio_gpu_cmd_test
 
-test/virtio_gpu_cmd_test: test/virtio_gpu_cmd_test.c \
+tests/host/unit/virtio_gpu_cmd_test: tests/host/unit/virtio_gpu_cmd_test.c \
                           drivers/graphics/hw/virtio_gpu_cmd.c \
                           drivers/graphics/hw/virtio_gpu_cmd.h \
                           drivers/graphics/hw/virtio_gpu_regs.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/virtio_gpu_cmd_test.c \
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/virtio_gpu_cmd_test.c \
 	    drivers/graphics/hw/virtio_gpu_cmd.c -Idrivers/graphics/hw
 
 # --- Host-side unit test (P0 Phase 1): credential policy ---
 # Pure policy in include/cred.h, no scheduler needed. Run: make test-cred.
 .PHONY: test-cred
-test-cred: test/cred_test
-	./test/cred_test
+test-cred: tests/host/unit/cred_test
+	./tests/host/unit/cred_test
 
-test/cred_test: test/cred_test.c include/cred.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/cred_test.c -Iinclude
+tests/host/unit/cred_test: tests/host/unit/cred_test.c include/cred.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/cred_test.c -Iinclude
 
 # --- Host-side unit test (P0 Phase 2): process policy ---
 # Pure policy in include/proc.h (+cred/task constants), no scheduler/SMP.
 # Run: make test-proc.
 .PHONY: test-proc
-test-proc: test/proc_test
-	./test/proc_test
+test-proc: tests/host/unit/proc_test
+	./tests/host/unit/proc_test
 
-test/proc_test: test/proc_test.c include/proc.h include/cred.h include/task.h include/vfs.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/proc_test.c -Iinclude
+tests/host/unit/proc_test: tests/host/unit/proc_test.c include/proc.h include/cred.h include/task.h include/vfs.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/proc_test.c -Iinclude
 
 # --- Host-side unit test (P0 Phase 3): kill policy + lifecycle ---
 # Pure policy in include/proc.h (proc_can_kill, kill codes/reasons) plus a
 # mock of the proc_kill/observe/reap decision table. No scheduler/SMP.
 # Run: make test-kill.
 .PHONY: test-kill
-test-kill: test/kill_test
-	./test/kill_test
+test-kill: tests/host/unit/kill_test
+	./tests/host/unit/kill_test
 
-test/kill_test: test/kill_test.c include/proc.h include/cred.h include/task.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/kill_test.c -Iinclude
+tests/host/unit/kill_test: tests/host/unit/kill_test.c include/proc.h include/cred.h include/task.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/kill_test.c -Iinclude
 
 # --- Host-side unit test (P0 Phase 4): fd / open-description model ---
-# Mock of kernel/vfs_fd.c semantics (per-task entries, shared refcounted
+# Mock of kernel/fs/vfs_fd.c semantics (per-task entries, shared refcounted
 # descriptions, dup/dup2 sharing, close/close_all release, invalid-fd
 # rejection, leak accounting). No scheduler/SMP/KyuzenFS.
 # Run: make test-fd.
 .PHONY: test-fd
-test-fd: test/fd_test
-	./test/fd_test
+test-fd: tests/host/unit/fd_test
+	./tests/host/unit/fd_test
 
-test/fd_test: test/fd_test.c include/vfs.h include/proc.h include/cred.h include/task.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/fd_test.c -Iinclude
+tests/host/unit/fd_test: tests/host/unit/fd_test.c include/vfs.h include/proc.h include/cred.h include/task.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/fd_test.c -Iinclude
 
 # --- Host-side unit test (P0 Phase 5): pipe logic + shell pipelines ---
-# Kernel pipe decision table (mock) + the REAL apps/shell_core.c against
+# Kernel pipe decision table (mock) + the REAL system/shell_core.c against
 # stub syscalls (operator scan, stage split, spawn_redir specs, parent
 # close discipline, reaping). No scheduler/SMP/KyuzenFS.
 # Run: make test-pipe.
 .PHONY: test-pipe
-test-pipe: test/pipe_test
-	./test/pipe_test
+test-pipe: tests/host/unit/pipe_test
+	./tests/host/unit/pipe_test
 
-test/pipe_test: test/pipe_test.c apps/shell_core.c include/shell.h include/userlib.h include/proc.h include/cred.h include/task.h include/vfs.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/pipe_test.c apps/shell_core.c -Iinclude
+tests/host/unit/pipe_test: tests/host/unit/pipe_test.c system/shell_core.c include/shell.h include/userlib.h include/proc.h include/cred.h include/task.h include/vfs.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/pipe_test.c system/shell_core.c -Iinclude
 
 # --- Host-side unit test (P0 Phase 6B): fork algorithm mock ---
 # AS-clone table (fresh frames, content copy, verbatim flags, huge skip,
@@ -361,31 +364,31 @@ test/pipe_test: test/pipe_test.c apps/shell_core.c include/shell.h include/userl
 # No scheduler/SMP/paging hardware.
 # Run: make test-fork.
 .PHONY: test-fork
-test-fork: test/fork_test
-	./test/fork_test
+test-fork: tests/host/unit/fork_test
+	./tests/host/unit/fork_test
 
-test/fork_test: test/fork_test.c include/proc.h include/cred.h include/task.h include/vfs.h
-	$(HOSTCC) -O2 -Wall -Wextra -o $@ test/fork_test.c -Iinclude
+tests/host/unit/fork_test: tests/host/unit/fork_test.c include/proc.h include/cred.h include/task.h include/vfs.h
+	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/fork_test.c -Iinclude
 
-# --- Host-side unit test: libs/color (tipe, blend, ruang warna, utility UI) ---
+# --- Host-side unit test: libs/gui/color (tipe, blend, ruang warna, utility UI) ---
 # Sumber library asli dikompilasi di host (integer murni → tak butuh QEMU);
 # header dicek juga sebagai C++ (app userspace C++ memakainya).
 # Jalankan: make test-color
-COLOR_SRCS = libs/color/src/color_blend.c libs/color/src/color_space.c \
-             libs/color/src/color_utils.c
-COLOR_HDRS = libs/color/include/color_types.h libs/color/include/color_blend.h \
-             libs/color/include/color_space.h libs/color/include/color_utils.h
+COLOR_SRCS = libs/gui/color/src/color_blend.c libs/gui/color/src/color_space.c \
+             libs/gui/color/src/color_utils.c
+COLOR_HDRS = libs/gui/color/include/color_types.h libs/gui/color/include/color_blend.h \
+             libs/gui/color/include/color_space.h libs/gui/color/include/color_utils.h
 
 .PHONY: test-color
-test-color: test/color_test
-	./test/color_test
+test-color: tests/host/unit/color_test
+	./tests/host/unit/color_test
 
-test/color_test: test/color_test.c test/color_cxx_check.cpp $(COLOR_SRCS) $(COLOR_HDRS) include/aa_math.h
-	$(HOSTCC) -O2 -Wall -Wextra -Iinclude -Ilibs/color/include -o $@ test/color_test.c $(COLOR_SRCS)
-	$(HOSTCXX) -std=c++17 -Wall -Wextra -fsyntax-only -Ilibs/color/include test/color_cxx_check.cpp
+tests/host/unit/color_test: tests/host/unit/color_test.c tests/host/unit/color_cxx_check.cpp $(COLOR_SRCS) $(COLOR_HDRS) include/aa_math.h
+	$(HOSTCC) -O2 -Wall -Wextra -Iinclude -Ilibs/gui/color/include -o $@ tests/host/unit/color_test.c $(COLOR_SRCS)
+	$(HOSTCXX) -std=c++17 -Wall -Wextra -fsyntax-only -Ilibs/gui/color/include tests/host/unit/color_cxx_check.cpp
 
 # --- Host-side unit test: library media bersama + cache thumbnail Gallery ---
-# Kode PRODUKSI (apps/media.c + user_apps/gallery/thumbs.cpp) di atas syscall
+# Kode PRODUKSI (libs/media/media.c + apps/gallery/thumbs.cpp) di atas syscall
 # mock — pola test-pipe/test-desktop, bukan salinan logika. Yang dikunci: satu
 # tabel deteksi tipe (termasuk "keluarga gambar" yang belum bisa didekode TIDAK
 # boleh dinyatakan supported), util path, format ukuran/integer/metadata,
@@ -394,31 +397,31 @@ test/color_test: test/color_test.c test/color_cxx_check.cpp $(COLOR_SRCS) $(COLO
 # evict callback, tidak ada retry setelah decode gagal).
 # Jalankan: make test-media
 .PHONY: test-media
-test-media: test/media_test
-	./test/media_test
+test-media: tests/host/unit/media_test
+	./tests/host/unit/media_test
 
-# apps/media.c tetap dikompilasi sebagai C (HOSTCC) di object sendiri: kalau
+# libs/media/media.c tetap dikompilasi sebagai C (HOSTCC) di object sendiri: kalau
 # clang++ yang mengompilasi, isinya menjadi C++ dan deklarasi syscall
 # user-space (linkage C) tidak lagi cocok dengan stub di test.
 # Header Kyuzen lewat -iquote (bukan -I) agar header HOST (<stdlib.h>) tidak
 # tertutup oleh include/stdlib.h milik Kyuzen.
-test/media_host.o: apps/media.c include/media.h include/media_scale.h
-	$(HOSTCC) -O1 -Wall -Wextra -iquote include -iquote libs/color/include -c $< -o $@
+tests/host/unit/media_host.o: libs/media/media.c include/media.h include/media_scale.h
+	$(HOSTCC) -O1 -Wall -Wextra -iquote include -iquote libs/gui/color/include -c $< -o $@
 
-test/media_test: test/media_test.cpp test/media_host.o user_apps/gallery/thumbs.cpp \
+tests/host/unit/media_test: tests/host/unit/media_test.cpp tests/host/unit/media_host.o apps/gallery/thumbs.cpp \
                  include/media.h include/media_scale.h \
-                 user_apps/gallery/thumbs.hpp user_apps/gallery/platform.hpp
-	$(HOSTCXX) -O1 -Wall -Wextra -iquote include -iquote libs/color/include \
-	    -Iuser_apps -o $@ \
-	    test/media_test.cpp test/media_host.o user_apps/gallery/thumbs.cpp
+                 apps/gallery/thumbs.hpp apps/gallery/platform.hpp
+	$(HOSTCXX) -O1 -Wall -Wextra -iquote include -iquote libs/gui/color/include \
+	    -Iapps -o $@ \
+	    tests/host/unit/media_test.cpp tests/host/unit/media_host.o apps/gallery/thumbs.cpp
 
 # --- Host-side unit test: KyuzenFS V4 (bcache + extent engine + direktori) ---
-# test/kyuzenfs_v4_test.c meng-include kernel/fs/bcache.c dan modul
+# tests/host/unit/kyuzenfs_v4_test.c meng-include kernel/fs/bcache.c dan modul
 # kfs_*.c langsung; ATA/heap/spinlock di-mock ke RAM.
 # Jalan dengan: make test-kyuzenfs-v4
 .PHONY: test-kyuzenfs-v4
-test-kyuzenfs-v4: test/kyuzenfs_v4_test
-	./test/kyuzenfs_v4_test
+test-kyuzenfs-v4: tests/host/unit/kyuzenfs_v4_test
+	./tests/host/unit/kyuzenfs_v4_test
 
 KFS4_SRCS = kernel/fs/bcache.c kernel/fs/kfs_super.c kernel/fs/kfs_balloc.c \
             kernel/fs/kfs_inode.c kernel/fs/kfs_extent.c kernel/fs/kfs_dir.c \
@@ -426,21 +429,21 @@ KFS4_SRCS = kernel/fs/bcache.c kernel/fs/kfs_super.c kernel/fs/kfs_balloc.c \
 KFS4_HDRS = include/kyuzenfs_v4.h include/vnode.h include/bcache.h include/ata.h \
             include/kyuzenfs.h kernel/fs/kfs_internal.h
 
-test/kyuzenfs_v4_test: test/kyuzenfs_v4_test.c $(KFS4_HDRS) $(KFS4_SRCS)
-	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_v4_test.c
+tests/host/unit/kyuzenfs_v4_test: tests/host/unit/kyuzenfs_v4_test.c $(KFS4_HDRS) $(KFS4_SRCS)
+	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ tests/host/unit/kyuzenfs_v4_test.c
 
 # --- Host-side unit test (Fase 4): filesystem tree KyuzenFS V4 ---
-# test/kyuzenfs_tree_test.c meng-include modul kernel/fs/*.c APA ADANYA;
-# ATA (RAM disk 32 MB) + heap/console di-mock (spinlock host di test/).
+# tests/host/unit/kyuzenfs_tree_test.c meng-include modul kernel/fs/*.c APA ADANYA;
+# ATA (RAM disk 32 MB) + heap/console di-mock (spinlock host di tests/host/unit/).
 # Menguji resolusi path, operasi tree, rename, readdir, dan kasus error
-# tanpa boot QEMU — jalur yang sama dengan kernel/vfs_fd.c.
+# tanpa boot QEMU — jalur yang sama dengan kernel/fs/vfs_fd.c.
 # Jalan dengan: make test-kyuzenfs-tree
 .PHONY: test-kyuzenfs-tree
-test-kyuzenfs-tree: test/kyuzenfs_tree_test
-	./test/kyuzenfs_tree_test
+test-kyuzenfs-tree: tests/host/unit/kyuzenfs_tree_test
+	./tests/host/unit/kyuzenfs_tree_test
 
-test/kyuzenfs_tree_test: test/kyuzenfs_tree_test.c test/spinlock.h $(KFS4_HDRS) $(KFS4_SRCS)
-	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_tree_test.c
+tests/host/unit/kyuzenfs_tree_test: tests/host/unit/kyuzenfs_tree_test.c tests/host/unit/spinlock.h $(KFS4_HDRS) $(KFS4_SRCS)
+	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ tests/host/unit/kyuzenfs_tree_test.c
 
 # --- Host tool: formatter disk KyuzenFS V4 (Modul 2) ---
 # Format disk.img dari host sebelum boot: make mkfs && ./mkfs.kyuzenfs disk.img
@@ -450,14 +453,14 @@ mkfs: mkfs.kyuzenfs
 mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 	$(HOSTCC) -O2 -Wall -Wextra -iquote include -o $@ tools/mkfs.kyuzenfs.c
 
-# Binary host test (test/*.exe) semuanya generated — `make clean` memanggil ini.
+# Binary host test (tests/host/unit/*.exe) semuanya generated — `make clean` memanggil ini.
 .PHONY: clean-tool
 clean-tool:
-	rm -f mkfs.kyuzenfs testimg.img test/color_utils_host.o
-	rm -f test/*.exe test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
-	      test/kyuzenfs_tree_test \
-	      test/ata_devmodel_test test/color_test test/textedit_test test/libui_theme_test \
-	      test/media_test test/media_host.o
+	rm -f mkfs.kyuzenfs testimg.img tests/host/unit/color_utils_host.o
+	rm -f tests/host/unit/*.exe tests/host/unit/kyuzenfs_v4_test tests/host/unit/kyuzenfs_xcheck tests/host/unit/panic_test \
+	      tests/host/unit/kyuzenfs_tree_test \
+	      tests/host/unit/ata_devmodel_test tests/host/unit/color_test tests/host/unit/textedit_test tests/host/unit/libui_theme_test \
+	      tests/host/unit/media_test tests/host/unit/media_host.o
 
 # ==========================================
 # LLVM libc 22.1.8 — freestanding x86_64 (Phase 0)
@@ -538,7 +541,7 @@ libc-clean:
 # ==========================================
 # LLVM libc 22.1.8 — Phase 1: port layer (exit + errno + malloc)
 # ==========================================
-# Port layer `libs/libc-port/src/kyuzen_libc_port.cpp` di-compile dengan flag & 
+# Port layer `libs/c/libc-port/src/kyuzen_libc_port.cpp` di-compile dengan flag & 
 # namespace internal libc 22.1.8 (LIBC_NAMESPACE) supaya bisa menggantikan
 # instance `freelist_heap` bawaan libc; backing memory-nya datang dari syscall
 # #9 (uheap Kyuzen), bukan simbol linker _end/__llvm_libc_heap_limit.
@@ -548,7 +551,7 @@ libc-clean:
 #
 # Disk image untuk test DIBUAT TERPISAH (build/libc/phase1-disk.img): disk.img
 # milik user tidak pernah disentuh.
-LIBC_PORT_SRC    = libs/libc-port/src/kyuzen_libc_port.cpp
+LIBC_PORT_SRC    = libs/c/libc-port/src/kyuzen_libc_port.cpp
 LIBC_PORT_OBJ    = $(LIBC_OUT)/port/kyuzen_libc_port.o
 LIBC_PORT_DEFS   = -DLIBC_NAMESPACE=__llvm_libc_22_1_8_ -DLIBC_FULL_BUILD -DLIBC_TARGET_OS_IS_BAREMETAL \
                    -DLIBC_ERRNO_MODE=LIBC_ERRNO_MODE_EXTERNAL -DLIBC_THREAD_MODE=LIBC_THREAD_MODE_SINGLE \
@@ -712,8 +715,8 @@ libc-phase4-qemu: $(LIBC_PHASE4_APP) $(LIBC_PHASE4_CONF)
 # Kyuzen C++ SDK — Phase 5 (runtime/foundation) + Phase 6 (libc++ subset)
 # ==========================================
 # Boundary publik C++ di atas C SDK: yang di-commit hanya sumber boundary
-# (sdk/cpp/linker/app.ld + sdk/cpp/include/__config_site +
-#  sdk/cpp/include/__assertion_handler + sdk/cpp/README.md);
+# (libs/cpp/linker/app.ld + libs/cpp/include/__config_site +
+#  libs/cpp/include/__assertion_handler + libs/cpp/README.md);
 # yang di-generate di-stage ke build/sdk/cpp (gitignored) lewat `make sdk-cpp`:
 #
 #   build/sdk/cpp/include/       ← CLOSURE header libc++ (8 header publik +
@@ -722,7 +725,7 @@ libc-phase4-qemu: $(LIBC_PHASE4_APP) $(LIBC_PHASE4_CONF)
 #   build/sdk/cpp/include/__config_site + __assertion_handler ← milik Kyuzen
 #   build/sdk/cpp/cxxrt.o        ← runtime C++ Phase 5 (new/delete, guard,
 #                                  __dso_handle, pure_virtual, cxa_atexit/
-#                                  finalize; dari libs/libc-port, BUKAN LLVM)
+#                                  finalize; dari libs/c/libc-port, BUKAN LLVM)
 #   build/sdk/cpp/lib/libcxxrt.a ← runtime libc++ Phase 6 (subset .cpp persis
 #                                  audit §18; BUKAN seluruh libc++)
 #   build/sdk/cpp/linker/app.ld  ← salinan linker script C++ (+ .init_array)
@@ -744,7 +747,7 @@ libc-phase4-qemu: $(LIBC_PHASE4_APP) $(LIBC_PHASE4_CONF)
 #   make libc-phase7         → smoke SDK publik Phase 7 via wrapper
 #   make libc-phase7-qemu    → QEMU Phase 7 (harap [phase7] PASS)
 #
-SDK_CPP_SRC_DIR = sdk/cpp
+SDK_CPP_SRC_DIR = libs/cpp
 SDK_CPP_DIR     = $(BUILD_DIR)/sdk/cpp
 SDK_CPP_INC     = $(SDK_CPP_DIR)/include
 SDK_CPP_CXXRT   = $(SDK_CPP_DIR)/cxxrt.o
@@ -758,15 +761,15 @@ SDK_CPP_PUBLIC_HEADERS = $(SDK_CPP_SRC_DIR)/include/kyuzen/config.hpp \
                          $(SDK_CPP_SRC_DIR)/include/kyuzen/app.hpp \
                          $(SDK_CPP_SRC_DIR)/include/kyuzen/panic.hpp
 # ---- Phase 8: header publik libdesktop (sumber kanonis di libs/, BUKAN
-# duplikat di sdk/cpp — stage menyalinnya ke kyuzen/desktop/) ----
-LIBDESKTOP_SRC_DIR = libs/libdesktop
+# duplikat di libs/cpp — stage menyalinnya ke kyuzen/desktop/) ----
+LIBDESKTOP_SRC_DIR = libs/gui/libdesktop
 LIBDESKTOP_INC_SRC = $(LIBDESKTOP_SRC_DIR)/include
 LIBDESKTOP_PUBLIC_HEADERS = $(wildcard $(LIBDESKTOP_INC_SRC)/kyuzen/desktop/*.hpp)
 SDK_CPP_STAGE   = $(SDK_CPP_DIR)/.staged
 # Flag kanonis app C++: flag C SDK + C++ (-nostdinc++ agar hermetis dari
 # libc++ host; <stddef.h> tetap dari header freestanding clang).
 SDK_CXXFLAGS    = $(LIBC_TARGET_FLAGS) -O2 -std=c++17 -fno-exceptions -fno-rtti -nostdinc++
-LIBC_CXXRT_SRC  = libs/libc-port/src/kyuzen_cxx_runtime.cpp
+LIBC_CXXRT_SRC  = libs/c/libc-port/src/kyuzen_cxx_runtime.cpp
 LIBC_CXXRT_OBJ  = $(LIBC_OUT)/port/kyuzen_cxx_runtime.o
 SDK_CPP_SMOKE_SRC = tools/libc-phase5/sdk_smoke.cpp
 SDK_CPP_SMOKE_OBJ = $(LIBC_OUT)/sdk_cpp_smoke.o
@@ -799,21 +802,21 @@ LIBC_AR         = llvm-ar
 # Shim milik Kyuzen (libs/, BUKAN tree LLVM): stub abort() untuk strtof/
 # strtod/strtold yang direferensikan string.cpp tetapi di luar subset C
 # (tipe FP tak bisa dikompilasi -mno-sse; lihat file sumbernya).
-LIBCXXRT_SHIM_SRC = libs/libc-port/src/kyuzen_libcxx_shims.cpp
+LIBCXXRT_SHIM_SRC = libs/c/libc-port/src/kyuzen_libcxx_shims.cpp
 $(LIBCXXRT_OBJDIR)/shims.o: $(LIBCXXRT_SHIM_SRC) $(SDK_STAGE) $(LIBCXXRT_PROLOGUE)
 	@mkdir -p $(dir $@)
 	$(LIBC_CXX) $(LIBCXXRT_FLAGS) -c $< -o $@
 # Slice instantiation basic_string<char> (TU milik Kyuzen, §18): kompilasi
 # dengan standar SAMA seperti app (C++17) agar instantiation persis cocok
 # dengan yang diharapkan extern-template declarations sisi app.
-LIBCXXRT_STRING_INST_SRC = libs/libc-port/src/kyuzen_libcxx_string_inst.cpp
+LIBCXXRT_STRING_INST_SRC = libs/c/libc-port/src/kyuzen_libcxx_string_inst.cpp
 $(LIBCXXRT_OBJDIR)/string_inst.o: $(LIBCXXRT_STRING_INST_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES)
 	@mkdir -p $(dir $@)
 	$(LIBC_CXX) $(LIBCXX_BUILD_FLAGS) -c $< -o $@
 # Slice instantiation __sort non-FP (TU milik Kyuzen, §18): butuh C++20
 # (ranges::less) seperti algorithm.cpp hulu; simbol yang diekspor
 # ABI-nya sama untuk app C++17.
-LIBCXXRT_SORT_INST_SRC = libs/libc-port/src/kyuzen_libcxx_sort_inst.cpp
+LIBCXXRT_SORT_INST_SRC = libs/c/libc-port/src/kyuzen_libcxx_sort_inst.cpp
 $(LIBCXXRT_OBJDIR)/sort_inst.o: $(LIBCXXRT_SORT_INST_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES)
 	@mkdir -p $(dir $@)
 	$(LIBC_CXX) $(LIBCXXRT_FLAGS) -c $< -o $@
@@ -857,7 +860,7 @@ $(LIBC_CXXRT_OBJ): $(LIBC_CXXRT_SRC) $(SDK_STAGE) $(SDK_CPP_SITE_FILES)
 # standar terbaru untuk semua standar app — model yang sama. Simbol yang
 # diekspor (__sort untuk iterator char/int) ABI-nya tak terpengaruh versi
 # standar TU. App tetap -std=c++17 (SDK_CXXFLAGS tak berubah).
-LIBCXXRT_PROLOGUE = libs/libc-port/src/kyuzen_libcxx_prologue.h
+LIBCXXRT_PROLOGUE = libs/c/libc-port/src/kyuzen_libcxx_prologue.h
 LIBCXXRT_FLAGS = $(LIBCXX_BUILD_FLAGS) -std=c++20 -include $(LIBCXXRT_PROLOGUE)
 $(LIBCXXRT_OBJDIR)/%.o: $(LIBCXX_SRC_DIR)/src/%.cpp $(SDK_STAGE) $(SDK_CPP_SITE_FILES) $(LIBCXXRT_PROLOGUE)
 	@mkdir -p $(dir $@)
@@ -900,7 +903,7 @@ $(SDK_CPP_STAGE): $(LIBC_CXXRT_OBJ) $(LIBCXXRT_ARCHIVE) $(SDK_CPP_LD_SRC) $(SDK_
 	@for h in config.hpp app.hpp panic.hpp; do \
 		test -f $(SDK_CPP_INC)/kyuzen/$$h || { echo "[sdk-cpp] FAIL: header publik <kyuzen/$$h> tak ter-stage"; exit 1; }; \
 	done
-	@test -n "$(LIBDESKTOP_PUBLIC_HEADERS)" || { echo "[sdk-cpp] FAIL: header publik libdesktop kosong (libs/libdesktop/include/kyuzen/desktop/*.hpp hilang?)"; exit 1; }
+	@test -n "$(LIBDESKTOP_PUBLIC_HEADERS)" || { echo "[sdk-cpp] FAIL: header publik libdesktop kosong (libs/gui/libdesktop/include/kyuzen/desktop/*.hpp hilang?)"; exit 1; }
 	@for h in $(notdir $(LIBDESKTOP_PUBLIC_HEADERS)); do \
 		test -f $(SDK_CPP_INC)/kyuzen/desktop/$$h || { echo "[sdk-cpp] FAIL: header publik <kyuzen/desktop/$$h> tak ter-stage"; exit 1; }; \
 	done
@@ -1131,7 +1134,8 @@ cpp-app-run: $(CPP_HELLO_APP) $(CPP_HELLO_CONF)
 
 # ---- Phase 8: Desktop Framework Foundation (libdesktop + desktop ganti) ----
 # Arsitektur: kernel/KWM (tak tersentuh) ← libdesktop (framework, arsip
-# statis) ← apps/<DESKTOP_APP> (implementasi userspace biasa, ELF statis).
+# statis) ← system/<DESKTOP_APP> (implementasi userspace biasa, ELF statis;
+# varian uji di tests/<DESKTOP_APP>, dipilih lewat DESKTOP_IMPL_DIR).
 # Slot boot tetap $(ELF_DIR)/desktop.elf (login/limine/manifest tak berubah);
 # DESKTOP_APP memilih SUMBER yang mengisi slot itu. Stamp .selected memaksa
 # relink saat implementasi diganti (object per-impl terisolasi di objdir
@@ -1146,25 +1150,27 @@ LIBDESKTOP_OBJS   = $(patsubst $(LIBDESKTOP_SRC_DIR)/src/%.cpp,$(LIBDESKTOP_OBJD
 LIBDESKTOP_LIB    = $(BUILD_DIR)/desktop/libdesktop.a
 LIBDESKTOP_ISOLATION = tools/desktop-phase8/check-desktop-isolation.sh
 # Header C bersama untuk TU framework/implementasi (userlib.h/libgui.h +
-# color_types.h — pola yang sama dipakai user_apps/Makefile CFLAGS_COMMON).
+# color_types.h — pola yang sama dipakai apps/Makefile CFLAGS_COMMON).
 # `-iquote` (bukan -I) untuk $(INCLUDE_DIR): repo punya include/stdlib.h
 # (shim stb_image) yang akan MENANG atas stdlib.h milik libc++ SDK, sehingga
 # libc++ <cstdlib> (ditarik oleh <new>/std::nothrow) gagal assert. Semua header
 # repo di desktop/libdesktop di-include gaya kutip ("userlib.h"), jadi -iquote
 # cukup — lihat juga test-desktop & LIBC_PORT_CFLAGS.
-LIBDESKTOP_SYS_INC = -I$(LIBDESKTOP_INC_SRC) -iquote $(INCLUDE_DIR) -Ilibs/color/include
+LIBDESKTOP_SYS_INC = -I$(LIBDESKTOP_INC_SRC) -iquote $(INCLUDE_DIR) -Ilibs/gui/color/include
 
 DESKTOP_APP      ?= desktop
-DESKTOP_IMPL_DIR  = apps/$(DESKTOP_APP)
+# Override eksplisit (mis. tests/target/test-desktop) menang atas default ini —
+# dipakai target desktop-qemu-test di bawah.
+DESKTOP_IMPL_DIR ?= system/$(DESKTOP_APP)
 DESKTOP_SRCS      = $(wildcard $(DESKTOP_IMPL_DIR)/*.cpp)
 DESKTOP_OBJDIR    = $(BUILD_DIR)/obj/desktop-$(DESKTOP_APP)
 DESKTOP_OBJS      = $(patsubst $(DESKTOP_IMPL_DIR)/%.cpp,$(DESKTOP_OBJDIR)/%.o,$(DESKTOP_SRCS))
 DESKTOP_SELECTED  = $(BUILD_DIR)/desktop/.selected
 DESKTOP_ELF       = $(ELF_DIR)/desktop.elf
 # Object C userspace yang dipakai link desktop (userlib/libgui — dibangun
-# sub-make user_apps; pola di bawah memicu sub-make itu bila berkas hilang).
-USERAPP_LIB_OBJS  = $(BUILD_DIR)/obj/user/apps/userlib.o $(BUILD_DIR)/obj/user/apps/libgui.o \
-                    $(BUILD_DIR)/obj/user/apps/png.o
+# sub-make apps; pola di bawah memicu sub-make itu bila berkas hilang).
+USERAPP_LIB_OBJS  = $(BUILD_DIR)/obj/user/libs/core/userlib.o $(BUILD_DIR)/obj/user/libs/core/libgui.o \
+                    $(BUILD_DIR)/obj/user/libs/media/png.o
 
 DTSMOKE_SRC   = tools/desktop-phase8/dtsmoke.cpp
 DTSMOKE_APP   = $(LIBC_OUT)/desktop-phase8/dtsmoke.elf
@@ -1203,12 +1209,12 @@ $(DESKTOP_SELECTED): FORCE
 	@if [ "$$(cat $@ 2>/dev/null)" != "$(DESKTOP_APP)" ]; then echo "$(DESKTOP_APP)" > $@; echo "[desktop] selected implementation: $(DESKTOP_APP)"; fi
 
 $(DESKTOP_OBJDIR)/%.o: $(DESKTOP_IMPL_DIR)/%.cpp $(SDK_CPP_STAGE) $(DESKTOP_SELECTED) | $(SDK_CPP_WRAPPER)
-	@test -d $(DESKTOP_IMPL_DIR) || { echo "[desktop] FAIL: implementasi '$(DESKTOP_APP)' tidak ada (apps/$(DESKTOP_APP)/ hilang?)"; exit 1; }
+	@test -d $(DESKTOP_IMPL_DIR) || { echo "[desktop] FAIL: implementasi '$(DESKTOP_APP)' tidak ada ($(DESKTOP_IMPL_DIR)/ hilang?)"; exit 1; }
 	@mkdir -p $(dir $@)
 	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(LIBDESKTOP_SYS_INC)
 
-$(BUILD_DIR)/obj/user/apps/%.o:
-	$(MAKE) -C user_apps all
+$(BUILD_DIR)/obj/user/libs/core/%.o:
+	$(MAKE) -C apps all
 
 $(DESKTOP_ELF): $(DESKTOP_SELECTED) $(DESKTOP_OBJS) $(LIBDESKTOP_LIB) $(USERAPP_LIB_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
 	@test -n "$(DESKTOP_SRCS)" || { echo "[desktop] FAIL: implementasi '$(DESKTOP_APP)' tanpa *.cpp di $(DESKTOP_IMPL_DIR)/"; exit 1; }
@@ -1281,7 +1287,7 @@ desktop-qemu: $(DESKTOP_ELF)
 
 .PHONY: desktop-qemu-test
 desktop-qemu-test:
-	@$(MAKE) desktop DESKTOP_APP=test-desktop
+	@$(MAKE) desktop DESKTOP_APP=test-desktop DESKTOP_IMPL_DIR=tests/target/test-desktop
 	@rm -f $(ISO_IMAGE)
 	@$(MAKE) boot_image.iso
 	@KYUZEN_TEST_DISK="$(LIBC_OUT)/desktop-phase8/test-desktop-disk.img" \
@@ -1300,7 +1306,7 @@ desktop-qemu-test:
 # Kyuzen C SDK — Phase 3 (staging + smoke app)
 # ==========================================
 # Boundary publik aplikasi C: yang di-commit hanya sumber boundary
-# (sdk/c/linker/app.ld + sdk/c/README.md); yang di-generate di-stage ke
+# (libs/c/linker/app.ld + libs/c/README.md); yang di-generate di-stage ke
 # build/sdk/c (gitignored) lewat `make sdk-c`:
 #
 #   build/sdk/c/include/  ← salinan header hasil hdrgen (bukan manual,
@@ -1313,7 +1319,7 @@ desktop-qemu-test:
 #   make sdk-c-smoke       → bangun app uji murni lewat SDK (tanpa third_party)
 #   make sdk-c-smoke-qemu  → jalankan app uji di QEMU (harap [phase3] PASS)
 #
-SDK_SRC_DIR   = sdk/c
+SDK_SRC_DIR   = libs/c
 SDK_DIR       = $(BUILD_DIR)/sdk/c
 SDK_INC       = $(SDK_DIR)/include
 SDK_LIB       = $(SDK_DIR)/lib/libc.a
@@ -1323,7 +1329,7 @@ SDK_LD_SRC    = $(SDK_SRC_DIR)/linker/app.ld
 SDK_STAGE     = $(SDK_DIR)/.staged
 # Flag kanonis app SDK: sama persis dengan flag pembangun libc.a
 # (freestanding, tanpa SSE — kernel tidak mengaktifkan CR4.OSFXSR)
-# + -O2 mengikuti konvensi library user_apps (bukan -O0).
+# + -O2 mengikuti konvensi library apps (bukan -O0).
 SDK_CFLAGS    = $(LIBC_TARGET_FLAGS) -O2
 SDK_SMOKE_SRC = tools/libc-phase3/sdk_smoke.c
 SDK_SMOKE_OBJ = $(LIBC_OUT)/sdk_smoke.o
@@ -1412,22 +1418,22 @@ sdk-c-smoke-qemu: $(SDK_SMOKE_APP) $(SDK_SMOKE_CONF)
 # Target memformat testimg.img via ./mkfs.kyuzenfs lalu menjalankan test host
 # yang memuat image tersebut ke RAM disk mock. Jalankan: make test-kyuzenfs-xcheck
 .PHONY: test-kyuzenfs-xcheck
-test-kyuzenfs-xcheck: test/kyuzenfs_xcheck mkfs.kyuzenfs
+test-kyuzenfs-xcheck: tests/host/unit/kyuzenfs_xcheck mkfs.kyuzenfs
 	rm -f testimg.img
 	dd if=/dev/zero of=testimg.img bs=1M count=32 2>/dev/null
 	./mkfs.kyuzenfs testimg.img
-	./test/kyuzenfs_xcheck testimg.img
+	./tests/host/unit/kyuzenfs_xcheck testimg.img
 
-test/kyuzenfs_xcheck: test/kyuzenfs_xcheck.c $(KFS4_HDRS) $(KFS4_SRCS)
-	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_xcheck.c
+tests/host/unit/kyuzenfs_xcheck: tests/host/unit/kyuzenfs_xcheck.c $(KFS4_HDRS) $(KFS4_SRCS)
+	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ tests/host/unit/kyuzenfs_xcheck.c
 
 # --- Host test panic handler (BSOD): diagnostik, lockdown, interaktif ---
 # kernel/panic/*.c di-include dengan -DPANIC_HOST_TEST (instruksi privileged → stub),
 # jadi alur countdown → flush FS → reboot bisa diverifikasi tanpa QEMU.
 # Jalankan: make test-panic
 .PHONY: test-panic
-test-panic: test/panic_test
-	./test/panic_test
+test-panic: tests/host/unit/panic_test
+	./tests/host/unit/panic_test
 
 # Test ekuivalensi jalur baca ATA (Stage 1): model device ATA di host,
 # jalur LEGACY vs BATCH (byte-identik + urutan sektor + hitung perintah +
@@ -1445,97 +1451,97 @@ $(ATA_FLAG_STAMP): FORCE
 	@printf '%s' "$(ATA_READ_PATH_DEFAULT)" | cmp -s - $@ || printf '%s' "$(ATA_READ_PATH_DEFAULT)" > $@
 
 $(OBJ_DIR)/drivers/ata.o: $(ATA_FLAG_STAMP)
-test/ata_devmodel_test: $(ATA_FLAG_STAMP)
+tests/host/unit/ata_devmodel_test: $(ATA_FLAG_STAMP)
 
 .PHONY: test-ata
-test-ata: test/ata_devmodel_test
-	./test/ata_devmodel_test
-	@if [ -f disk.img ]; then ./test/ata_devmodel_test disk.img; fi
+test-ata: tests/host/unit/ata_devmodel_test
+	./tests/host/unit/ata_devmodel_test
+	@if [ -f disk.img ]; then ./tests/host/unit/ata_devmodel_test disk.img; fi
 
-test/ata_devmodel_test: test/ata_devmodel_test.c test/atamock/io.h \
+tests/host/unit/ata_devmodel_test: tests/host/unit/ata_devmodel_test.c tests/host/unit/atamock/io.h \
                          drivers/ata.c include/ata.h include/io.h
-	$(HOSTCC) -O1 -Wall -Wextra -iquote test/atamock -iquote test -iquote include \
-	         -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT) -o $@ test/ata_devmodel_test.c
+	$(HOSTCC) -O1 -Wall -Wextra -iquote tests/host/unit/atamock -iquote test -iquote include \
+	         -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT) -o $@ tests/host/unit/ata_devmodel_test.c
 
-test/panic_test: test/panic_test.c kernel/panic/panic.c kernel/panic/panic_draw.c \
+tests/host/unit/panic_test: tests/host/unit/panic_test.c kernel/panic/panic.c kernel/panic/panic_draw.c \
                  kernel/panic/panic_hw.c kernel/panic/panic_explain.c kernel/panic/panic_internal.h \
-                 kernel/panic_log.c kernel/crashdump.c drivers/acpi.c \
+                 kernel/debug/panic_log.c kernel/debug/crashdump.c drivers/acpi.c \
                  include/panic.h include/crashdump.h include/acpi.h include/display.h include/task.h include/timer.h
-	$(HOSTCC) -DPANIC_HOST_TEST -O1 -Wall -iquote test -iquote include -o $@ test/panic_test.c
+	$(HOSTCC) -DPANIC_HOST_TEST -O1 -Wall -iquote tests/host/unit -iquote include -o $@ tests/host/unit/panic_test.c
 
-# TextEdit host test: libs/widget/**/*.cpp di-link apa adanya, syscall+libgui di-stub
+# TextEdit host test: libs/gui/widget/**/*.cpp di-link apa adanya, syscall+libgui di-stub
 # (20 symbol). Menguji logika editor yang dipakai notepad: undo/redo per operasi,
 # seleksi + clipboard, find/replace_all, dan aritmetika baris LAYAR word wrap.
 # Jalankan: make test-textedit
 .PHONY: test-textedit
-test-textedit: test/textedit_test
-	./test/textedit_test
+test-textedit: tests/host/unit/textedit_test
+	./tests/host/unit/textedit_test
 
-test/textedit_test: test/textedit_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp include/libui.h include/libgui.h \
-                    libs/color/src/color_utils.c libs/color/include/color_utils.h
-	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
-	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/textedit_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
+tests/host/unit/textedit_test: tests/host/unit/textedit_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp include/libui.h include/libgui.h \
+                    libs/gui/color/src/color_utils.c libs/gui/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/gui/color/include -c libs/gui/color/src/color_utils.c -o tests/host/unit/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote include -Ilibs/gui/widget/include -Ilibs/gui/color/include -o $@ tests/host/unit/textedit_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp tests/host/unit/color_utils_host.o
 
-# Host test tema + render libui: libs/widget/**/*.cpp di-LINK (object toolkit)
+# Host test tema + render libui: libs/gui/widget/**/*.cpp di-LINK (object toolkit)
 # supaya Window/Button/Painter bisa diperiksa, lalu render sungguhan dicek
 # piksel-per-piksel. Mengunci regresi "gradien tombol rata" yang muncul saat
 # warna tema ABI (XRGB, alpha 0) mulai dilewatkan color_blend_alpha.
 # Jalankan: make test-libui-theme
 .PHONY: test-libui-theme
-test-libui-theme: test/libui_theme_test
-	./test/libui_theme_test
+test-libui-theme: tests/host/unit/libui_theme_test
+	./tests/host/unit/libui_theme_test
 
-test/libui_theme_test: test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp include/libui.h \
+tests/host/unit/libui_theme_test: tests/host/unit/libui_theme_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp include/libui.h \
                        include/libgui.h include/aa_math.h \
-                       libs/color/src/color_utils.c libs/color/include/color_utils.h
-	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
-	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
+                       libs/gui/color/src/color_utils.c libs/gui/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/gui/color/include -c libs/gui/color/src/color_utils.c -o tests/host/unit/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/gui/widget/include -Ilibs/gui/color/include -o $@ tests/host/unit/libui_theme_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp tests/host/unit/color_utils_host.o
 
-# Host test kontrak toolkit File Manager: libs/widget/**/*.cpp di-LINK seperti
+# Host test kontrak toolkit File Manager: libs/gui/widget/**/*.cpp di-LINK seperti
 # test-libui-theme, lalu diperiksa: index menu yang menghitung separator, hit-test
 # baris Table + ikon barisnya (blit nyata ke canvas), cell_at/placeholder GridView,
 # serta routing hook tombol & klik kanan lewat Window (tanpa widget fokus vs fokus).
 # Jalankan: make test-libui-fileman
 .PHONY: test-libui-fileman
-test-libui-fileman: test/libui_fileman_widgets_test
-	./test/libui_fileman_widgets_test
+test-libui-fileman: tests/host/unit/libui_fileman_widgets_test
+	./tests/host/unit/libui_fileman_widgets_test
 
-test/libui_fileman_widgets_test: test/libui_fileman_widgets_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp include/libui.h \
+tests/host/unit/libui_fileman_widgets_test: tests/host/unit/libui_fileman_widgets_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp include/libui.h \
                                  include/libgui.h include/userlib.h \
-                                 libs/color/src/color_utils.c libs/color/include/color_utils.h
-	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
-	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/libui_fileman_widgets_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
+                                 libs/gui/color/src/color_utils.c libs/gui/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/gui/color/include -c libs/gui/color/src/color_utils.c -o tests/host/unit/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/gui/widget/include -Ilibs/gui/color/include -o $@ tests/host/unit/libui_fileman_widgets_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp tests/host/unit/color_utils_host.o
 
-# Desktop host test: modul apps/desktop + backend libdesktop dikompilasi
+# Desktop host test: modul system/desktop + backend libdesktop dikompilasi
 # langsung dengan syscall di-stub. Menguji discovery/manifest launcher,
 # terjemahan event + WindowManager, poll/klik taskbar, DAN siklus notifikasi
 # crash (kartu harus bisa ditutup oleh klik/waktu habis). C++ (HOSTCXX)
 # karena modulnya C++ — tanpa libc host untuk string (helper lokal).
 # Jalankan: make test-desktop
 .PHONY: test-desktop
-test-desktop: test/desktop_manifest_test
-	./test/desktop_manifest_test
+test-desktop: tests/host/unit/desktop_manifest_test
+	./tests/host/unit/desktop_manifest_test
 
-DESKTOP_HOST_TUS = test/desktop_manifest_test.cpp \
-                   apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp \
-                   apps/desktop/app_icons.cpp apps/desktop/wallpaper.cpp apps/desktop/app_preview.cpp \
-                   apps/desktop/desktop_shell.cpp \
-                   libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
-test/desktop_manifest_test: $(DESKTOP_HOST_TUS) include/userlib.h include/libgui.h \
+DESKTOP_HOST_TUS = tests/host/unit/desktop_manifest_test.cpp \
+                   system/desktop/launcher.cpp system/desktop/crash_notice.cpp system/desktop/taskbar.cpp \
+                   system/desktop/app_icons.cpp system/desktop/wallpaper.cpp system/desktop/app_preview.cpp \
+                   system/desktop/desktop_shell.cpp \
+                   libs/gui/libdesktop/src/event.cpp libs/gui/libdesktop/src/window_manager.cpp libs/gui/libdesktop/src/system.cpp libs/gui/libdesktop/src/canvas.cpp
+tests/host/unit/desktop_manifest_test: $(DESKTOP_HOST_TUS) include/userlib.h include/libgui.h \
                             include/media_scale.h include/media.h \
-                            $(LIBDESKTOP_PUBLIC_HEADERS) apps/desktop/launcher.hpp apps/desktop/taskbar.hpp apps/desktop/crash_notice.hpp apps/desktop/theme.hpp \
-                            apps/desktop/app_icons.hpp apps/desktop/wallpaper.hpp apps/desktop/app_preview.hpp apps/desktop/desktop_shell.hpp
-	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/libdesktop/include -Iapps/desktop -Ilibs/color/include -o $@ test/desktop_manifest_test.cpp apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp apps/desktop/app_icons.cpp apps/desktop/wallpaper.cpp apps/desktop/app_preview.cpp apps/desktop/desktop_shell.cpp libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
+                            $(LIBDESKTOP_PUBLIC_HEADERS) system/desktop/launcher.hpp system/desktop/taskbar.hpp system/desktop/crash_notice.hpp system/desktop/theme.hpp \
+                            system/desktop/app_icons.hpp system/desktop/wallpaper.hpp system/desktop/app_preview.hpp system/desktop/desktop_shell.hpp
+	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/gui/libdesktop/include -Isystem/desktop -Ilibs/gui/color/include -o $@ tests/host/unit/desktop_manifest_test.cpp system/desktop/launcher.cpp system/desktop/crash_notice.cpp system/desktop/taskbar.cpp system/desktop/app_icons.cpp system/desktop/wallpaper.cpp system/desktop/app_preview.cpp system/desktop/desktop_shell.cpp libs/gui/libdesktop/src/event.cpp libs/gui/libdesktop/src/window_manager.cpp libs/gui/libdesktop/src/system.cpp libs/gui/libdesktop/src/canvas.cpp
 
-# Heap user-space dinamis (Phase 9.5): test/libc_heap_test.cpp mengompilasi
-# libs/libc-port/src/kyuzen_heap.hpp APA ADANYA + FreeListHeap LLVM libc asli
+# Heap user-space dinamis (Phase 9.5): tests/host/unit/libc_heap_test.cpp mengompilasi
+# libs/c/libc-port/src/kyuzen_heap.hpp APA ADANYA + FreeListHeap LLVM libc asli
 # (freelist/freetrie/freelist_heap), dengan backing store (region_alloc/free)
 # di-mock. Header heap menarik header internal libc, jadi flag-nya mengikuti
 # LIBC_PORT_DEFS (namespace internal + mode baremetal/single-thread).
 # Jalankan: make test-libc-heap
 .PHONY: test-libc-heap
-test-libc-heap: test/libc_heap_test
-	./test/libc_heap_test
+test-libc-heap: tests/host/unit/libc_heap_test
+	./tests/host/unit/libc_heap_test
 
 # freelist_heap.cpp TIDAK ikut di-link: TU itu mendefinisikan simbol global
 # `freelist_heap`, dan di test ini simbol tersebut didefinisikan oleh test
@@ -1543,23 +1549,23 @@ test-libc-heap: test/libc_heap_test
 # algoritma internalnya (freelist + freetrie); badan FreeListHeap ada di header.
 LIBC_HEAP_TEST_SRCS = $(LIBC_SRC)/libc/src/__support/freelist.cpp \
                       $(LIBC_SRC)/libc/src/__support/freetrie.cpp
-test/libc_heap_test: test/libc_heap_test.cpp libs/libc-port/src/kyuzen_heap.hpp $(LIBC_HEAP_TEST_SRCS)
+tests/host/unit/libc_heap_test: tests/host/unit/libc_heap_test.cpp libs/c/libc-port/src/kyuzen_heap.hpp $(LIBC_HEAP_TEST_SRCS)
 # -mno-sse2 penting: tanpa itu inline_memcpy libc memuat <immintrin.h>, yang
 # menyeret <mm_malloc.h> -> <stdlib.h> milik mingw; deklarasi `free`/`abort`
 # mingw (tanpa noexcept) bentrok dengan deklarasi libc yang dipakai test ini.
 # Dengan jalur SSE2 mati, TU tetap bersih dari header C host.
 	$(HOSTCXX) -std=gnu++17 -O1 -Wall -mno-sse -mno-sse2 $(LIBC_PORT_DEFS) \
-	    -I$(LIBC_SRC)/libc -iquote libs/libc-port/src \
-	    -o $@ test/libc_heap_test.cpp $(LIBC_HEAP_TEST_SRCS)
+	    -I$(LIBC_SRC)/libc -iquote libs/c/libc-port/src \
+	    -o $@ tests/host/unit/libc_heap_test.cpp $(LIBC_HEAP_TEST_SRCS)
 
 
 # ==========================================
 # USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf)
 # ==========================================
 
-# Daftar app HARUS sinkron dengan APP_NAMES di user_apps/Makefile (kecuali
+# Daftar app HARUS sinkron dengan APP_NAMES di apps/Makefile (kecuali
 # desktop — dibangun aturan Phase 8 dari apps/$(DESKTOP_APP)/, bukan
-# user_apps/), manifests/*.app, dan blok module_path di limine.conf.
+# apps/), manifests/*.app, dan blok module_path di limine.conf.
 APP_NAMES = fileman viewer clock calc taskmgr notepad badptr widget_demo desktop \
             terminal settings procinfo exit_test kill_test fd_test echo cat \
             pipe_test fork_test gallery imageview
@@ -1572,7 +1578,7 @@ APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 #   - ISO tetap dibangun ulang HANYA kalau timestamp ELF benar-benar berubah.
 .PHONY: apps
 apps: sdk-c sdk-cpp libdesktop
-	$(MAKE) -C user_apps all
+	$(MAKE) -C apps all
 	$(MAKE) $(DESKTOP_ELF) DESKTOP_APP=$(DESKTOP_APP)
 	$(MAKE) $(FM_ELF)
 
@@ -1587,7 +1593,7 @@ $(filter-out $(DESKTOP_ELF) $(ELF_DIR)/fileman.elf,$(APP_ELFS)): | apps
 
 # --- RUST APPS (Phase 1: no_std userspace Rust) ---
 # Cargo tetap build system Rust (workspace di rust/); hasil akhir di-link dengan
-# user_apps/app.ld yang sama (ELF64 single-base 0x4000000, PT_LOAD saja) agar
+# apps/app.ld yang sama (ELF64 single-base 0x4000000, PT_LOAD saja) agar
 # bisa dimuat loader kernel. SELALU bangun lewat target ini: RUSTFLAGS
 # meng-inject script linker (path relatif tidak bisa ditaruh di
 # rust/.cargo/config.toml).
@@ -1602,7 +1608,7 @@ RUST_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(RUST_NAMES)))
 .PHONY: rust-apps
 rust-apps:
 	@mkdir -p $(ELF_DIR)
-	cd $(RUST_DIR) && RUSTFLAGS="-C relocation-model=static -C link-arg=-T../user_apps/app.ld" cargo build --release
+	cd $(RUST_DIR) && RUSTFLAGS="-C relocation-model=static -C link-arg=-T../apps/app.ld" cargo build --release
 	@for a in $(RUST_NAMES); do \
 		cmp -s $(RUST_OUT)/$$a $(ELF_DIR)/$$a.elf || cp $(RUST_OUT)/$$a $(ELF_DIR)/$$a.elf; \
 	done
@@ -1644,34 +1650,34 @@ imageview.elf: $(ELF_DIR)/imageview.elf
 # Jalankan: make test-fileman-qemu
 .PHONY: test-fileman-qemu
 test-fileman-qemu: $(ISO_IMAGE)
-	python test/_fileman_probe.py all
+	python tests/host/probes/_fileman_probe.py all
 
 # ==========================================
-# FILE MANAGER (user_apps/filemanager) — aplikasi C++ asli
+# FILE MANAGER (apps/filemanager) — aplikasi C++ asli
 # ==========================================
-# Pola build = pola app desktop (user_apps/<name>/*.cpp lewat SDK C++ wrapper):
+# Pola build = pola app desktop (apps/<name>/*.cpp lewat SDK C++ wrapper):
 # compiler/flags/runtime yang SAMA dengan desktop & smoke SDK Phase 5-7
 # (-fno-exceptions -fno-rtti -std=c++17, libc++ subset + crt yang menjalankan
 # .init_array), ditambah objek toolkit user-space (libui/libgui/userlib/media)
-# yang sudah dibangun user_apps/Makefile. ELF-nya tetap bernama fileman.elf
+# yang sudah dibangun apps/Makefile. ELF-nya tetap bernama fileman.elf
 # supaya manifest, ikon desktop, `start fileman`, dan jalur "kembali ke File
 # Manager" milik Notepad tidak berubah.
-FILEMANAGER_DIR  = user_apps/filemanager
+FILEMANAGER_DIR  = apps/filemanager
 FM_SRCS          = $(wildcard $(FILEMANAGER_DIR)/*.cpp)
 FM_OBJDIR        = $(BUILD_DIR)/obj/filemanager
 FM_OBJS          = $(patsubst $(FILEMANAGER_DIR)/%.cpp,$(FM_OBJDIR)/%.o,$(FM_SRCS))
 FM_ELF           = $(ELF_DIR)/fileman.elf
-FM_SYS_INC       = -iquote include -Ilibs/color/include -Ilibs/widget/include
+FM_SYS_INC       = -iquote include -Ilibs/gui/color/include -Ilibs/gui/widget/include
 FM_HEADERS       = $(wildcard $(FILEMANAGER_DIR)/*.hpp)
 
 # Objek toolkit user-space (libui/libgui/media/color). Daftarnya diambil dari
-# BERKAS yang sudah dibangun user_apps/Makefile (glob di shell saat link), jadi
+# BERKAS yang sudah dibangun apps/Makefile (glob di shell saat link), jadi
 # tidak ada daftar kedua yang bisa basi. Sub-make di resep memastikan objeknya
 # ada walau target ini dipanggil langsung (mis. `make fileman.elf`).
-FM_TOOLKIT_GLOBS = $(BUILD_DIR)/obj/user/libs/widget/src/*/*.o \
-                   $(BUILD_DIR)/obj/user/libs/widget/abi/*.o \
-                   $(BUILD_DIR)/obj/user/libs/color/src/*.o \
-                   $(BUILD_DIR)/obj/user/apps/media.o
+FM_TOOLKIT_GLOBS = $(BUILD_DIR)/obj/user/libs/gui/widget/src/*/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/widget/abi/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/color/src/*.o \
+                   $(BUILD_DIR)/obj/user/libs/media/media.o
 
 .PHONY: filemanager
 filemanager: $(FM_ELF)
@@ -1683,7 +1689,7 @@ $(FM_OBJDIR)/%.o: $(FILEMANAGER_DIR)/%.cpp $(FM_HEADERS) $(SDK_CPP_STAGE) | $(SD
 
 $(FM_ELF): $(FM_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
 	@test -n "$(FM_SRCS)" || { echo "[filemanager] FAIL: tidak ada *.cpp di $(FILEMANAGER_DIR)/"; exit 1; }
-	@$(MAKE) -C user_apps all
+	@$(MAKE) -C apps all
 	@mkdir -p $(dir $@)
 	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(FM_OBJS) $(USERAPP_LIB_OBJS) $$(ls $(FM_TOOLKIT_GLOBS)) -o $@ $(FM_SYS_INC)
 	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[filemanager] FAIL: _start tidak ada di fileman.elf"; exit 1; }
@@ -1695,10 +1701,10 @@ $(FM_ELF): $(FM_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
 	fi
 	@echo "[filemanager] link OK: $(notdir $@) (C++ SDK + toolkit libui)"
 
-# Bersihkan hanya file objek/ELF user_apps (kernel tidak disentuh)
+# Bersihkan hanya file objek/ELF apps (kernel tidak disentuh)
 .PHONY: clean-apps
 clean-apps:
-	$(MAKE) -C user_apps clean
+	$(MAKE) -C apps clean
 
 
 # ==========================================
@@ -1736,11 +1742,12 @@ LIMINE_CONF ?= limine.conf
 boot_image.iso: $(ISO_IMAGE)
 
 $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
-              $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) \
+              $(LIMINE_CONF) assets/logo/kyuzen.png assets/logo/logo-splash.png $(MANIFESTS) $(LIMINE_FILES) \
               $(DESKTOP_ASSETS)
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@rm -f $(ISO_ROOT)/*.elf
-	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) kyuzen.png logo.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
+	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) assets/logo/kyuzen.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
+	@cp assets/logo/logo-splash.png $(ISO_ROOT)/logo.png
 	@cp $(DESKTOP_ASSETS) $(ISO_ROOT)/
 	@# Opsional: app smoke test libc Phase 1/2/4/5/6/7 + SDK Phase 3 + contoh C++ (tidak diproduksi build normal).
 	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
@@ -1812,11 +1819,11 @@ stress:
 		-nic user,model=e1000 \
 		-display $(QEMU_DISPLAY)
 
-# Concurrency test: sleep/mutex/semaphore/condvar (Fase 1-3) + test/ sources
+# Concurrency test: sleep/mutex/semaphore/condvar (Fase 1-3) + tests/host/ sources
 .PHONY: conc
 conc:
 	$(MAKE) clean
-	$(MAKE) boot_image.iso SRC_DIRS="$(SRC_DIRS) test" CFLAGS="$(CFLAGS) -DCONC_TEST -Itest"
+	$(MAKE) boot_image.iso SRC_DIRS="$(SRC_DIRS) tests/host/unit" CFLAGS="$(CFLAGS) -DCONC_TEST -Itests/host/unit"
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
@@ -1824,12 +1831,12 @@ conc:
 		-nic user,model=e1000 \
 		-display $(QEMU_DISPLAY)
 
-# Heap stress test: overflow guard + canary corruption detection (test/ sources)
+# Heap stress test: overflow guard + canary corruption detection (tests/host/ sources)
 .PHONY: heap-stress
 heap-stress:
 	$(MAKE) clean
-	$(MAKE) boot_image.iso SRC_DIRS="$(SRC_DIRS) test" \
-		CFLAGS="$(CFLAGS) -g -DHEAP_STRESS_TEST -Itest"
+	$(MAKE) boot_image.iso SRC_DIRS="$(SRC_DIRS) tests/host/unit" \
+		CFLAGS="$(CFLAGS) -g -DHEAP_STRESS_TEST -Itests/host/unit"
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
@@ -1859,12 +1866,12 @@ heap-watch:
 # yang dihapus — source, header, konfigurasi, dan file third_party yang bukan
 # hasil build tidak disentuh. rust/target dan build tool lain di luar daftar
 # ini juga tidak disentuh.
-LEGACY_SWEEP_DIRS = arch apps drivers fs graphics kernel libs test tools user_apps third_party/net
+LEGACY_SWEEP_DIRS = arch apps drivers graphics kernel libs system tests tools third_party/net
 
 .PHONY: clean
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf libs/widget/build
+	rm -rf libs/gui/widget/build
 	$(MAKE) clean-tool
 	@n=$$(find $(LEGACY_SWEEP_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -delete -print 2>/dev/null | wc -l); \
 	 echo "[CLEAN] build/ dihapus, $$n file .o/.d lama dibersihkan dari source tree"

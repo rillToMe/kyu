@@ -6,11 +6,11 @@
 
 // =====================================================================
 // crash_archive — terbitkan crashdump sebagai BERKAS di KyuzenFS
-// (implementasi: kernel/crash_archive.c)
+// (implementasi: kernel/debug/crash_archive.c)
 //
 // KENAPA ADA
 //   Snapshot panic ditulis ke sektor mentah di ekor disk
-//   (kernel/crashdump.c) dan hanya bisa dibaca lewat serial/terminal.
+//   (kernel/debug/crashdump.c) dan hanya bisa dibaca lewat serial/terminal.
 //   Modul ini memindahkannya menjadi berkas biasa supaya bisa dibuka
 //   aplikasi grafis (fileman/viewer/notepad) — bukan cuma di terminal.
 //

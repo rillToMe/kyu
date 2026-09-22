@@ -37,7 +37,7 @@ Efek samping yang ikut tertutup:
 
 Resep awal roadmap ("terima hanya PML4 idx < 256") **belum bisa dipakai**:
 
-- Stack app = `kmalloc` heap kernel (`kernel/elf.c`) → higher-half
+- Stack app = `kmalloc` heap kernel (`kernel/proc/elf.c`) → higher-half
   `0xFFFF9000...` (PML4[288]), US=1.
 - Hasil `sys_alloc` = pointer `kmalloc` mentah → juga higher-half. Canvas
   libgui dan hampir semua buffer app berasal dari sini.
@@ -48,7 +48,7 @@ TOCTOU hilang, deref keluar dari critical section, dan SATU choke point —
 Tahap 3 tinggal memperketat `user_range_ok()` (satu fungsi) setelah stack app
 dan `sys_alloc` pindah ke user range.
 
-### 2. Modul `kernel/usercopy.c` + `include/usercopy.h`
+### 2. Modul `kernel/proc/usercopy.c` + `include/usercopy.h`
 
 ```c
 typedef struct { int from_user; phys_addr_t pml4; } ucopy_ctx_t;
@@ -141,7 +141,7 @@ pointer dipakai langsung setelah validasi range (pengecualian terdokumentasi);
 1. `make` — kernel + `usercopy.o` + apps + ISO build bersih. ✓
 2. Boot QEMU `-smp 4` headless: layar login muncul, uptime jalan, login
    `root` → shell (jalur ring 0 bypass hidup). ✓
-3. `badptr` (app uji baru, `user_apps/badptr.c`) di ring 3: NULL / unmapped
+3. `badptr` (app uji baru, `apps/badptr.c`) di ring 3: NULL / unmapped
    `0x10000` / wraparound `0xFFFFFFFFFFFFF000` / count liar per syscall —
    **27 PASS, 0 FAIL**, exit rapi kembali ke shell, kernel tetap hidup. ✓
 4. `fileman` (GUI, TANPA modifikasi): window render, file list terisi
@@ -183,10 +183,10 @@ pointer dipakai langsung setelah validasi range (pengecualian terdokumentasi);
 |------|-----|
 | `arch/x86/isr128.asm` | Hapus timpa slot RAX dari sisa register — `r->rax` dari handler jadi satu-satunya sumber return value |
 | `include/usercopy.h` | BARU — ctx, caps `UC_MAX_*`, deklarasi helper |
-| `kernel/usercopy.c` | BARU — `user_range_ok`, `copy_from/to_user`, `strncpy_from_user` |
+| `kernel/proc/usercopy.c` | BARU — `user_range_ok`, `copy_from/to_user`, `strncpy_from_user` |
 | `kernel/syscall.c` | Konversi semua syscall pointer (tabel di atas); ctx `uc` per invocation; fix UAF syscall 25 |
 | `kernel/gfx/kwm.c` + `include/kwm.h` | BARU `kwm_window_canvas_bytes()` untuk validasi range syscall 31 |
-| `user_apps/badptr.c` | BARU — app uji pointer jahat (PASS/FAIL via TTY) |
-| `user_apps/fileman.c` | Fix hit-test daftar menimpa tombol BUKA saat file > 11 (temuan #2) |
+| `apps/badptr.c` | BARU — app uji pointer jahat (PASS/FAIL via TTY) |
+| `apps/fileman.c` | Fix hit-test daftar menimpa tombol BUKA saat file > 11 (temuan #2) |
 | `kernel/syscall.c` (debug) | `[EXEC] kfname=[...]` di blok `HEAP_WATCH_DEBUG` untuk tracing exec |
-| `user_apps/Makefile`, `Makefile`, `limine.conf` | wiring `badptr.elf` |
+| `apps/Makefile`, `Makefile`, `limine.conf` | wiring `badptr.elf` |

@@ -28,7 +28,7 @@
 #define KZFS_NAME_MAX          255
 #define KZFS_NUM_DIRECT_EXTENTS 4
 
-// Sektor TERAKHIR disk disisihkan untuk crashdump panic (kernel/crashdump.c,
+// Sektor TERAKHIR disk disisihkan untuk crashdump panic (kernel/debug/crashdump.c,
 // include/crashdump.h). FS — baik mkfs host maupun format di kernel — BERHENTI
 // sebelum area ini, jadi snapshot panic tidak pernah menimpa data file.
 // Angka ini HARUS sama di tools/mkfs.kyuzenfs.c dan kernel/fs/kfs_super.c

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // =====================================================================
-// crashdump — snapshot panic ke sektor mentah disk (kernel/crashdump.c)
+// crashdump — snapshot panic ke sektor mentah disk (kernel/debug/crashdump.c)
 //
 // Prinsip:
 //   * POLLING ATA PIO murni (drivers/ata.c): tidak memakai interrupt,
@@ -76,7 +76,7 @@ int  crashdump_read_last(crashdump_hdr_t* out_hdr, void* out_payload,
 
 // Susun laporan crashdump yang bisa dibaca manusia (header + payload) tanpa
 // alokasi dinamis. Return panjang teks (tanpa NUL); 0 kalau tidak ada dump
-// valid. Dipakai kernel/crash_archive.c untuk menerbitkannya sebagai berkas.
+// valid. Dipakai kernel/debug/crash_archive.c untuk menerbitkannya sebagai berkas.
 uint32_t crashdump_format_report(char* out, uint32_t cap);
 
 // LBA area crashdump (untuk mencantumkan lokasi raw di laporan).

@@ -76,7 +76,7 @@ typedef struct task {
     uint64_t wake_at_ms;      // TASK_SLEEPING: absolute timer_get_ms() at which to wake (0 = n/a)
     uint8_t  priority;        // Base priority, higher = more important (PRIO_*)
     uint64_t enqueue_ms;      // When this task last entered a run queue (for aging)
-    // FIX_005 Tahap 3: state heap user per proses (dikelola kernel/uheap.c).
+    // FIX_005 Tahap 3: state heap user per proses (dikelola kernel/mm/uheap.c).
     // Stack app kini di user range AS (elf.c) — tidak perlu tracking kfree.
     uint64_t uheap_brk;       // vaddr bebas berikutnya (0 = belum pernah alloc)
     void*    uheap_regions;   // linked list uheap_region_t (node di heap kernel)
@@ -210,7 +210,7 @@ uint32_t cred_task_uid(const task_t* t);
 uint32_t cred_task_gid(const task_t* t);
 
 // P0 Phase 2 — process lifecycle (see proc.h; defined in kernel/sched/lifecycle.c
-// + kernel/proc.c). Exit never returns. Wait blocks (no polling) via the
+// + kernel/proc/proc.c). Exit never returns. Wait blocks (no polling) via the
 // existing wait-queue/block primitives.
 void proc_exit(int code) __attribute__((noreturn));
 // Reap one exited child. pid==-1 (PROC_WAIT_ANY) = any child.
