@@ -167,6 +167,86 @@ static int cmd_ls(shell_t* sh, int argc, char** argv) {
     return SHELL_OK;
 }
 
+// tree [path] — tampilkan pohon direktori secara rekursif. Memakai fd
+// direktori (sys_open + sys_readdir), jadi tidak perlu API khusus: langsung
+// di atas filesystem tree kernel. Dua lintasan per direktori (hitung entri,
+// lalu cetak) supaya bisa menandai entri terakhir tanpa menampung semuanya.
+#define TREE_MAX_DEPTH 8
+#define TREE_PATH_MAX  224
+
+static int tree_is_dot(const char* nm) {
+    return nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0'));
+}
+
+static void tree_walk(shell_t* sh, const char* path, const char* prefix, int depth) {
+    int fd = sys_open(path, 0);           // 0 = O_RDONLY
+    if (fd < 0) {
+        shell_write(sh, prefix); shell_write(sh, "`-- ");
+        shell_writeln(sh, "<tidak bisa dibuka>");
+        return;
+    }
+
+    char name[64];
+    uint8_t is_dir = 0;
+    int total = 0;
+    for (uint32_t i = 0; sys_readdir(fd, i, name, sizeof(name), &is_dir) == 0; i++)
+        if (!tree_is_dot(name)) total++;
+
+    int seen = 0;
+    for (uint32_t i = 0; sys_readdir(fd, i, name, sizeof(name), &is_dir) == 0; i++) {
+        if (tree_is_dot(name)) continue;
+        int last = (++seen == total);
+        shell_write(sh, prefix);
+        shell_write(sh, last ? "`-- " : "|-- ");
+        shell_writeln(sh, name);
+        if (!is_dir || depth >= TREE_MAX_DEPTH) continue;
+
+        // Gabung path: "/" + name untuk root, "<path>/<name>" selainnya.
+        int p = 0;
+        char child[TREE_PATH_MAX];
+        int root = (path[0] == '/' && path[1] == '\0');
+        if (root) child[p++] = '/';
+        else {
+            while (path[p] && p < TREE_PATH_MAX - 2) { child[p] = path[p]; p++; }
+            if (p > 0 && child[p - 1] != '/') child[p++] = '/';
+        }
+        int k = 0;
+        while (name[k] && p < TREE_PATH_MAX - 1) child[p++] = name[k++];
+        child[p] = '\0';
+        if (name[k] != '\0') {              // path kepanjangan — jangan rekursi
+            shell_write(sh, prefix);
+            shell_writeln(sh, "`-- <path terlalu panjang>");
+            continue;
+        }
+
+        char next[64];
+        int q = 0;
+        const char* cont = last ? "    " : "|   ";
+        while (prefix[q] && q < 60) { next[q] = prefix[q]; q++; }
+        for (int m = 0; cont[m] && q < 63; m++) next[q++] = cont[m];
+        next[q] = '\0';
+        tree_walk(sh, child, next, depth + 1);
+    }
+    sys_close(fd);
+}
+
+static int cmd_tree(shell_t* sh, int argc, char** argv) {
+    const char* path = (argc >= 2) ? argv[1] : "/";
+    uint32_t size = 0;
+    uint8_t is_dir = 0;
+    if (sys_stat(path, &size, &is_dir) != 0) {
+        shell_writeln(sh, "tree: path tidak ada");
+        return SHELL_ERR;
+    }
+    if (!is_dir) {
+        shell_writeln(sh, "tree: bukan direktori");
+        return SHELL_ERR;
+    }
+    shell_writeln(sh, path);
+    tree_walk(sh, path, "", 0);
+    return SHELL_OK;
+}
+
 static int cmd_baca(shell_t* sh, int argc, char** argv) {
     if (argc < 2) { shell_writeln(sh, "Penggunaan: baca [nama_file]"); return SHELL_ERR; }
     if (!sys_file_exists(argv[1])) { shell_writeln(sh, "baca: file tidak ada"); return SHELL_ERR; }
@@ -645,6 +725,7 @@ static const shell_cmd_entry_t g_builtins[] = {
     { "clear",    cmd_clear,    "Bersihkan layar",             0 },
     { "echo",     cmd_echo,     "Cetak teks",                  0 },
     { "ls",       cmd_ls,       "Daftar file",                 0 },
+    { "tree",     cmd_tree,     "Pohon direktori (rekursif)",  0 },
     { "baca",     cmd_baca,     "Baca isi file",               0 },
     { "hapus",    cmd_hapus,    "Hapus file",                  0 },
     { "mkdir",    cmd_mkdir,    "Buat folder",                 0 },

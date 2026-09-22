@@ -47,22 +47,28 @@
 
 extern void* kmalloc(uint32_t size);
 extern void  kfree(void* ptr);
-struct vnode* kfs_v4_root_vnode(void);
 void kfs_sync_all(void);
 
 // Open-description kinds. TTY descriptions carry no offset; file
 // descriptions carry a VNODE (KyuzenFS V4 streaming, in-place write);
 // pipe endpoint descriptions share one vfs_pipe_t (never a generic
 // read/write fd: each description knows its direction).
+//
+// VFS_KIND_DIR = handle direktori: vnode-nya sama dengan file, tapi hanya
+// boleh di-enumerasi lewat vfs_readdir (read/write/lseek ditolak). Model fd
+// yang ada dipakai apa adanya — direktori TIDAK dipaksa jadi file biasa.
 #define VFS_KIND_TTY        1
 #define VFS_KIND_FILE       0
 #define VFS_KIND_PIPE_READ  2
 #define VFS_KIND_PIPE_WRITE 3
+#define VFS_KIND_DIR        4
 
 // KyuzenFS V4: file description memegang VNODE (streaming per-block via
 // bcache, write in-place) — TIDAK ada lagi buffer whole-file di RAM.
+// kyuzenfs.h = kontrak resolusi path (kfs_walk_path / kfs_walk_parent).
 #include "vnode.h"
 #include "kyuzenfs_v4.h"
+#include "kyuzenfs.h"
 
 // Pipe object: bounded circular byte buffer shared by exactly one read
 // endpoint description and one write endpoint description (dups alias
@@ -194,7 +200,7 @@ static void pipe_end_closed(vfs_pipe_t* p, uint8_t kind) {
 static void open_put(vfs_open_file_t* of) {
     uint32_t left = __sync_sub_and_fetch(&of->refcount, 1);
     if (left != 0) return;
-    if (of->kind == VFS_KIND_FILE) {
+    if (of->kind == VFS_KIND_FILE || of->kind == VFS_KIND_DIR) {
         if (of->vnode) {
             of->vnode->ops->sync(of->vnode);       // metadata + bcache flush
             of->vnode->ops->release(of->vnode);    // refcount terakhir di sini
@@ -267,22 +273,38 @@ int vfs_open(const char* path, uint32_t flags) {
     int task_id = smp_current_task_id();
     if (task_id < 0 || task_id >= MAX_TASKS) return -1;
 
-    // KyuzenFS V4: resolve via root vnode (lookup/create/truncate), lalu
-    // description hanya menyimpan vnode + offset — streaming per-block.
-    struct vnode* root = kfs_v4_root_vnode();
-    if (!root) return -1;
-
+    // KyuzenFS V4: resolusi path lewat resolver FS (kfs_walk_path) — SATU jalur
+    // untuk semua bentuk path: "/", "//", nested, ".", "..", trailing slash.
+    // Description hanya menyimpan vnode + offset — streaming per-block.
+    //
+    // Bug lama (fixed): path utuh diserahkan ke lookup single-component,
+    // sehingga sys_open("/x.png") dan path bertingkat selalu -ENOENT.
     struct vnode* vn = NULL;
-    if (root->ops->lookup(root, path, &vn) != KZFS_EOK || !vn) {
-        if (!(flags & VFS_O_CREAT)) { root->ops->release(root); return -1; }
-        if (root->ops->create(root, path, 0, &vn) != KZFS_EOK || !vn) {
-            root->ops->release(root);
+    int rc = kfs_walk_path(path, &vn);
+    if (rc != KZFS_EOK || !vn) {
+        if (!(flags & VFS_O_CREAT)) return -1;
+        if (rc == KZFS_ENOTDIR || rc == KZFS_ENAMETOOLONG) return -1;
+        char name[KZFS_NAME_MAX + 1];
+        struct vnode* parent = NULL;
+        if (kfs_walk_parent(path, name, sizeof(name), &parent) != KZFS_EOK)
             return -1;
-        }
+        rc = parent->ops->create(parent, name, 0, &vn);
+        parent->ops->release(parent);
+        if (rc != KZFS_EOK || !vn) return -1;
     } else if (flags & VFS_O_TRUNC) {
+        if (vn->type == V_DIR) { vn->ops->release(vn); return -1; }
         vn->ops->truncate(vn, 0);
     }
-    root->ops->release(root);
+
+    // Direktori hanya sebagai handle READ-ONLY untuk enumerasi (readdir).
+    uint8_t kind = VFS_KIND_FILE;
+    if (vn->type == V_DIR) {
+        if (flags & (VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_APPEND)) {
+            vn->ops->release(vn);
+            return -1;
+        }
+        kind = VFS_KIND_DIR;
+    }
 
     uint64_t fsize = vn->size;
     if (vn->ops->open(vn, (int)flags) != KZFS_EOK) {
@@ -290,7 +312,7 @@ int vfs_open(const char* path, uint32_t flags) {
         return -1;
     }
 
-    vfs_open_file_t* of = open_alloc(VFS_KIND_FILE, path, vn,
+    vfs_open_file_t* of = open_alloc(kind, path, vn,
                                      (flags & VFS_O_APPEND) ? (uint32_t)fsize : 0,
                                      flags);
     if (!of) { vn->ops->release(vn); return -1; }   // vnode ref pindah ke of
@@ -434,6 +456,8 @@ int vfs_read(int fd, void* buf, uint32_t count) {
         spinlock_unlock_irqrestore(&vfs_lock, f);
         return n;
     }
+    // Direktori bukan sumber byte: baca hanya lewat vfs_readdir.
+    if (of->kind != VFS_KIND_FILE) { spinlock_unlock_irqrestore(&vfs_lock, f); return -1; }
     // KyuzenFS V4: streaming read via vnode (block cache); offset SHARED
     // satu per description (alias dup/fork melihat offset yang sama).
     if (count > (uint32_t)0x40000000u) count = 0x40000000u;  // clamp int-safe
@@ -494,6 +518,8 @@ int vfs_write(int fd, const void* buf, uint32_t count) {
         spinlock_unlock_irqrestore(&vfs_lock, f);
         return n;
     }
+    // Direktori bukan tujuan tulisan.
+    if (of->kind != VFS_KIND_FILE) { spinlock_unlock_irqrestore(&vfs_lock, f); return -1; }
     // KyuzenFS V4: streaming write IN-PLACE via vnode — block fisik yang
     // sudah ada langsung ditulisi; block baru dialokasi hanya bila file
     // membesar. O_APPEND menulis selalu di ujung file (vnode->size live).
@@ -505,6 +531,29 @@ int vfs_write(int fd, const void* buf, uint32_t count) {
     spinlock_unlock_irqrestore(&vfs_lock, f);
     if (rc != KZFS_EOK && wrote == 0) return -1;
     return (int)wrote;
+}
+
+// Enumerasi direktori lewat fd (handle VFS_KIND_DIR). index 0 = entri pertama;
+// entri mentah dari storage layer, TERMASUK "." dan ".." (resolver yang
+// memakai semantic itu; caller yang tidak butuh tinggal menyaring).
+// Return 0 = ada (name_out NUL-terminated, *type_out 1 = direktori / 0 = file),
+// -1 = habis / fd bukan direktori.
+int vfs_readdir(int fd, uint32_t index, char* name_out, uint32_t name_cap,
+                uint8_t* type_out) {
+    if (!name_out || name_cap == 0) return -1;
+    if (type_out) *type_out = 0;
+    uint64_t f = spinlock_lock_irqsave(&vfs_lock);
+    vfs_open_file_t* of = resolve_open(fd);
+    if (!of || of->kind != VFS_KIND_DIR) {
+        spinlock_unlock_irqrestore(&vfs_lock, f);
+        return -1;
+    }
+    uint8_t ftype = 0;
+    int rc = of->vnode->ops->readdir(of->vnode, index, name_out, name_cap, &ftype);
+    if (rc == KZFS_EOK && type_out)
+        *type_out = (ftype == KZFS_INODE_FLAG_DIR) ? 1 : 0;
+    spinlock_unlock_irqrestore(&vfs_lock, f);
+    return (rc == KZFS_EOK) ? 0 : -1;
 }
 
 int vfs_lseek(int fd, int32_t offset, int whence) {

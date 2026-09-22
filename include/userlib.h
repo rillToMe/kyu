@@ -46,7 +46,10 @@ void sys_sleep(uint32_t ms);   // Non-busy sleep (Syscall 46)
 int fs_format(void);   // 0 sukses, -1 ditolak (butuh root). Mirror syscall 5.
 void fs_list(void);
 void fs_read(char* filename);
-void fs_delete(char* filename);
+// Hapus file ATAU folder kosong (rmdir-style). Return 0 sukses, -1 gagal
+// (path salah / folder tidak kosong). Dulu void — caller lama tetap boleh
+// mengabaikan hasilnya.
+int  fs_delete(char* filename);
 
 void* sys_alloc(uint32_t size);
 void sys_free(void* ptr);
@@ -267,6 +270,24 @@ int sys_read_fd(int fd, void* buf, uint32_t count);     // -> bytes read
 int sys_write_fd(int fd, const void* buf, uint32_t count); // -> bytes written
 int sys_lseek(int fd, int32_t offset, int whence);      // -> new position
 int sys_close(int fd);                                  // -> 0 or -1
+
+// --- Fase 4: filesystem tree (syscall 81-83) ----------------------------
+// Resolusi path lengkap ada DI KERNEL dan berlaku untuk semua API di atas:
+// "/", "//", "/a//b", ".", ".." ("/a/b/../c"), trailing '/' ("a/b/"),
+// dan nama tanpa '/' (relatif root — KyuzenOS tidak punya cwd).
+
+// Buka direktori: sys_open(dir, O_RDONLY) -> fd, lalu enumerasi dengan
+// sys_readdir. Isi mentah TERMASUK "." dan ".." (lewati bila tidak perlu).
+// Return 0 = ada entri, -1 = habis / fd bukan direktori.
+int sys_readdir(int fd, uint32_t index, char* name, uint32_t cap, uint8_t* is_dir);
+
+// Ganti nama / pindah file atau folder. Tidak menimpa target yang sudah ada.
+// Return 0 sukses, -1 gagal (path salah / target ada / folder tidak kosong).
+int sys_rename(const char* old_path, const char* new_path);
+
+// Ukuran + tipe sebuah path. Kedua out-param boleh NULL.
+// Return 0 sukses, -1 bila path tidak ada.
+int sys_stat(const char* path, uint32_t* size, uint8_t* is_dir);
 // P0 Phase 4: dup shares the open description (one offset, one buffer).
 // sys_dup (74): oldfd -> lowest free fd. sys_dup2 (75): oldfd -> newfd
 // (no-op if equal, closes newfd first). -> newfd or -1.

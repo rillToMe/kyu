@@ -16,7 +16,10 @@ int fs_format() {
 }
 void fs_list() { __asm__ volatile("int $0x80" : : "a"(6)); }
 void fs_read(char* filename) { __asm__ volatile("int $0x80" : : "a"(7), "b"((uint64_t)filename)); }
-void fs_delete(char* filename) { __asm__ volatile("int $0x80" : : "a"(8), "b"((uint64_t)filename)); }
+// Syscall 8 — 0 sukses / -1 gagal (folder tidak kosong = -1). Dulu void.
+int fs_delete(char* filename) {
+    int64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(8), "b"((uint64_t)filename)); return (int)ret;
+}
 
 void* sys_alloc(uint32_t size) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(9), "b"((uint64_t)size)); return (void*)ret;
@@ -377,6 +380,34 @@ int sys_lseek(int fd, int32_t offset, int whence) {
 int sys_close(int fd) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(51), "b"((uint64_t)fd));
+    return (int)ret;
+}
+
+// --- Fase 4: filesystem tree (syscall 81-83) ---
+
+// sys_readdir: Syscall 81 — readdir(fd, index, name, cap, is_dir*) -> 0 ada / -1 habis.
+int sys_readdir(int fd, uint32_t index, char* name, uint32_t cap, uint8_t* is_dir) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret)
+                     : "a"(81), "b"((uint64_t)(int64_t)fd), "c"((uint64_t)index),
+                       "d"((uint64_t)name), "S"((uint64_t)cap), "D"((uint64_t)is_dir));
+    return (int)ret;
+}
+
+// sys_rename: Syscall 82 — rename(old_path, new_path) -> 0 sukses / -1 gagal.
+int sys_rename(const char* old_path, const char* new_path) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret)
+                     : "a"(82), "b"((uint64_t)old_path), "c"((uint64_t)new_path));
+    return (int)ret;
+}
+
+// sys_stat: Syscall 83 — stat(path, size*, is_dir*) -> 0 sukses / -1 gagal.
+int sys_stat(const char* path, uint32_t* size, uint8_t* is_dir) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret)
+                     : "a"(83), "b"((uint64_t)path), "c"((uint64_t)size),
+                       "d"((uint64_t)is_dir));
     return (int)ret;
 }
 

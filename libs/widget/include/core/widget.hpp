@@ -19,6 +19,10 @@ public:
     bool has_focus;          // diset Window saat fokus keyboard intra-window
     ui_click_cb click_cb;
     void* userdata;
+    // Menu konteks: klik kanan diteruskan ke widget di bawah kursor dengan
+    // koordinat window-local (pemanggil tahu baris/sel mana yang diklik).
+    ui_pos_click_cb right_cb;
+    void* right_data;
     // Phase 9: Drag & Drop + bentuk kursor per-widget.
     bool draggable;
     char* dnd_payload;
@@ -37,7 +41,8 @@ public:
     class Window* owner;
 
     Widget() : x(0), y(0), w(0), h(0), visible(true), has_focus(false),
-              click_cb(0), userdata(0), draggable(false), dnd_payload(0),
+              click_cb(0), userdata(0), right_cb(0), right_data(0),
+              draggable(false), dnd_payload(0),
               drop_target(false), drop_cb(0), drop_data(0),
               cursor_kind(UI_CURSOR_ARROW),
               dirty(false), dm_x(0), dm_y(0), dm_w(0), dm_h(0), owner(0) {}
@@ -115,6 +120,7 @@ public:
     // terbuka (switch/close), beda dari bar lain (Toolbar) yang cukup close.
     virtual bool is_menu_bar() { return false; }
     void set_click(ui_click_cb cb, void* u) { click_cb = cb; userdata = u; }
+    void set_right_click(ui_pos_click_cb cb, void* u) { right_cb = cb; right_data = u; }
     // Phase 9: DnD. Widget draggable memulai drag saat klik-tahan; click_cb
     // tidak dipanggil (threshold-drag untuk seret-langsung adalah masa depan).
     void set_draggable(const char* payload) {

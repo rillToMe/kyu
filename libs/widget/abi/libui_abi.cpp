@@ -100,6 +100,12 @@ void ui_button_set_click(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
     reinterpret_cast<ui::Widget*>(widget)->set_click(cb, userdata);
 }
 
+// Menu konteks: klik kanan + koordinat window-local (lihat include/libui.h).
+void ui_widget_set_right_click(ui_widget_t* widget, ui_pos_click_cb cb, void* userdata) {
+    ui::Widget* wid = reinterpret_cast<ui::Widget*>(widget);
+    if (wid) wid->set_right_click(cb, userdata);
+}
+
 ui_widget_t* ui_textbox_create(ui_window_t* win, int width) {
     (void)win;
     return reinterpret_cast<ui_widget_t*>(new ui::TextBox(width));
@@ -116,6 +122,11 @@ const char* ui_textbox_text(ui_widget_t* widget) {
 void ui_textbox_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
     ui::TextBox* tb = reinterpret_cast<ui::TextBox*>(widget);
     tb->enter_cb = cb; tb->enter_data = userdata;
+}
+
+void ui_textbox_select_all(ui_widget_t* widget) {
+    ui::TextBox* tb = reinterpret_cast<ui::TextBox*>(widget);
+    if (tb) tb->select_all();
 }
 
 ui_widget_t* ui_checkbox_create(ui_window_t* win, const char* label) {
@@ -511,6 +522,10 @@ void ui_gridview_ensure_visible(ui_widget_t* widget, int index) {
     reinterpret_cast<ui::GridView*>(widget)->ensure_visible(index);
 }
 
+int ui_gridview_cell_at(ui_widget_t* widget, int x, int y) {
+    return reinterpret_cast<ui::GridView*>(widget)->cell_at(x, y);
+}
+
 int ui_gridview_visible_range(ui_widget_t* widget, int* first, int* last) {
     ui::GridView* g = reinterpret_cast<ui::GridView*>(widget);
     if (g->n <= 0) return 0;
@@ -572,6 +587,22 @@ void ui_table_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
     reinterpret_cast<ui::Table*>(widget)->set_change(cb, userdata);
 }
 
+void ui_table_set_empty_text(ui_widget_t* widget, const char* text) {
+    reinterpret_cast<ui::Table*>(widget)->set_empty_text(text);
+}
+
+int ui_table_row_at(ui_widget_t* widget, int y) {
+    return reinterpret_cast<ui::Table*>(widget)->row_at(y);
+}
+
+void ui_table_set_selected(ui_widget_t* widget, int index) {
+    reinterpret_cast<ui::Table*>(widget)->set_selected(index);
+}
+
+void ui_table_set_row_icon(ui_widget_t* widget, int row, const uint32_t* px, int w, int h) {
+    reinterpret_cast<ui::Table*>(widget)->set_row_icon(row, px, w, h);
+}
+
 // --- TreeView ---
 ui_widget_t* ui_treeview_create(ui_window_t* win, int w, int h) {
     (void)win;
@@ -601,6 +632,19 @@ void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel) {
 }
 
 // --- MenuBar + Menu ---
+// Menu popup mandiri (menu konteks). Dimiliki pemanggil: tidak ada parent
+// layout, jadi umurnya sampai proses selesai (app cukup membuat sekali).
+ui_widget_t* ui_menu_create(ui_window_t* win) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    return reinterpret_cast<ui_widget_t*>(new ui::Menu(w));
+}
+
+void ui_window_popup_menu(ui_window_t* win, ui_widget_t* menu, int x, int y) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    if (!w || !menu) return;
+    w->open_popup(reinterpret_cast<ui::Widget*>(menu), x, y);
+}
+
 ui_widget_t* ui_menubar_create(ui_window_t* win) {
     ui::Window* w = reinterpret_cast<ui::Window*>(win);
     return reinterpret_cast<ui_widget_t*>(new ui::MenuBar(w, (int)w->gw->width));
@@ -708,6 +752,12 @@ void ui_window_set_escape(ui_window_t* win, ui_click_cb cb, void* userdata) {
     ui::Window* w = reinterpret_cast<ui::Window*>(win);
     w->escape_cb = cb;
     w->escape_data = userdata;
+}
+
+// Hook tombol aplikasi (dipanggil hanya saat tidak ada widget fokus keyboard).
+void ui_window_set_key(ui_window_t* win, ui_key_cb cb, void* userdata) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    if (w) { w->key_cb = cb; w->key_data = userdata; }
 }
 
 // --- Notification ---

@@ -6,6 +6,7 @@
 *.elf
 *.bin
 *.img
+__pycache__/
 *.iso
 *.exe
 # Dependency tracking

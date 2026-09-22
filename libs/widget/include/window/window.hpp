@@ -71,6 +71,9 @@ public:
     // seperti perilaku lama.
     ui_click_cb escape_cb;
     void* escape_data;
+    // Hook tombol aplikasi (dipakai hanya bila tidak ada widget fokus).
+    ui_key_cb key_cb;
+    void* key_data;
     // Phase 5: dirty rect render — region yang perlu digambar ulang frame ini.
     int dirty_valid;
     int dirty_x, dirty_y, dirty_w, dirty_h;
@@ -83,6 +86,7 @@ public:
           drag_src(0), drag_payload(0), drag_x(0), drag_y(0),
           cur_cursor(UI_CURSOR_ARROW), n_shortcuts(0),
           tick_cb(0), tick_data(0), escape_cb(0), escape_data(0),
+          key_cb(0), key_data(0),
           dirty_valid(0), dirty_x(0), dirty_y(0), dirty_w(0), dirty_h(0) {
         for (int i = 0; i < 4; i++) top_bars[i] = 0;
         for (int i = 0; i < 32; i++) { shortcuts[i].cb = 0; shortcuts[i].data = 0; }
@@ -491,6 +495,25 @@ public:
                             // memanennya menjadi satu bbox.
                             render();
                         }
+                    } else if (ev.param1 == 1 && ev.param2 == 1) {   // right down
+                        // Menu konteks: klik kanan diteruskan ke widget di
+                        // bawah kursor beserta koordinatnya (app yang tahu
+                        // apakah baris atau latar). Dialog modal memblok
+                        // latar; popup/menu yang terbuka ditutup dulu.
+                        if (dialog) {
+                            // Modal memblok latar: klik kanan diabaikan.
+                        } else if (popup) {
+                            Widget* old_pop = popup;
+                            close_popup();
+                            damage_overlay(old_pop);   // popup lenyap → lukis ulang latarnya
+                            render();
+                        } else {
+                            Widget* picked = pick_bar(mouse_x, mouse_y);
+                            if (!picked && root) picked = root->pick(mouse_x, mouse_y);
+                            if (picked && picked->right_cb)
+                                picked->right_cb(picked->right_data, mouse_x, mouse_y);
+                            render();
+                        }
                     } else if (ev.param1 == 0 && ev.param2 == 0) {   // left up
                         if (drag_src) {
                             Widget* t = pick_bar(mouse_x, mouse_y);
@@ -542,10 +565,15 @@ public:
                                 break;
                             }
                         }
-                        if (!handled && focused)
-                            focused->on_key((uint8_t)ev.param1,
-                                            (uint32_t)ev.param3,
-                                            (uint32_t)ev.param2);
+                        if (!handled) {
+                            if (focused)
+                                focused->on_key((uint8_t)ev.param1,
+                                                (uint32_t)ev.param3,
+                                                (uint32_t)ev.param2);
+                            else if (key_cb)
+                                key_cb(key_data, (uint32_t)ev.param1,
+                                       (uint32_t)ev.param3, (uint32_t)ev.param2);
+                        }
                         // Callback shortcut / focused->on_key bisa ubah widget mana
                         // pun; yg berubah menandai dirty; render() memanennya.
                         render();

@@ -429,6 +429,19 @@ KFS4_HDRS = include/kyuzenfs_v4.h include/vnode.h include/bcache.h include/ata.h
 test/kyuzenfs_v4_test: test/kyuzenfs_v4_test.c $(KFS4_HDRS) $(KFS4_SRCS)
 	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_v4_test.c
 
+# --- Host-side unit test (Fase 4): filesystem tree KyuzenFS V4 ---
+# test/kyuzenfs_tree_test.c meng-include modul kernel/fs/*.c APA ADANYA;
+# ATA (RAM disk 32 MB) + heap/console di-mock (spinlock host di test/).
+# Menguji resolusi path, operasi tree, rename, readdir, dan kasus error
+# tanpa boot QEMU — jalur yang sama dengan kernel/vfs_fd.c.
+# Jalan dengan: make test-kyuzenfs-tree
+.PHONY: test-kyuzenfs-tree
+test-kyuzenfs-tree: test/kyuzenfs_tree_test
+	./test/kyuzenfs_tree_test
+
+test/kyuzenfs_tree_test: test/kyuzenfs_tree_test.c test/spinlock.h $(KFS4_HDRS) $(KFS4_SRCS)
+	$(HOSTCC) -O1 -Wall -iquote test -iquote include -o $@ test/kyuzenfs_tree_test.c
+
 # --- Host tool: formatter disk KyuzenFS V4 (Modul 2) ---
 # Format disk.img dari host sebelum boot: make mkfs && ./mkfs.kyuzenfs disk.img
 .PHONY: mkfs
@@ -442,6 +455,7 @@ mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 clean-tool:
 	rm -f mkfs.kyuzenfs testimg.img test/color_utils_host.o
 	rm -f test/*.exe test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
+	      test/kyuzenfs_tree_test \
 	      test/ata_devmodel_test test/color_test test/textedit_test test/libui_theme_test \
 	      test/media_test test/media_host.o
 
@@ -1477,6 +1491,21 @@ test/libui_theme_test: test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.
 	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
 	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/libui_theme_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
 
+# Host test kontrak toolkit File Manager: libs/widget/**/*.cpp di-LINK seperti
+# test-libui-theme, lalu diperiksa: index menu yang menghitung separator, hit-test
+# baris Table + ikon barisnya (blit nyata ke canvas), cell_at/placeholder GridView,
+# serta routing hook tombol & klik kanan lewat Window (tanpa widget fokus vs fokus).
+# Jalankan: make test-libui-fileman
+.PHONY: test-libui-fileman
+test-libui-fileman: test/libui_fileman_widgets_test
+	./test/libui_fileman_widgets_test
+
+test/libui_fileman_widgets_test: test/libui_fileman_widgets_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp include/libui.h \
+                                 include/libgui.h include/userlib.h \
+                                 libs/color/src/color_utils.c libs/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/color/include -c libs/color/src/color_utils.c -o test/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/widget/include -Ilibs/color/include -o $@ test/libui_fileman_widgets_test.cpp $(wildcard libs/widget/src/*/*.cpp) libs/widget/abi/libui_abi.cpp test/color_utils_host.o
+
 # Desktop host test: modul apps/desktop + backend libdesktop dikompilasi
 # langsung dengan syscall di-stub. Menguji discovery/manifest launcher,
 # terjemahan event + WindowManager, poll/klik taskbar, DAN siklus notifikasi
@@ -1545,12 +1574,16 @@ APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 apps: sdk-c sdk-cpp libdesktop
 	$(MAKE) -C user_apps all
 	$(MAKE) $(DESKTOP_ELF) DESKTOP_APP=$(DESKTOP_APP)
+	$(MAKE) $(FM_ELF)
 
-# desktop.elf DIKECUALIKAN dari relay ini: ia punya rule file nyata Phase 8
-# (DESKTOP_ELF) dengan prereq-nya sendiri. Menggabungkannya ke sini akan
-# menggabungkan prereq order-only `apps` ke rule desktop → `apps` memanggil
-# `$(MAKE) $(DESKTOP_ELF)` → loop rekursi RH (`make desktop` fork-bomb).
-$(filter-out $(DESKTOP_ELF),$(APP_ELFS)): | apps
+# desktop.elf dan fileman.elf DIKECUALIKAN dari relay ini: keduanya punya rule
+# file nyata dengan prereq-nya sendiri (DESKTOP_ELF/FM_ELF). Menggabungkannya ke
+# sini akan menambahkan prereq order-only `apps` ke rule itu → `apps` memanggil
+# `$(MAKE) $(FM_ELF)` → loop rekursi RH (fork-bomb `make fileman`).
+# CATATAN: FM_ELF baru didefinisikan BELAKANGAN di file ini, jadi di sini harus
+# ditulis sebagai $(ELF_DIR)/fileman.elf — $(FM_ELF) akan mengembang kosong dan
+# fileman.elf justru ikut kena `| apps` (persis fork-bomb yang dihindari).
+$(filter-out $(DESKTOP_ELF) $(ELF_DIR)/fileman.elf,$(APP_ELFS)): | apps
 
 # --- RUST APPS (Phase 1: no_std userspace Rust) ---
 # Cargo tetap build system Rust (workspace di rust/); hasil akhir di-link dengan
@@ -1603,6 +1636,64 @@ pipe_test.elf: $(ELF_DIR)/pipe_test.elf
 fork_test.elf: $(ELF_DIR)/fork_test.elf
 gallery.elf: $(ELF_DIR)/gallery.elf
 imageview.elf: $(ELF_DIR)/imageview.elf
+
+# Verifikasi RUNTIME File Manager di QEMU (boot -> login root/1 -> `start
+# fileman` -> navigasi, New Folder + rename inline, Delete lewat dialog). Bukti:
+# geometri jendela pada screendump + jejak aplikasi di serial ([fileman] mkdir/
+# rename/delete ok <path>). Butuh qemu-system-x86_64.exe + xorriso.
+# Jalankan: make test-fileman-qemu
+.PHONY: test-fileman-qemu
+test-fileman-qemu: $(ISO_IMAGE)
+	python test/_fileman_probe.py all
+
+# ==========================================
+# FILE MANAGER (user_apps/filemanager) — aplikasi C++ asli
+# ==========================================
+# Pola build = pola app desktop (user_apps/<name>/*.cpp lewat SDK C++ wrapper):
+# compiler/flags/runtime yang SAMA dengan desktop & smoke SDK Phase 5-7
+# (-fno-exceptions -fno-rtti -std=c++17, libc++ subset + crt yang menjalankan
+# .init_array), ditambah objek toolkit user-space (libui/libgui/userlib/media)
+# yang sudah dibangun user_apps/Makefile. ELF-nya tetap bernama fileman.elf
+# supaya manifest, ikon desktop, `start fileman`, dan jalur "kembali ke File
+# Manager" milik Notepad tidak berubah.
+FILEMANAGER_DIR  = user_apps/filemanager
+FM_SRCS          = $(wildcard $(FILEMANAGER_DIR)/*.cpp)
+FM_OBJDIR        = $(BUILD_DIR)/obj/filemanager
+FM_OBJS          = $(patsubst $(FILEMANAGER_DIR)/%.cpp,$(FM_OBJDIR)/%.o,$(FM_SRCS))
+FM_ELF           = $(ELF_DIR)/fileman.elf
+FM_SYS_INC       = -iquote include -Ilibs/color/include -Ilibs/widget/include
+FM_HEADERS       = $(wildcard $(FILEMANAGER_DIR)/*.hpp)
+
+# Objek toolkit user-space (libui/libgui/media/color). Daftarnya diambil dari
+# BERKAS yang sudah dibangun user_apps/Makefile (glob di shell saat link), jadi
+# tidak ada daftar kedua yang bisa basi. Sub-make di resep memastikan objeknya
+# ada walau target ini dipanggil langsung (mis. `make fileman.elf`).
+FM_TOOLKIT_GLOBS = $(BUILD_DIR)/obj/user/libs/widget/src/*/*.o \
+                   $(BUILD_DIR)/obj/user/libs/widget/abi/*.o \
+                   $(BUILD_DIR)/obj/user/libs/color/src/*.o \
+                   $(BUILD_DIR)/obj/user/apps/media.o
+
+.PHONY: filemanager
+filemanager: $(FM_ELF)
+	@echo "[filemanager] elf : $(FM_ELF)"
+
+$(FM_OBJDIR)/%.o: $(FILEMANAGER_DIR)/%.cpp $(FM_HEADERS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(FM_SYS_INC)
+
+$(FM_ELF): $(FM_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@test -n "$(FM_SRCS)" || { echo "[filemanager] FAIL: tidak ada *.cpp di $(FILEMANAGER_DIR)/"; exit 1; }
+	@$(MAKE) -C user_apps all
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(FM_OBJS) $(USERAPP_LIB_OBJS) $$(ls $(FM_TOOLKIT_GLOBS)) -o $@ $(FM_SYS_INC)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[filemanager] FAIL: _start tidak ada di fileman.elf"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[filemanager] FAIL: masih ada simbol undefined di fileman.elf"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_NM) --defined-only $@ | grep -qE " (__cxa_throw|__cxa_begin_catch|_Unwind_|__gxx_personality_|pthread_)"; then \
+		echo "[filemanager] FAIL: fileman.elf menarik runtime exception/thread"; exit 1; \
+	fi
+	@echo "[filemanager] link OK: $(notdir $@) (C++ SDK + toolkit libui)"
 
 # Bersihkan hanya file objek/ELF user_apps (kernel tidak disentuh)
 .PHONY: clean-apps

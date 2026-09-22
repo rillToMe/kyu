@@ -24,7 +24,7 @@ extern uint32_t   read_fs(fs_node_t *node, uint32_t offset, uint32_t size, uint8
 extern void       kfs_format(void);
 extern void       kfs_list_files(void);
 extern void       kfs_read_file(char* filename);
-extern void       kfs_delete_file(char* filename);
+extern int        kfs_delete_file(char* filename);   // Fase 4: 0 sukses / kode error
 extern int        kfs_exists(char* filename);
 extern uint32_t   kfs_get_file_size(char* filename);
 extern int        kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
@@ -109,7 +109,7 @@ int      fs_format(void) {
 }
 void     fs_list(void)                  { kfs_list_files(); compositor_flush(); }
 void     fs_read(char* filename)        { kfs_read_file(filename); compositor_flush(); }
-void     fs_delete(char* filename)      { kfs_delete_file(filename); }
+int      fs_delete(char* filename)      { return kfs_delete_file(filename) == 0 ? 0 : -1; }
 
 int      sys_file_exists(char* fn)      { return kfs_exists(fn); }
 uint32_t sys_file_size(char* fn)        { return kfs_get_file_size(fn); }
@@ -258,6 +258,23 @@ int sys_dup2(int oldfd, int newfd) {
 int sys_pipe(int fds[2]) {
     extern int vfs_pipe(int out[2]);
     return vfs_pipe(fds);
+}
+// Fase 4: readdir (handle direktori) langsung ke vfs_* seperti di atas.
+int sys_readdir(int fd, uint32_t index, char* name, uint32_t cap, uint8_t* is_dir) {
+    extern int vfs_readdir(int fd, uint32_t index, char* name_out,
+                           uint32_t name_cap, uint8_t* type_out);
+    return vfs_readdir(fd, index, name, cap, is_dir);
+}
+// Fase 4: rename/stat = operasi path, jadi langsung ke kfs_* seperti
+// sys_mkdir/sys_get_file_list di atas (bukan lewat int 0x80: pemanggil
+// ring 0 tidak punya pointer user yang perlu boundary-copy).
+int sys_rename(const char* old_path, const char* new_path) {
+    extern int kfs_rename_path(const char* old_path, const char* new_path);
+    return kfs_rename_path(old_path, new_path) == 0 ? 0 : -1;
+}
+int sys_stat(const char* path, uint32_t* size, uint8_t* is_dir) {
+    extern int kfs_v4_stat(const char* path, uint32_t* out_size, uint8_t* out_is_dir);
+    return kfs_v4_stat(path, size, is_dir) == 0 ? 0 : -1;
 }
 // P0 Phase 5: spawn + stdio inheritance. Lewat int 0x80 seperti
 // sys_spawn_argv (spawn_common di syscall.c, bukan API vfs).

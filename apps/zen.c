@@ -1,10 +1,8 @@
 #include "zen.h"
 #include <stdint.h>
 #include "userlib.h"
-#include "timer.h"   // timer_sleep_ms() — hardware-agnostic sleep
+#include "timer.h"  
 
-
-// 2. Impor Syscall Memori & FS yang baru kita buat di kernel.c
 extern void* sys_alloc(uint32_t size);
 extern void sys_free(void* ptr);
 extern void* sys_realloc(void* ptr, uint32_t old_size, uint32_t new_size);
@@ -13,7 +11,6 @@ extern uint32_t sys_file_size(char* filename);
 extern int sys_read_file_to_buffer(char* filename, char* buffer, uint32_t buffer_capacity);
 extern int sys_create_file(char* filename, char* data, uint32_t size);
 
-// Fungsi utilitas lokal (Aman di Ring 3)
 static uint32_t zen_strlen(const char* str) {
     uint32_t len = 0;
     while (str[len]) len++;
@@ -38,7 +35,6 @@ void zen_main(char* filename) {
         }
     }
 
-    // Gunakan sys_alloc (lewat Syscall 11) bukan kmalloc langsung!
     char* text_buffer = (char*)sys_alloc(current_capacity);
     if (text_buffer == 0) return; 
     zen_memset(text_buffer, 0, current_capacity);
@@ -56,7 +52,7 @@ void zen_main(char* filename) {
         if (read_keyboard(key, 1) > 0) {
             char c = key[0];
 
-            if (c == 27) break; // Keluar (ESC)
+            if (c == 27) break; 
 
             if (c == '\b') {
                 if (cursor > 0) {
@@ -73,7 +69,7 @@ void zen_main(char* filename) {
                 
                 if (new_buffer == 0) {
                     print("\n[FATAL] RAM Habis, auto-expand gagal!\n");
-                    timer_sleep_ms(3000); // Jeda 3 detik agar user baca pesan error
+                    timer_sleep_ms(3000);
 
 
                     break; 
@@ -81,7 +77,6 @@ void zen_main(char* filename) {
                 
                 text_buffer = new_buffer;       
                 current_capacity = new_capacity; 
-                print("\n[SYSTEM: Memori Zen kurang! Auto-Expand dipicu...]\n");
             }
             
             if (c == '\n') {
@@ -92,20 +87,18 @@ void zen_main(char* filename) {
                 text_buffer[cursor] = c;
                 cursor++;
                 
-                // Trik mencetak 1 huruf di Ring 3 (diubah jadi array string)
                 char str_char[2] = {c, '\0'};
                 print(str_char); 
             }
         }
-        sys_yield(); // Berikan giliran CPU ke Shell/Timer!
+        sys_yield(); 
     }
 
     clear_screen();
-    print("Menyimpan file ke Hard Disk...\n");
 
     if (sys_file_exists(filename)) { fs_delete(filename); }
     sys_create_file(filename, text_buffer, zen_strlen(text_buffer));
 
-    sys_free(text_buffer); // Kembalikan RAM ke Kernel
+    sys_free(text_buffer); 
     clear_screen();
 }

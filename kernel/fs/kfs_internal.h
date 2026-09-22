@@ -34,6 +34,7 @@
 // =====================================================================
 
 #include "kyuzenfs_v4.h"
+#include "kyuzenfs.h"      // kontrak publik (resolusi path, rename, stat)
 #include "vnode.h"
 #include "bcache.h"
 #include "ata.h"
@@ -157,11 +158,13 @@ int            dir_read_index(kzfs_v4_inode_mem_t *dir, uint32_t index,
                               char *name_out, uint32_t cap, uint8_t *type_out);
 int            dir_is_dot(const char *nm);           // "." atau ".."
 int            dir_init_dots(kzfs_v4_inode_mem_t *dir, uint32_t parent_ino);
+// Tulis ulang entri ".." block-pertama direktori (dipakai rename folder).
+int            dir_set_dotdot(kzfs_v4_inode_mem_t *dir, uint32_t parent_ino);
 int            create_child(kzfs_v4_inode_mem_t *parent, const char *name,
                             uint16_t mode, ino_entry_t **out_entry);
 int            vnode_wrap_locked(ino_entry_t *e, struct vnode **out);
-struct vnode*  kfs_walk(const char *path);           // vnode ber-refcount
-struct vnode*  kfs_walk_parent(const char *path, const char **out_name);
+// Batas kedalaman path (dipakai resolver + cek subtree rename).
+#define KZFS_PATH_MAX_DEPTH 32
 
 // Tabel operasi vnode KyuzenFS V4 (didefinisikan di kfs_vnode.c).
 extern struct vnode_ops kzfs_v4_vnode_ops;

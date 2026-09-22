@@ -206,7 +206,11 @@ public:
     // notify = panggil change_cb (klik/keyboard: ya; pemanggil kode: tidak,
     // supaya tidak rekursi — pola ListView::set_selected).
     void set_selected_cell(int i, bool notify) {
-        if (i < 0 || i >= n || i == selected) return;
+        // -1 = "tidak ada yang terpilih" (sama seperti Table::set_selected):
+        // tanpa ini, membatalkan seleksi dari kode (klik kanan di latar oleh
+        // File Manager) meninggalkan sorotan lama di icon view. ensure_visible()
+        // sudah menolak index < 0, jadi tidak ada gulir yang terjadi.
+        if (i < -1 || i >= n || i == selected) return;
         selected = i;
         ensure_visible(i);
         mark_dirty();

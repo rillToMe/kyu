@@ -39,6 +39,15 @@
 #define SYS_DUP2  75   // RBX=oldfd, RCX=newfd -> newfd / -1
 #define SYS_PIPE  76   // RBX=user int[2] -> 0 (fds[0]=read, fds[1]=write) / -1
 
+// Fase 4 (filesystem tree) — 81-83, nomor pertama yang bebas setelah 80
+// (SYS_CRASH_NOTICE). Semuanya user-safe: path/string di-copy dari user,
+// tidak ada struktur internal FS yang bocor ke user-space.
+#define SYS_READDIR 81  // RBX=fd, RCX=index, RDX=user name buf, RSI=cap,
+                        // RDI=user uint8_t* is_dir (boleh 0) -> 0 ada / -1 habis
+#define SYS_RENAME  82  // RBX=old path, RCX=new path -> 0 / -1
+#define SYS_STAT    83  // RBX=path, RCX=user uint32_t* size, RDX=user
+                        // uint8_t* is_dir (keduanya boleh 0) -> 0 / -1
+
 void vfs_init(void);
 
 // P0 Phase 2: install fd 0/1/2 (stdin/stdout/stderr -> console TTY) for a
@@ -66,6 +75,14 @@ int  vfs_read(int fd, void* buf, uint32_t count);
 int  vfs_write(int fd, const void* buf, uint32_t count);
 int  vfs_lseek(int fd, int32_t offset, int whence);
 int  vfs_close(int fd);
+
+// Enumerasi direktori lewat fd yang dibuka dengan O_RDONLY pada path
+// direktori (handle VFS_KIND_DIR — read/write/lseek ditolak). index 0 = entri
+// pertama, isi mentah TERMASUK "." dan "..".
+// Return 0 = ada (name_out NUL-terminated oleh kernel, *type_out 1 = direktori
+// / 0 = file), -1 = habis atau fd bukan direktori.
+int  vfs_readdir(int fd, uint32_t index, char* name_out, uint32_t name_cap,
+                 uint8_t* type_out);
 
 // Create a pipe: fds[0] = read end (O_RDONLY), fds[1] = write end
 // (O_WRONLY), both in the CALLING task on one shared pipe object.

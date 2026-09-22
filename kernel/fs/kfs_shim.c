@@ -12,12 +12,23 @@
 #include "kyuzenfs.h"
 
 static int shim_stat(const char *path, kzfs_v4_inode_mem_t *out, int *is_dir) {
-    struct vnode *vn = kfs_walk(path);
-    if (!vn) return 0;
+    struct vnode *vn = NULL;
+    if (kfs_walk_path(path, &vn) != KZFS_EOK) return 0;
     memcpy(out, (kzfs_v4_inode_mem_t*)vn->fs_data, sizeof(*out));
     if (is_dir) *is_dir = (vn->type == V_DIR);
     vn->ops->release(vn);
     return 1;
+}
+
+// Stat user-safe (size + tipe) — lihat include/kyuzenfs.h.
+int kfs_v4_stat(const char *path, uint32_t *out_size, uint8_t *out_is_dir) {
+    struct vnode *vn = NULL;
+    int rc = kfs_walk_path(path, &vn);
+    if (rc != KZFS_EOK) return rc;
+    if (out_size)   *out_size   = (uint32_t)vn->size;
+    if (out_is_dir) *out_is_dir = (vn->type == V_DIR) ? 1 : 0;
+    vn->ops->release(vn);
+    return KZFS_EOK;
 }
 
 int kfs_exists(char *path) {
@@ -33,9 +44,9 @@ uint32_t kfs_get_file_size(char *path) {
 }
 
 int kfs_create_file(char *path, char *data, uint32_t size) {
-    const char *name;
-    struct vnode *parent = kfs_walk_parent(path, &name);
-    if (!parent) return 0;
+    char name[KZFS_NAME_MAX + 1];
+    struct vnode *parent = NULL;
+    if (kfs_walk_parent(path, name, sizeof(name), &parent) != KZFS_EOK) return 0;
     int rc = 0;
     struct vnode *vn = NULL;
     if (parent->ops->create(parent, name, 0, &vn) == KZFS_EOK && vn) {
@@ -59,9 +70,9 @@ int kfs_create_file(char *path, char *data, uint32_t size) {
 }
 
 int kfs_create_folder(char *path) {
-    const char *name;
-    struct vnode *parent = kfs_walk_parent(path, &name);
-    if (!parent) return 0;
+    char name[KZFS_NAME_MAX + 1];
+    struct vnode *parent = NULL;
+    if (kfs_walk_parent(path, name, sizeof(name), &parent) != KZFS_EOK) return 0;
     int rc = (parent->ops->mkdir(parent, name) == KZFS_EOK) ? 1 : 0;
     parent->ops->release(parent);
     return rc;
@@ -71,8 +82,8 @@ int kfs_read_to_buffer(char *path, char *out_buffer, uint32_t buffer_capacity) {
     kzfs_v4_inode_mem_t in; int is_dir = 0;
     if (!shim_stat(path, &in, &is_dir) || is_dir) return 0;
     if (in.size_bytes > buffer_capacity) return 0;   // semantik V3
-    struct vnode *vn = kfs_walk(path);
-    if (!vn) return 0;
+    struct vnode *vn = NULL;
+    if (kfs_walk_path(path, &vn) != KZFS_EOK) return 0;
     uint64_t got = 0;
     int rc = 0;
     if (vn->ops->read(vn, 0, out_buffer, in.size_bytes, &got) == KZFS_EOK &&
@@ -81,13 +92,18 @@ int kfs_read_to_buffer(char *path, char *out_buffer, uint32_t buffer_capacity) {
     return rc;
 }
 
-void kfs_delete_file(char *path) {
-    const char *name;
-    struct vnode *parent = kfs_walk_parent(path, &name);
-    if (!parent) return;
-    if (parent->ops->unlink(parent, name) != KZFS_EOK)
-        kprint("[KZFS4] delete gagal\n");
+// Hapus entri file ATAU folder (folder harus kosong — baik untuk "rmdir"
+// maupun "unlink"): satu jalur, satu semantik, tidak ada cek ganda.
+// Return KZFS_EOK / -ENOENT / -EEXIST (folder tidak kosong) / -EINVAL (root).
+int kfs_delete_file(char *path) {
+    char name[KZFS_NAME_MAX + 1];
+    struct vnode *parent = NULL;
+    int rc = kfs_walk_parent(path, name, sizeof(name), &parent);
+    if (rc != KZFS_EOK) { kprint("[KZFS4] delete: path tidak valid\n"); return rc; }
+    rc = parent->ops->unlink(parent, name);
     parent->ops->release(parent);
+    if (rc != KZFS_EOK) kprint("[KZFS4] delete gagal\n");
+    return rc;
 }
 
 int kfs_resolve_dir(char *path, uint32_t *out_dir_sector) {
@@ -106,8 +122,8 @@ int kfs_get_file_list(char *path, void *buffer, int max_entries) {
     shim_info_t *list = (shim_info_t*)buffer;
     if (!buffer || max_entries <= 0) return 0;
 
-    struct vnode *dir = kfs_walk(path);
-    if (!dir || dir->type != V_DIR) {
+    struct vnode *dir = NULL;
+    if (kfs_walk_path(path, &dir) != KZFS_EOK || dir->type != V_DIR) {
         if (dir) dir->ops->release(dir);
         return 0;
     }
@@ -135,8 +151,10 @@ int kfs_get_file_list(char *path, void *buffer, int max_entries) {
 }
 
 void kfs_list_files(void) {
-    struct vnode *root = kfs_walk("/");
-    if (!root) { kprint("Disk belum termount!\n"); return; }
+    struct vnode *root = NULL;
+    if (kfs_walk_path("/", &root) != KZFS_EOK || !root) {
+        kprint("Disk belum termount!\n"); return;
+    }
     kprint("--- / (KyuzenFS V4) ---\n");
     char nm[KZFS_NAME_MAX + 2]; uint8_t ty;
     for (uint32_t i = 0; ; i++) {

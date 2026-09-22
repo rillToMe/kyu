@@ -126,7 +126,7 @@ MEDIA_OBJ      = $(OBJ_DIR)/apps/media.o      # abstraksi media bersama (tipe/pa
 #                 toolkit libui lewat ABI C + libs/color + png + media.
 #                 Bukan kelompok lain: rule kompilasi/link-nya beda (clang++,
 #                 subdir, -I libs/widget/include).
-GUI_APPS    = fileman viewer clock calc taskmgr notepad settings widget_demo
+GUI_APPS    = viewer clock calc taskmgr notepad settings widget_demo
 SIMPLE_APPS = procinfo exit_test kill_test fd_test echo cat pipe_test fork_test badptr
 OTHER_APPS  = terminal
 CPP_APPS    = gallery imageview
@@ -222,7 +222,8 @@ TERMINAL_LIBS= $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(W
 MEDIA_LIBS   = $(GUI_LIBS) $(MEDIA_OBJ)
 
 # Link generic: ELF dibangun dari object app-nya + library grup-nya.
-# clock DIKECUALIKAN dari pola ini — ia di-link via SDK (ENTRY _start).
+# clock DIKECUALIKAN (di-link via SDK, ENTRY _start); fileman.elf TIDAK di
+# sini — ia dibangun root Makefile dari user_apps/filemanager/ (C++ SDK).
 $(filter-out $(ELF_DIR)/clock.elf,$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(GUI_APPS)))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/user_apps/%.o $(GUI_LIBS)
 	@mkdir -p $(ELF_DIR)
 	@echo "[LD] $(notdir $@) (libui toolkit + png)"

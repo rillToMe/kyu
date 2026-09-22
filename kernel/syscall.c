@@ -16,6 +16,7 @@
 #include "proc.h"
 #include "ghal.h"   // Phase 2C §9.6: sys_gpu_stats — lewat kontrak HAL, bukan driver core (rule §5.5)
 #include "crash_archive.h"   // sys_crash_notice: pemberitahuan crash ke aplikasi
+#include "kyuzenfs_v4.h"     // KZFS_NAME_MAX: batas nama entri untuk syscall 81
 
 // Phase 24 API freeze: mirror ghal_gpu_stats_t <-> gpu_stats_t (syscall 65
 // copy_to_user sizeof(st)). Drift apa pun = ABI rusak. Kompiler yang menolak.
@@ -42,7 +43,6 @@ extern void yield(void);
 extern void kfs_format(void);
 extern void kfs_list_files(void);
 extern void kfs_read_file(char* filename);
-extern void kfs_delete_file(char* filename);
 extern void* kmalloc(uint32_t size);
 extern void kfree(void* ptr);
 extern void* krealloc(void* ptr, uint32_t old_size, uint32_t new_size);
@@ -52,6 +52,10 @@ extern int kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_
 extern int kfs_create_file(char* filename, char* data, uint32_t size);
 extern int kfs_get_file_list(char* path, void* buffer, int max_entries);
 extern int kfs_create_folder(char* path);
+// Fase 4: operasi tree (resolusi path penuh ada di kernel/fs/kfs_dir.c).
+extern int kfs_delete_file(char* filename);
+extern int kfs_rename_path(const char* old_path, const char* new_path);
+extern int kfs_v4_stat(const char* path, uint32_t* out_size, uint8_t* out_is_dir);
 
 extern void get_cpu_string(char* buffer);
 extern uint64_t pmm_get_used_ram(void);
@@ -284,9 +288,15 @@ void syscall_handler(registers_t *r) {
         char kf[UC_MAX_FNAME];
         if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) kfs_read_file(kf);
     }
-    else if (syscall_num == 8) { // sys_fs_delete
+    else if (syscall_num == 8) { // sys_fs_delete — unlink file ATAU rmdir kosong
+        // ADDITIVE: return 0 sukses / -1 gagal (dulu void). Folder tidak kosong
+        // = -1, jadi caller bisa membedakan "kosong" dari "gagal".
         char kf[UC_MAX_FNAME];
-        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) kfs_delete_file(kf);
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) {
+            ret_val = (kfs_delete_file(kf) == 0) ? 0 : (uint64_t)-1;
+        } else {
+            ret_val = (uint64_t)-1;
+        }
     }
     else if (syscall_num == 9) { // sys_alloc
         // FIX_005 Tahap 3: ring 3 → region user range milik AS caller
@@ -860,6 +870,56 @@ void syscall_handler(registers_t *r) {
     else if (syscall_num == SYS_DUP2) { // sys_dup2(oldfd, newfd) -> newfd / -1
         // oldfd == newfd is a validated no-op; open newfd closed first.
         ret_val = (uint64_t)(int64_t)vfs_dup2((int)r->rbx, (int)r->rcx);
+    }
+    // ============================================================
+    // Fase 4 — filesystem tree (syscall 81-83). Semua path di-copy ke kernel
+    // via strncpy_from_user; tidak ada pointer user yang dipakai setelahnya.
+    // ============================================================
+    else if (syscall_num == SYS_READDIR) { // sys_readdir(fd, index, name, cap, is_dir*)
+        uint32_t cap = (uint32_t)r->rsi;
+        int ok = -1;
+        if (cap > (uint32_t)(KZFS_NAME_MAX + 1)) cap = (uint32_t)(KZFS_NAME_MAX + 1);
+        if (cap > 0 && user_range_ok(&uc, r->rdx, cap)) {
+            char kname[KZFS_NAME_MAX + 1];
+            uint8_t kdir = 0;
+            if (vfs_readdir((int)r->rbx, (uint32_t)r->rcx, kname, sizeof(kname), &kdir) == 0) {
+                // Nama mentah bisa sepanjang KZFS_NAME_MAX; potong ke kapasitas
+                // buffer user (selalu NUL-terminated, <= cap byte).
+                uint32_t n = 0;
+                while (n + 1 < cap && kname[n]) n++;
+                kname[n] = '\0';
+                if (copy_to_user(&uc, r->rdx, kname, n + 1) == 0) {
+                    if (r->rdi) (void)copy_to_user(&uc, r->rdi, &kdir, 1);
+                    ok = 0;
+                }
+            }
+        }
+        ret_val = (uint64_t)(int64_t)ok;
+    }
+    else if (syscall_num == SYS_RENAME) { // sys_rename(old_path, new_path) -> 0 / -1
+        char kold[UC_MAX_FNAME];
+        char knew[UC_MAX_FNAME];
+        int ok = -1;
+        if (strncpy_from_user(&uc, kold, r->rbx, sizeof(kold)) >= 0 &&
+            strncpy_from_user(&uc, knew, r->rcx, sizeof(knew)) >= 0) {
+            ok = (kfs_rename_path(kold, knew) == 0) ? 0 : -1;
+        }
+        ret_val = (uint64_t)(int64_t)ok;
+    }
+    else if (syscall_num == SYS_STAT) { // sys_stat(path, size*, is_dir*) -> 0 / -1
+        char kpath[UC_MAX_FNAME];
+        int ok = -1;
+        if (strncpy_from_user(&uc, kpath, r->rbx, sizeof(kpath)) >= 0) {
+            uint32_t ksize = 0;
+            uint8_t  kdir = 0;
+            if (kfs_v4_stat(kpath, &ksize, &kdir) == 0) {
+                int good = 1;
+                if (r->rcx && copy_to_user(&uc, r->rcx, &ksize, sizeof(ksize)) != 0) good = 0;
+                if (r->rdx && copy_to_user(&uc, r->rdx, &kdir, sizeof(kdir)) != 0) good = 0;
+                if (good) ok = 0;
+            }
+        }
+        ret_val = (uint64_t)(int64_t)ok;
     }
     else if (syscall_num == SYS_PIPE) { // sys_pipe(fds) -> 0 / -1
         // P0 Phase 5: RBX=user int[2]. Both-or-neither: kernel bounce

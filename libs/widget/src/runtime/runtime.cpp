@@ -29,12 +29,21 @@ char* _ui_strdup(const char* s) {
 // Ukuran memakai __SIZE_TYPE__ (bukan `unsigned long`) agar deklarasi ini tetap
 // cocok saat file ini dikompilasi untuk HOST test (MinGW/LLP64: size_t =
 // unsigned long long) maupun untuk kernel/app bare-metal.
-void* operator new(__SIZE_TYPE__ n)              { return sys_alloc((uint32_t)n); }
-void* operator new[](__SIZE_TYPE__ n)            { return sys_alloc((uint32_t)n); }
-void  operator delete(void* p) noexcept          { if (p) sys_free(p); }
-void  operator delete[](void* p) noexcept        { if (p) sys_free(p); }
-void  operator delete(void* p, __SIZE_TYPE__) noexcept   { if (p) sys_free(p); }
-void  operator delete[](void* p, __SIZE_TYPE__) noexcept { if (p) sys_free(p); }
+//
+// WEAK: definisi ini adalah fallback untuk app C/C++ TANPA runtime C++ SDK
+// (app user_apps yang di-link langsung dengan ld). App C++ yang dibangun lewat
+// SDK (build/sdk/cpp, mis. user_apps/filemanager + apps/desktop) menautkan cxxrt.o
+// milik SDK yang mendefinisikan new/delete secara kuat; tanpa weak, link gagal
+// "duplicate symbol: operator delete(void*)". Weak membuat SATU definisi menang
+// untuk seluruh program — penting karena new dan delete HARUS berpasangan
+// (sys_alloc/sys_free vs malloc/free tidak boleh tercampur per-objek).
+__attribute__((weak)) void* operator new(__SIZE_TYPE__ n)              { return sys_alloc((uint32_t)n); }
+__attribute__((weak)) void* operator new[](__SIZE_TYPE__ n)            { return sys_alloc((uint32_t)n); }
+__attribute__((weak)) void  operator delete(void* p) noexcept          { if (p) sys_free(p); }
+__attribute__((weak)) void  operator delete[](void* p) noexcept        { if (p) sys_free(p); }
+__attribute__((weak)) void  operator delete(void* p, __SIZE_TYPE__) noexcept   { if (p) sys_free(p); }
+__attribute__((weak)) void  operator delete[](void* p, __SIZE_TYPE__) noexcept { if (p) sys_free(p); }
 
 // Dipanggil kalau vtable class abstrak terpanggil (bug) — jangan kembali.
-extern "C" void __cxa_pure_virtual() { for (;;) {} }
+// Weak: app C++ SDK memakai versi runtime-nya sendiri (abort).
+__attribute__((weak)) extern "C" void __cxa_pure_virtual() { for (;;) {} }

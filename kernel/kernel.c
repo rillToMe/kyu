@@ -78,7 +78,7 @@ extern void init_keyboard();
 extern void switch_to_user_mode(void (*user_func)());
 extern void user_login();
 extern void init_mouse();
-extern void kfs_delete_file(char* filename);
+extern int  kfs_delete_file(char* filename);   // Fase 4: 0 sukses / kode error
 
 // kprint & kprint_num kini di kernel/kprint.c (dipisah dari FS sejak V4)
 extern void kprint(const char* str);
@@ -371,6 +371,20 @@ void kernel_main(void) {
 
         // Fase 3: pastikan folder /apps ada — app .elf/.app tinggal di sini.
         if (!kfs_exists("/apps")) kfs_create_folder("/apps");
+
+        // Fase 4: pohon direktori standar. Idempotent (mkdir hanya bila belum
+        // ada) dan parent-dulu — resolver kini menerima path bertingkat, jadi
+        // satu panggilan per folder. Ini fondasi File Manager/Gallery/Text
+        // Editor fase berikutnya: mereka cukup memakai API path biasa.
+        static const char* const kDefaultDirs[] = {
+            "/system", "/system/config", "/system/fonts",
+            "/home", "/home/user",
+            "/home/user/Documents", "/home/user/Downloads",
+            "/home/user/Pictures",  "/home/user/Projects",
+        };
+        for (unsigned di = 0; di < sizeof(kDefaultDirs) / sizeof(kDefaultDirs[0]); di++)
+            if (!kfs_exists((char*)kDefaultDirs[di]))
+                kfs_create_folder((char*)kDefaultDirs[di]);
 
         for (uint64_t i = 0; i < module_request.response->module_count; i++) {
             struct limine_file *mod = module_request.response->modules[i];

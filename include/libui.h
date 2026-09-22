@@ -53,6 +53,24 @@ typedef struct ui_theme {
 // Callback klik tombol. userdata = argumen ui_button_set_click.
 typedef void (*ui_click_cb)(void* userdata);
 
+// Callback klik yang MEMBUTUHKAN koordinat (window-local konten). Dipakai hook
+// klik-kanan: pemanggil memakainya untuk tahu baris/sel mana yang diklik
+// (mis. ui_table_row_at + penyaringan "area kosong").
+typedef void (*ui_pos_click_cb)(void* userdata, int x, int y);
+
+// Hook tombol mentah untuk APLIKASI (bukan widget). Dipanggil saat ada
+// EVENT_KEY_PRESS dan TIDAK ada widget yang memegang fokus keyboard.
+//   ascii    = P1 event (0 untuk tombol non-printable: F2, Delete, panah)
+//   scancode = P3 event (bit 0x100 = tombol extended, mis. Delete/panah)
+//   mods     = bitmask KEY_MOD_*
+// Dipakai aplikasi tanpa widget input (File Manager: F2/Delete/panah) yang
+// tidak bisa memakai ui_window_add_shortcut — registry shortcut hanya
+// mencocokkan ASCII, sehingga tombol ber-P1 0 tidak akan pernah cocok.
+// Setelah widget fokus ada (mis. kolom rename), hook ini berhenti dipanggil
+// dan ketikan langsung ke widget itu — jadi tidak ada rebutan input.
+typedef void (*ui_key_cb)(void* userdata, uint32_t ascii, uint32_t scancode, uint32_t mods);
+void ui_window_set_key(ui_window_t* win, ui_key_cb cb, void* userdata);
+
 // --- Window ---
 // Buat window + pohon widget kosong. Return 0 jika gagal.
 ui_window_t* ui_window_create(uint32_t width, uint32_t height);
@@ -90,6 +108,12 @@ void ui_label_set_text(ui_widget_t* widget, const char* text);
 ui_widget_t* ui_button_create(ui_window_t* win, const char* text);
 void ui_button_set_click(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 
+// --- Klik kanan (menu konteks) ---
+// Widget menerima klik kanan (EVENT_MOUSE_CLICK P1=1) dan memanggil cb dengan
+// koordinat window-local. Toolkit sendiri tidak menggambar menu: aplikasi
+// memuat menu konteks lewat widget yang sudah ada (ui_menu_*).
+void ui_widget_set_right_click(ui_widget_t* widget, ui_pos_click_cb cb, void* userdata);
+
 // --- TextBox (Phase 7) ---
 // Input teks satu baris, h=24. Klik memberi fokus (border accent);
 // tombol masuk lewat EVENT_KEY_PRESS (P1 = char printable, P3 = scancode).
@@ -97,6 +121,11 @@ ui_widget_t* ui_textbox_create(ui_window_t* win, int width);
 void ui_textbox_set_text(ui_widget_t* widget, const char* text);
 const char* ui_textbox_text(ui_widget_t* widget);      // pointer buffer internal
 void ui_textbox_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+// Tandai seluruh isi sebagai terpilih: tombol pengubah teks berikutnya
+// MENGGANTI isi (bukan menambah) dan isinya digambar sebagai blok terpilih.
+// Dipakai File Manager untuk ganti-nama inline (nama lama langsung bisa
+// ditimpa, gaya Explorer). Isi kosong → tanpa efek.
+void ui_textbox_select_all(ui_widget_t* widget);
 
 // --- CheckBox (Phase 7) ---
 // Kotak centang + label; klik men-toggle dan memanggil toggle_cb.
@@ -235,8 +264,23 @@ ui_widget_t* ui_table_create(ui_window_t* win, int w, int h);
 void ui_table_add_column(ui_widget_t* widget, const char* title, int width);
 void ui_table_add_row(ui_widget_t* widget, const char* const* cells, int n);
 void ui_table_clear(ui_widget_t* widget);   // hapus semua baris (refresh)
+// Teks yang digambar di tengah area baris saat tabel KOSONG (mis. "This folder
+// is empty") — pasangan ui_gridview_set_empty_text, bukan baris palsu.
+void ui_table_set_empty_text(ui_widget_t* widget, const char* text);
 int ui_table_selected(ui_widget_t* widget);
 void ui_table_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+// Baris yang berada di bawah `y` (window-local) atau -1 bila area kosong /
+// header / di luar widget. Dipakai menu konteks File Manager untuk membedakan
+// "klik kanan pada entri" dari "klik kanan pada latar".
+int  ui_table_row_at(ui_widget_t* widget, int y);
+// Pilih baris dari kode (mis. pilih ulang item yang sama setelah refresh).
+// Index -1 = tidak ada yang terpilih. Baris digulirkan masuk view bila perlu.
+// TIDAK memanggil change_cb (pemanggilnya yang tahu — menghindari rekursi).
+void ui_table_set_selected(ui_widget_t* widget, int index);
+// Ikon kecil opsional di kiri kolom pertama (menu/list view File Manager).
+// Pointer piksel NON-OWNING (ARGB8888) — toolkit hanya membaca saat draw().
+// row = index baris, px = 0 untuk menghapus ikon baris itu.
+void ui_table_set_row_icon(ui_widget_t* widget, int row, const uint32_t* px, int w, int h);
 
 // --- GridView ---
 // Kisi item berlabel + thumbnail. Thumbnail MILIK APLIKASI (pointer non-owning):
@@ -261,6 +305,9 @@ int  ui_gridview_count(ui_widget_t* widget);
 int  ui_gridview_selected(ui_widget_t* widget);                     // -1 = tak ada
 // Daftar keyboard: panah/Home/End/PgUp/PgDn. Enter / klik-kedua = activate.
 void ui_gridview_set_selected(ui_widget_t* widget, int index);      // tanpa change_cb
+// Sel di bawah (x,y) window-local, atau -1. Pasangan ui_table_row_at — dipakai
+// menu konteks supaya tahu sel mana yang diklik kanan.
+int  ui_gridview_cell_at(ui_widget_t* widget, int x, int y);
 void ui_gridview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 void ui_gridview_set_activate(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 void ui_gridview_ensure_visible(ui_widget_t* widget, int index);
@@ -278,6 +325,17 @@ void ui_treeview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata)
 // Strip tab + panel aktif. Panel dimiliki oleh Tab (didelete saat destroy).
 ui_widget_t* ui_tab_create(ui_window_t* win, int w, int h);
 void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel);
+
+// --- Menu konteks (popup mandiri) ---
+// Menu yang TIDAK dipasang ke MenuBar — dipakai File Manager untuk menu klik
+// kanan. Isi itemnya sama seperti menu biasa (ui_menu_add_item / _acc / _sep /
+// _set_enabled / _set_checked). Menu ini milik PEMANGGIL (tidak ada parent
+// layout yang membebaskannya; umurnya sampai proses selesai) — aplikasi cukup
+// membuatnya sekali dan memakainya berulang.
+// Tampilkan di koordinat window-local; popup tertutup sendiri saat item diklik,
+// klik di luar, ESC, atau ui_window_popup_menu lagi.
+ui_widget_t* ui_menu_create(ui_window_t* win);
+void ui_window_popup_menu(ui_window_t* win, ui_widget_t* menu, int x, int y);
 
 // --- MenuBar + Menu ---
 // MenuBar = bar full-width dengan judul berlebar mengikuti teksnya (gaya menu
