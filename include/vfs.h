@@ -33,7 +33,7 @@
 // not fd counts (dup aliases the same description).
 #define VFS_PIPE_CAP     4096   // bytes per pipe (fixed; fits KyuzenOS heap)
 
-// fd syscalls (see kernel/syscall.c; 74/75 were the first free pair
+// fd syscalls (see kernel/syscall/; 74/75 were the first free pair
 // after SYS_KILL 73 — existing numbers untouched).
 #define SYS_DUP   74   // RBX=oldfd -> newfd / -1
 #define SYS_DUP2  75   // RBX=oldfd, RCX=newfd -> newfd / -1

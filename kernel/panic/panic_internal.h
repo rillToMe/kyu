@@ -83,7 +83,7 @@ extern uint64_t pmm_get_total_pages_nolock(void);
 extern uint64_t timer_get_ms(void);
 extern int      kfs_sync_all_try(void);
 
-// Konteks syscall terakhir (kernel/syscall.c) — best-effort, tanpa lock.
+// Konteks syscall terakhir (kernel/syscall/syscall.c) — best-effort, tanpa lock.
 extern volatile uint64_t g_last_syscall_num;
 extern volatile int32_t  g_last_syscall_task;
 

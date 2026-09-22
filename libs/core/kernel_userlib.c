@@ -89,7 +89,7 @@ uint32_t read_keyboard(char* buffer, uint32_t size) {
     return n;
 }
 
-// yield_counter didefinisikan di kernel/syscall.c, dipakai timer.c untuk CPU idle tracking
+// yield_counter didefinisikan di kernel/syscall/sys_system.c, dipakai timer.c untuk CPU idle tracking
 extern volatile uint32_t yield_counter;
 
 void sys_yield(void) {

@@ -40,7 +40,7 @@
 #define PROC_EXIT_NORMAL    0
 #define PROC_EXIT_KILLED    1
 
-// --- syscalls (see kernel/syscall.c; 73+ were free; 74/75 now taken
+// --- syscalls (see kernel/syscall/; 73+ were free; 74/75 now taken
 // by SYS_DUP/SYS_DUP2 in vfs.h) ---
 #define SYS_EXIT_CODE   34   // extended: RBX = exit code (old void wrapper now passes 0)
 #define SYS_SPAWN_ARGV  68   // RBX=path, RCX=argc, RDX=argv (user char**)
@@ -54,7 +54,7 @@
 #define SYS_EXECVE      79   // RBX=path, RCX=argc, RDX=argv -> 0 (never returns) / -1
 
 // Per-address-space cookie generator (P0 Phase 2, defined in
-// kernel/syscall.c): every new AS — spawn or fork — takes the next id.
+// kernel/syscall/sys_proc.c): every new AS — spawn or fork — takes the next id.
 uint32_t as_cookie_next(void);
 
 // P0 Phase 5 — explicit stdio inheritance for spawn_redir. Names the

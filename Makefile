@@ -55,7 +55,7 @@ FULLSCREEN_ARG = $(if $(filter 1,$(FULLSCREEN)),-full-screen,)
 # ikut terambil secara tidak sengaja. Sub-directory yang memang bagian kernel
 # didaftarkan langsung di sini (driver NIC & NET port lwIP punya daftar sendiri
 # di bawah karena flag-nya beda).
-SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched kernel/fs kernel/net kernel/mm kernel/debug kernel/sync kernel/proc libs/core system \
+SRC_DIRS = arch/x86 drivers kernel kernel/syscall kernel/smp kernel/gfx kernel/sched kernel/fs kernel/net kernel/mm kernel/debug kernel/sync kernel/proc libs/core system \
            kernel/panic \
            graphics graphics/backend graphics/backend/intel graphics/memory drivers/graphics/hw libs/gui/color/src
 
