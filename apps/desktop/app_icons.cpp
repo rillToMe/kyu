@@ -1,5 +1,6 @@
 // Kyuzen Desktop — implementasi cache + resolusi ikon terpusat.
 #include "app_icons.hpp"
+#include "media_scale.h"   // scaler RGBA bersama (dipakai juga oleh Gallery)
 
 namespace desktop_impl {
 
@@ -36,18 +37,32 @@ void resolve_icon_path(const char* icon_field, char* out, int out_cap) {
     out[o] = '\0';
 }
 
+// Ikon desktop → kanvas. Algoritma skalasi TIDAK lagi lokal di sini: isinya
+// dipindah ke include/media_scale.h (media_scale_rgba) supaya Gallery memakai
+// downscale box+premultiplied yang sama persis untuk thumbnail. Wrapper ini
+// dipertahankan sebagai bagian kontrak app_icons.hpp (dipakai test host).
 void scale_nearest(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw,
                    int dh) {
-    if (!src || !dst || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
-    for (int y = 0; y < dh; y++) {
-        int sy = y * sh / dh;
-        for (int x = 0; x < dw; x++)
-            dst[y * dw + x] = src[sy * sw + (x * sw / dw)];
-    }
+    media_scale_rgba(src, sw, sh, dst, dw, dh);
+}
+
+// Jalur ikon: box + unsharp. Scratch 3 baris (maks 3*ICON_CACHE_PX piksel) di
+// STACK, bukan heap: cache diisi saat draw() dan taskbar ikut lewat sini.
+// Penajaman tidak dipakai untuk upscale (nearest sudah tajam) dan untuk tujuan
+// yang lebih besar dari ICON_CACHE_PX (scratch 3 baris tidak cukup) — keduanya
+// hanya diskala, bukan gagal.
+void scale_icon(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw,
+                int dh) {
+    scale_nearest(src, sw, sh, dst, dw, dh);
+    if (dw > ICON_CACHE_PX || dh > ICON_CACHE_PX) return;
+    if (dw >= sw && dh >= sh) return;
+    uint32_t rowbuf[3 * ICON_CACHE_PX];
+    media_sharpen_rgba(dst, dw, dh, rowbuf, 3 * ICON_CACHE_PX,
+                       ICON_SHARPEN_PCT);
 }
 
 void draw_px(Canvas& canvas, int x, int y, const uint32_t* px, int w, int h) {
-    blit_px(canvas, x, y, px, w, h);
+    canvas.draw_px(x, y, px, w, h);
 }
 
 IconCache::IconCache() : tick_(0) {
@@ -68,7 +83,7 @@ const IconPx* IconCache::load_into(int slot, const char* path) const {
         png_free(raw);
         return 0;
     }
-    scale_nearest(raw, dw, dh, small, ICON_CACHE_PX, ICON_CACHE_PX);
+    scale_icon(raw, dw, dh, small, ICON_CACHE_PX, ICON_CACHE_PX);
     png_free(raw);
     delete[] slots_[slot].px;
     slots_[slot].px = small;

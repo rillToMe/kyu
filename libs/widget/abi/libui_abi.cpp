@@ -17,6 +17,7 @@
 #include "layout/hbox.hpp"
 #include "containers/scrollable.hpp"
 #include "containers/scrollview.hpp"
+#include "containers/gridview.hpp"
 #include "containers/listview.hpp"
 #include "containers/table.hpp"
 #include "containers/treeview.hpp"
@@ -452,6 +453,73 @@ void ui_scrollview_set_pan(ui_widget_t* widget, int on) {
 
 void ui_scrollview_set_child(ui_widget_t* widget, ui_widget_t* child) {
     reinterpret_cast<ui::ScrollView*>(widget)->set_child(reinterpret_cast<ui::Widget*>(child));
+}
+
+// --- GridView ---
+ui_widget_t* ui_gridview_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::GridView(w, h));
+}
+
+void ui_gridview_set_cell(ui_widget_t* widget, int cell_w, int cell_h, int thumb_box) {
+    ui::GridView* g = reinterpret_cast<ui::GridView*>(widget);
+    g->set_cell_size(cell_w, cell_h);
+    g->set_thumb_box(thumb_box);
+}
+
+void ui_gridview_set_empty_text(ui_widget_t* widget, const char* text) {
+    reinterpret_cast<ui::GridView*>(widget)->set_empty_text(text);
+}
+
+int ui_gridview_add_item(ui_widget_t* widget, const char* name) {
+    return reinterpret_cast<ui::GridView*>(widget)->add_item(name);
+}
+
+void ui_gridview_clear(ui_widget_t* widget) {
+    reinterpret_cast<ui::GridView*>(widget)->clear();
+}
+
+void ui_gridview_set_thumb(ui_widget_t* widget, int index, const uint32_t* px, int w, int h) {
+    reinterpret_cast<ui::GridView*>(widget)->set_thumb(index, px, w, h);
+}
+
+void ui_gridview_set_placeholder(ui_widget_t* widget, int index, int state) {
+    reinterpret_cast<ui::GridView*>(widget)->set_placeholder(index, state);
+}
+
+int ui_gridview_count(ui_widget_t* widget) {
+    return reinterpret_cast<ui::GridView*>(widget)->n;
+}
+
+int ui_gridview_selected(ui_widget_t* widget) {
+    return reinterpret_cast<ui::GridView*>(widget)->selected;
+}
+
+void ui_gridview_set_selected(ui_widget_t* widget, int index) {
+    reinterpret_cast<ui::GridView*>(widget)->set_selected_cell(index, false);
+}
+
+void ui_gridview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::GridView*>(widget)->set_change(cb, userdata);
+}
+
+void ui_gridview_set_activate(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::GridView*>(widget)->set_activate(cb, userdata);
+}
+
+void ui_gridview_ensure_visible(ui_widget_t* widget, int index) {
+    reinterpret_cast<ui::GridView*>(widget)->ensure_visible(index);
+}
+
+int ui_gridview_visible_range(ui_widget_t* widget, int* first, int* last) {
+    ui::GridView* g = reinterpret_cast<ui::GridView*>(widget);
+    if (g->n <= 0) return 0;
+    int f = 0, l = -1;
+    g->visible_range(f, l);
+    if (f > l) return 0;
+    if (first) *first = f;
+    if (last) *last = l;
+    return l - f + 1;
 }
 
 // --- ListView ---

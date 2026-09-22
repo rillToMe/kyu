@@ -23,19 +23,6 @@
 #include "gfx.h"
 #include "ghal.h"   
 
-#ifdef STRESS_TEST
-#include "pmm_stress.h"
-#include "pmm_valid.h"
-#endif
-
-#ifdef CONC_TEST
-#include "conc_test.h"
-#endif
-
-#ifdef HEAP_STRESS_TEST
-#include "heap_stress_test.h"
-#endif
-
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
 __attribute__((used, section(".requests_start_marker")))
 static volatile uint64_t __limine_requests_start[] = LIMINE_REQUESTS_START_MARKER;
@@ -517,22 +504,6 @@ void kernel_main(void) {
     boot_state("  OK  ", "Socket layer", 0);
 
     kprint("\nKyuzenOS ready.\n\n");
-
-#ifdef STRESS_TEST
-    valid_start();
-    stress_start();
-    while (1) __asm__ volatile("hlt");
-#endif
-
-#ifdef CONC_TEST
-    conc_test_run();
-    while (1) __asm__ volatile("hlt");
-#endif
-
-#ifdef HEAP_STRESS_TEST
-    test_heap_stress_run_all();
-    while (1) __asm__ volatile("hlt");
-#endif
 
     switch_to_user_mode(user_login);
 

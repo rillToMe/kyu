@@ -210,13 +210,14 @@ int Taskbar::draw(Canvas& canvas, const IconCache& icons, int W, int H) const {
         const IconPx* ic = icons.icon_for(path);
         if (ic) {
             // Cache menyimpan 48px; taskbar butuh 28px -> perkecil ke buffer
-            // stack lalu RLE ke canvas (tanpa alokasi).
+            // stack (scale_icon: box + unsharp, tanpa alokasi) lalu RLE ke
+            // canvas — ikon 28px tetap tegas, bukan hasil box yang lembek.
             if (ic->size == TB_ICON_PX) {
                 draw_px(canvas, ir.x, ir.y, ic->px, TB_ICON_PX, TB_ICON_PX);
             } else {
                 uint32_t tmp[TB_ICON_PX * TB_ICON_PX];
-                scale_nearest(ic->px, ic->size, ic->size, tmp, TB_ICON_PX,
-                              TB_ICON_PX);
+                scale_icon(ic->px, ic->size, ic->size, tmp, TB_ICON_PX,
+                           TB_ICON_PX);
                 draw_px(canvas, ir.x, ir.y, tmp, TB_ICON_PX, TB_ICON_PX);
             }
             nimg++;

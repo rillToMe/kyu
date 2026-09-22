@@ -13,7 +13,7 @@ ini tanpa menyentuh kernel/framework.
 | `desktop_shell.*` | `DesktopShell : Shell` — wallpaper, kursor, hover/preview, jadwal re-scan 5 dtk, urutan gambar latar→depan, koordinasi Full vs Partial |
 | `wallpaper.*` | pilihan `wallpaper=` dari `/apps/desktop.app` (fallback bawaan → gradasi), foto PNG di-decode+skala sekali, digambar RLE ke canvas window (region-aware untuk restore Partial) |
 | `launcher.*` | scan `/apps` → `*.elf` + manifest `<base>.app` (`name/color/hidden/icon`), grid ikon, klik → `spawn` |
-| `app_icons.*` | resolusi ikon TERPUSAT (kustom → `default.png` → kotak warna), cache 48px, `scale_nearest`, `blit_px` (RLE fill_rect ke canvas window) |
+| `app_icons.*` | resolusi ikon TERPUSAT (kustom → `default.png` → kotak warna), cache 48px, `scale_icon` (box + unsharp `media_sharpen_rgba`, kekuatan `ICON_SHARPEN_PCT`), `draw_px` (blend alpha ke canvas window) |
 | `taskbar.*` | slot ikon app (fokus/hover), area sistem kanan (jam `HH:MM` + tanggal `DD MM YYYY` numerik via `sys_get_time`), klik → `activate` |
 | `app_preview.*` | kartu preview STATIS saat hover slot (ikon + judul + status; bukan thumbnail live — `WindowInfo` tak membawa pixel) |
 | `crash_notice.*` | probe `poll_crash` sekali saat startup, timeout `NOTIF_MS`, klik kartu → File Manager |
@@ -34,13 +34,13 @@ digambar ke canvas window lewat `Canvas::fill_rect`/`draw_text`.
 
 Konsekuensi yang perlu diingat:
 
-- libgui tidak punya draw-image → pixel PNG di-blit sebagai RLE per baris
-  (satu `fill_rect` per rentang warna identik) di `app_icons.hpp`
-  (`blit_px`) dan `Wallpaper::draw_photo_into`.
-- `png_decode` (apps/png.c) memaksa byte alpha `0xFF` (canvas libgui selalu
-  opaque; mask transparansi milik compositor). Jadi aset ikon **tidak boleh**
-  mengandalkan transparansi — `assets/icons/*.png` di-flatten offline di atas
-  latar putih; area transparan akan tampil hitam.
+- libgui tidak punya draw-image → foto wallpaper di-blit sebagai RLE per
+  baris (satu `fill_rect` per rentang warna identik) di
+  `Wallpaper::draw_photo_into`; ikon (launcher/taskbar/preview) di-blend
+  per-pixel via `Canvas::draw_px` (`libs/libdesktop`) agar alpha PNG utuh.
+- `png_decode` (apps/png.c) mempertahankan alpha ARGB8888 (a=0 transparan
+  dilewati, semi di-blend, hasil canvas selalu opaque agar deklarasi opaque
+  compositor valid). Aset ikon boleh memakai transparansi.
 - Render Partial (strip taskbar + kartu preview) hanya menggambar area itu;
   bekas kartu preview dipulihkan dari wallpaper lewat `draw_bg(region)`,
   bukan render ulang seluruh layar.

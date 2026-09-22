@@ -20,11 +20,19 @@ public:
     int hscroll, hscroll_max;
     bool hbar_drag;
     int hbar_grab_x, hbar_grab_scroll;
+    // Phase 12: mode pan juga bisa diseret (drag-to-pan) — perilaku viewer
+    // gambar standar: tarik isi dengan tombol kiri. Hanya aktif kalau isi
+    // memang lebih besar dari view (kalau muat, tidak ada yang bisa digeser
+    // dan klik konten tetap diteruskan ke anak seperti sebelumnya).
+    bool pan_drag;
+    int pan_grab_x, pan_grab_y, pan_grab_sx, pan_grab_sy;
     int last_cw, last_ch, last_vw, last_vh;   // ukuran terakhir (anchor zoom)
 
     ScrollView(int width, int height)
         : child(0), pan(false), hscroll(0), hscroll_max(0), hbar_drag(false),
           hbar_grab_x(0), hbar_grab_scroll(0),
+          pan_drag(false), pan_grab_x(0), pan_grab_y(0), pan_grab_sx(0),
+          pan_grab_sy(0),
           last_cw(0), last_ch(0), last_vw(0), last_vh(0) {
         w = width; h = height;
         set_scroll_max(0);
@@ -111,7 +119,49 @@ public:
         }
         if (scroll_max != old || hscroll_max != oldh) mark_dirty();
     }
+    // Konten bisa digeser pada kedua sumbu (syarat drag-to-pan).
+    bool pannable() const {
+        if (!pan || !child) return false;
+        return hscroll_max > 0 || scroll_max > 0;
+    }
+    // Phase 12: focusable saat mode pan → panah/PgUp/PgDn/Home/End menggeser
+    // tampilan (viewer gambar tanpa mouse). Widget non-pan tetap tidak
+    // menyita fokus keyboard intra-window.
+    virtual bool focusable() override { return pan; }
+    virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
+        (void)ascii; (void)mods;
+        if (!pan) return;
+        const int STEP = 40;
+        int dsx = 0, dsy = 0;
+        switch (scancode) {
+        case 0x148: dsy = -STEP; break;              // Up
+        case 0x150: dsy = STEP; break;               // Down
+        case 0x14B: dsx = -STEP; break;              // Left
+        case 0x14D: dsx = STEP; break;               // Right
+        case 0x149: dsy = -view_h() / 2; break;      // PageUp
+        case 0x151: dsy = view_h() / 2; break;       // PageDown
+        case 0x147: dsx = -hscroll; dsy = -scroll; break;      // Home
+        case 0x14F: dsx = hscroll_max - hscroll;               // End
+                    dsy = scroll_max - scroll; break;
+        default: return;
+        }
+        int ns = scroll + dsy;
+        int nh = hscroll + dsx;
+        if (ns < 0) ns = 0;
+        if (ns > scroll_max) ns = scroll_max;
+        if (nh < 0) nh = 0;
+        if (nh > hscroll_max) nh = hscroll_max;
+        if (ns == scroll && nh == hscroll) return;
+        scroll = ns; hscroll = nh;
+        mark_dirty();
+    }
     virtual void on_content_click(int mx, int my) override {
+        if (pannable()) {
+            pan_drag = true;
+            pan_grab_x = mx; pan_grab_y = my;
+            pan_grab_sx = hscroll; pan_grab_sy = scroll;
+            return;
+        }
         if (!child) { if (click_cb) click_cb(userdata); return; }
         int ox, oy;
         child_offset(ox, oy);
@@ -140,6 +190,18 @@ public:
         Scrollable::on_click(mx, my);
     }
     virtual bool on_drag(int mx, int my) override {
+        if (pan_drag) {
+            int nh = pan_grab_sx - (mx - pan_grab_x);
+            int ns = pan_grab_sy - (my - pan_grab_y);
+            if (nh < 0) nh = 0;
+            if (nh > hscroll_max) nh = hscroll_max;
+            if (ns < 0) ns = 0;
+            if (ns > scroll_max) ns = scroll_max;
+            if (nh == hscroll && ns == scroll) return false;
+            hscroll = nh; scroll = ns;
+            mark_dirty();
+            return true;
+        }
         if (!hbar_drag) return Scrollable::on_drag(mx, my);
         int tw = hbar_thumb_w();
         int range = content_w() - tw;
@@ -150,7 +212,11 @@ public:
         mark_dirty();
         return true;
     }
-    virtual void on_release() override { hbar_drag = false; Scrollable::on_release(); }
+    virtual void on_release() override {
+        pan_drag = false;
+        hbar_drag = false;
+        Scrollable::on_release();
+    }
     void draw_hbar(Painter& p) {
         if (!hbar_shown()) return;
         int vw = content_w();

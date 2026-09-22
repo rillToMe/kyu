@@ -10,14 +10,13 @@
 // dan layer base_canvas (sys_draw_image) TIDAK pernah terlihat: window desktop
 // full-screen + opaque — lihat catatan pelapisan di theme.hpp.
 //
-// Cache menyimpan SATU ukuran (ICON_CACHE_PX); pemakai yang butuh ukuran lain
-// mengecilkan saat gambar via scale_nearest (tanpa alokasi, buffer stack
-// pemanggil).
+// Cache menyimpan SATU ukuran (ICON_CACHE_PX) yang SUDAH dipertajam
+// (scale_icon); pemakai yang butuh ukuran lain mengecilkan saat gambar via
+// scale_icon juga (tanpa alokasi, buffer stack pemanggil).
 //
-// Byte alpha diabaikan saat blit: png_decode dipaksa 0xFF (canvas libgui
-// selalu opaque). Karena itu aset ikon harus OPAQUE — assets/icons/*.png
-// di-flatten offline di atas latar putih; PNG ber-transparansi akan tampil
-// hitam pada bagian transparannya.
+// Alpha dipertahankan dari png_decode (ARGB8888): piksel transparan (a=0)
+// dilewati agar wallpaper terlihat, semi-transparan di-blend ke canvas.
+// Canvas hasil blend selalu opaque (0xFF) agar deklarasi opaque valid.
 #ifndef KYUZEN_DESKTOP_IMPL_APP_ICONS_HPP
 #define KYUZEN_DESKTOP_IMPL_APP_ICONS_HPP
 
@@ -52,20 +51,30 @@ struct IconPx {
 // modul non-app mendarat). Selalu NUL-terminated, dipotong bila panjang.
 void resolve_icon_path(const char* icon_field, char* out, int out_cap);
 
-// Nearest-neighbor murni (tanpa alokasi, tanpa float): src sw×sh -> dst
-// dw×dh. Dipakai cache (decode -> ICON_CACHE_PX) dan pemakai yang butuh
-// ukuran lain (taskbar 28, preview 48 langsung). Diekspos untuk host test.
+// Skala src sw×sh -> dst dw×dh (tanpa alokasi, tanpa float): upscale =
+// nearest, downscale = rata-rata box berbobot alpha (garis tipis tidak
+// hilang seperti pada nearest 256->48). Dipakai cache (decode ->
+// ICON_CACHE_PX) dan pemakai yang butuh ukuran lain (taskbar 28, preview 48
+// langsung). Diekspos untuk host test.
 void scale_nearest(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw,
                    int dh);
 
-// XRGB8888 -> Color. Byte alpha sumber diabaikan: canvas libgui selalu
-// menulis opaque (mask transparansi window milik compositor, bukan app).
+// Jalur IKON: media_scale_rgba + unsharp ringan (media_sharpen_rgba,
+// ICON_SHARPEN_PCT). Dipakai cache (256->48) dan taskbar (48->28) supaya ikon
+// kecil tidak tampak lembek habis downscale. Scratch 3 baris di stack; tujuan
+// lebih besar dari ICON_CACHE_PX atau murni upscale (nearest) hanya diskala,
+// tanpa dipertajam.
+void scale_icon(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw,
+                int dh);
+
+// ARGB8888 -> Color. Alpha dipertahankan (a=0 = transparan, dilewati saat
+// blend; canvas hasil blend selalu opaque).
 inline Color px_color(uint32_t v) {
     Color c;
     c.r = static_cast<uint8_t>((v >> 16) & 0xFFu);
     c.g = static_cast<uint8_t>((v >> 8) & 0xFFu);
     c.b = static_cast<uint8_t>(v & 0xFFu);
-    c.a = 255;
+    c.a = static_cast<uint8_t>((v >> 24) & 0xFFu);
     return c;
 }
 

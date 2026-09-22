@@ -1,19 +1,33 @@
-// apps/png.c — Decoder PNG bersama untuk toolkit widget (Phase 7).
+// apps/png.c — Decoder gambar bersama untuk toolkit widget + aplikasi media.
 //
 // Konfigurasi stb_image identik dengan user_apps/viewer.c (pola yang sudah
-// terbukti): STBI_ONLY_PNG, memori disambung ke sys_alloc/sys_free.
-// Dipisah ke file C sendiri (bukan di toolkit libs/widget/) agar 276KB kode C stb_image
-// tidak ikut dikompilasi sebagai C++ (build libui tetap ramping).
+// terbukti): STBI_ONLY_PNG + STBI_ONLY_BMP, memori disambung ke
+// sys_alloc/sys_free. Dipisah ke file C sendiri (bukan di toolkit
+// libs/widget/) agar kode C stb_image tidak ikut dikompilasi sebagai C++.
 //
-// png_decode: baca file PNG dari KyuzenFS -> decode -> konversi RGBA bytes ke
-// XRGB8888 (format canvas gui_window_t). Caller wajib memanggil png_free().
+// Format yang diaktifkan SENGAJA hanya yang benar-benar bisa didekode dengan
+// flag build KyuzenOS (freestanding, -msoft-float -mno-sse):
+//   PNG — integer (STBI_NO_LINEAR mematikan jalur float)
+//   BMP — integer
+// JPEG/GIF TIDAK diaktifkan: dekoder JPEG stb memakai aritmetika float sebagai
+// inti IDCT-nya, dan build ini tidak boleh mengemisikan FP (tanpa libm).
+// include/media.h menandai .jpg/.jpeg sebagai "keluarga gambar" tapi TIDAK
+// "supported" — UI menampilkan itu apa adanya, bukan gagal misterius.
+//
+// png_decode / png_free dipertahankan sebagai nama lama (dipakai ABI internal
+// libs/widget/include/primitives/image.hpp). Nama netral image_decode /
+// image_free (include/media.h) dipakai aplikasi media baru: yang di-decode
+// mendeteksi jenis berkas dari ISI (content sniffing stb), bukan ekstensi —
+// file .bmp yang valid memang lolos lewat nama fungsi "png_*".
 #include "userlib.h"
+#include "media.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_SIMD
 #define STBI_NO_STDIO
 #define STBI_NO_THREAD_LOCALS
 #define STBI_ONLY_PNG
+#define STBI_ONLY_BMP
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
 #define STBI_ASSERT(x)
@@ -22,8 +36,9 @@
 #define STBI_REALLOC_SIZED(p, old_sz, new_sz) sys_realloc(p, old_sz, new_sz)
 #include "stb_image.h"
 
-// Decode PNG -> buffer XRGB8888 (alpha byte dipaksa 0xFF, kompositor hanya
-// membedakan 0 vs non-0). Return 0 jika file tak ada / decode gagal / OOM.
+// Decode gambar -> buffer ARGB8888 (alpha dipertahankan; 0 = transparan penuh,
+// 0xFF = opaque). Canvas hasil blend selalu ditulis opaque (0xFF) agar
+// deklarasi opaque compositor tetap valid. Return 0 jika gagal / OOM.
 // out_w / out_h diisi ukuran gambar (hanya bila return non-0).
 uint32_t* png_decode(const char* filename, int* out_w, int* out_h) {
     uint32_t fsize = sys_file_size((char*)filename);
@@ -42,7 +57,7 @@ uint32_t* png_decode(const char* filename, int* out_w, int* out_h) {
     if (!out) { sys_free(px); return 0; }
     for (int i = 0; i < iw * ih; i++) {
         const uint8_t* p = px + i * 4;
-        out[i] = 0xFF000000 | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+        out[i] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
     }
     sys_free(px);
 
@@ -53,4 +68,14 @@ uint32_t* png_decode(const char* filename, int* out_w, int* out_h) {
 
 void png_free(uint32_t* buf) {
     if (buf) sys_free(buf);
+}
+
+// Nama netral (include/media.h) untuk aplikasi media. Satu implementasi:
+// hanya delegasi, tidak ada jalur decode kedua.
+uint32_t* image_decode(const char* filename, int* out_w, int* out_h) {
+    return png_decode(filename, out_w, out_h);
+}
+
+void image_free(uint32_t* buf) {
+    png_free(buf);
 }

@@ -238,6 +238,35 @@ void ui_table_clear(ui_widget_t* widget);   // hapus semua baris (refresh)
 int ui_table_selected(ui_widget_t* widget);
 void ui_table_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 
+// --- GridView ---
+// Kisi item berlabel + thumbnail. Thumbnail MILIK APLIKASI (pointer non-owning):
+// toolkit tidak mengenal filesystem/decoder/cache — pemanggil menyuplai piksel,
+// toolkit menggambar kisi + menangani seleksi, scroll, hover, dan navigasi
+// keyboard, serta memberi tahu sel mana yang TERLIHAT (dasar virtualisasi:
+// only-visible-thumbnails, tanpa satu widget per item).
+// Satu widget untuk seluruh kisi; ukuran sel tetap (kisi seragam).
+// Placeholder sel sebelum thumbnail siap: UI_GRID_PH_*.
+enum { UI_GRID_PH_EMPTY = 0, UI_GRID_PH_LOADING = 1, UI_GRID_PH_ERROR = 2 };
+ui_widget_t* ui_gridview_create(ui_window_t* win, int w, int h);
+// Ukuran pitch sel + kotak thumbnail di dalamnya (thumbnail diskalakan di sisi
+// app, jadi toolkit hanya mem-blit 1:1).
+void ui_gridview_set_cell(ui_widget_t* widget, int cell_w, int cell_h, int thumb_box);
+// Teks yang digambar di tengah kisi saat kosong (mis. "No images in /").
+void ui_gridview_set_empty_text(ui_widget_t* widget, const char* text);
+int  ui_gridview_add_item(ui_widget_t* widget, const char* name);   // -> index / -1
+void ui_gridview_clear(ui_widget_t* widget);                        // buang semua item
+void ui_gridview_set_thumb(ui_widget_t* widget, int index, const uint32_t* px, int w, int h);
+void ui_gridview_set_placeholder(ui_widget_t* widget, int index, int state);
+int  ui_gridview_count(ui_widget_t* widget);
+int  ui_gridview_selected(ui_widget_t* widget);                     // -1 = tak ada
+// Daftar keyboard: panah/Home/End/PgUp/PgDn. Enter / klik-kedua = activate.
+void ui_gridview_set_selected(ui_widget_t* widget, int index);      // tanpa change_cb
+void ui_gridview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+void ui_gridview_set_activate(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+void ui_gridview_ensure_visible(ui_widget_t* widget, int index);
+// Rentang sel terlihat (inklusif). Return 0 bila kosong.
+int  ui_gridview_visible_range(ui_widget_t* widget, int* first, int* last);
+
 // --- TreeView ---
 // Node ber-indent; marker '+'/'-' toggle expand/collapse; klik pilih node.
 ui_widget_t* ui_treeview_create(ui_window_t* win, int w, int h);

@@ -28,6 +28,7 @@
 #   ../build/obj/user/user_apps/*.o      object app (user_apps/*.c)
 #   ../build/obj/user/libs/color/src/*.o libs/color
 #   ../build/obj/user/libs/widget/**/*.o toolkit C++ (libs/widget)
+#   ../build/obj/user/user_apps/<app>/*.o  object app C++ (user_apps/<app>/*.cpp)
 #   ../build/apps/*.elf                  ELF akhir (di-copy ke ISO oleh root)
 #
 # Satu rule generik per kategori kompilasi; menambah app = tambah namanya ke
@@ -106,7 +107,8 @@ USERLIB_OBJ    = $(OBJ_DIR)/apps/userlib.o    # int $0x80 syscall wrappers
 USERUTIL_OBJ   = $(OBJ_DIR)/apps/userutil.o   # helper identitas bersama (UID → username)
 SHELLCORE_OBJ  = $(OBJ_DIR)/apps/shell_core.o # shell engine bersama (parser/registry/built-in)
 LIBGUI_OBJ     = $(OBJ_DIR)/apps/libgui.o     # GUI framework lama (font8x16, dll)
-PNG_OBJ        = $(OBJ_DIR)/apps/png.o        # dekoder PNG bersama (apps/png.c, stb_image)
+PNG_OBJ        = $(OBJ_DIR)/apps/png.o        # dekoder gambar bersama (apps/png.c: PNG + BMP)
+MEDIA_OBJ      = $(OBJ_DIR)/apps/media.o      # abstraksi media bersama (tipe/path/scan/probe)
 
 # ==========================================================
 # DAFTAR APP
@@ -119,15 +121,28 @@ PNG_OBJ        = $(OBJ_DIR)/apps/png.o        # dekoder PNG bersama (apps/png.c,
 #                 dibangun root Makefile dari apps/$(DESKTOP_APP)/ via
 #                 libdesktop + C++ SDK (aturan Phase 8), output tetap
 #                 ../build/apps/desktop.elf (slot boot).
+#   CPP_APPS    : C++ (gallery/imageview). Sumber di subdirektori app sendiri
+#                 (user_apps/<app>/*.cpp) karena tiap app punya >1 modul; pakai
+#                 toolkit libui lewat ABI C + libs/color + png + media.
+#                 Bukan kelompok lain: rule kompilasi/link-nya beda (clang++,
+#                 subdir, -I libs/widget/include).
 GUI_APPS    = fileman viewer clock calc taskmgr notepad settings widget_demo
 SIMPLE_APPS = procinfo exit_test kill_test fd_test echo cat pipe_test fork_test badptr
 OTHER_APPS  = terminal
+CPP_APPS    = gallery imageview
 APP_NAMES   = $(GUI_APPS) $(SIMPLE_APPS) $(OTHER_APPS)
+ALL_NAMES   = $(APP_NAMES) $(CPP_APPS)
 
-ALL_ELFS = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
+# Objek app C++ (satu baris per app = daftar modulnya).
+GALLERY_OBJS   = $(addprefix $(OBJ_DIR)/user_apps/gallery/,$(addsuffix .o,main gallery thumbs))
+IMAGEVIEW_OBJS = $(addprefix $(OBJ_DIR)/user_apps/imageview/,$(addsuffix .o,main viewer image))
+CPP_APP_OBJS   = $(GALLERY_OBJS) $(IMAGEVIEW_OBJS)
+
+ALL_ELFS = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(ALL_NAMES)))
 APP_OBJS = $(addprefix $(OBJ_DIR)/user_apps/,$(addsuffix .o,$(APP_NAMES)))
 ALL_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) \
-           $(WIDGET_OBJS) $(PNG_OBJ) $(COLOR_OBJS) $(APP_OBJS)
+           $(WIDGET_OBJS) $(PNG_OBJ) $(MEDIA_OBJ) $(COLOR_OBJS) $(APP_OBJS) \
+           $(CPP_APP_OBJS)
 
 # Direktori object dibuat sekali (order-only) — aman `make -j8` dan tidak
 # memanggil `mkdir` untuk tiap object (mahal di Windows).
@@ -139,10 +154,10 @@ $(OBJ_DIRS):
 # yang di-include di bawah) bisa jadi "target pertama" dan mencuri default goal.
 .DEFAULT_GOAL := all
 
-.PHONY: all $(APP_NAMES) clean
+.PHONY: all $(ALL_NAMES) clean
 all: $(ALL_ELFS)
 	@echo ""
-	@echo "[USER APPS] Build selesai — $(words $(APP_NAMES)) ELF di $(ELF_DIR)/"
+	@echo "[USER APPS] Build selesai — $(words $(ALL_NAMES)) ELF di $(ELF_DIR)/"
 	@echo "  (virtual 0x4000000; OS mengalokasikan physical RAM saat dijalankan)"
 
 # ==========================================================
@@ -181,11 +196,30 @@ $(OBJ_DIR)/libs/widget/%.o: $(WIDGET_DIR)/%.cpp | $(OBJ_DIRS)
 	@echo "[CXX] $<"
 	$(CXX) $(CXXFLAGS_LIB) -I$(WIDGET_DIR)/include -I$(INC_DIR) -c $< -o $@
 
+# App C++ (user_apps/gallery/*.cpp, user_apps/imageview/*.cpp).
+# Flag = CXXFLAGS_LIB (freestanding, -fno-exceptions/-fno-rtti, tanpa libc++) +
+# -I libs/widget/include (hanya bila app menyentuh header toolkit; app baru ini
+# memakai ABI C libui.h, jadi include path itu opsional — dibiarkan agar app
+# C++ berikutnya tidak perlu mengubah Makefile).
+# CATATAN PENTING: tidak ada libc++ dan .init_array TIDAK dijalankan loader
+# (ENTRY main di app.ld) → jangan ada objek global ber-konstruktor; app baru
+# membuat objeknya di dalam main().
+$(OBJ_DIR)/user_apps/gallery/%.o: gallery/%.cpp | $(OBJ_DIRS)
+	@echo "[CXX] $<"
+	$(CXX) $(CXXFLAGS_LIB) -I$(WIDGET_DIR)/include -I$(INC_DIR) -c $< -o $@
+
+$(OBJ_DIR)/user_apps/imageview/%.o: imageview/%.cpp | $(OBJ_DIRS)
+	@echo "[CXX] $<"
+	$(CXX) $(CXXFLAGS_LIB) -I$(WIDGET_DIR)/include -I$(INC_DIR) -c $< -o $@
+
 # ==========================================================
 # LINK (satu rule per grup; isi link identik dengan sebelumnya)
 # ==========================================================
 GUI_LIBS     = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 TERMINAL_LIBS= $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
+# App media (gallery/imageview): toolkit + png + media (deteksi tipe, scan
+# direktori, probe header) — media.o dipakai KEDUA app.
+MEDIA_LIBS   = $(GUI_LIBS) $(MEDIA_OBJ)
 
 # Link generic: ELF dibangun dari object app-nya + library grup-nya.
 # clock DIKECUALIKAN dari pola ini — ia di-link via SDK (ENTRY _start).
@@ -211,8 +245,19 @@ $(ELF_DIR)/terminal.elf: $(OBJ_DIR)/user_apps/terminal.o $(TERMINAL_LIBS)
 	@echo "[LD] terminal.elf (libui toolkit + shell engine + png)"
 	$(LD) $(LDFLAGS) $< $(TERMINAL_LIBS) -o $@
 
+# App C++ media: objek app pertama (berisi entry `main`), lalu library bersama.
+$(ELF_DIR)/gallery.elf: $(GALLERY_OBJS) $(MEDIA_LIBS)
+	@mkdir -p $(ELF_DIR)
+	@echo "[LD] gallery.elf (C++, libui toolkit + media + png)"
+	$(LD) $(LDFLAGS) $(GALLERY_OBJS) $(MEDIA_LIBS) -o $@
+
+$(ELF_DIR)/imageview.elf: $(IMAGEVIEW_OBJS) $(MEDIA_LIBS)
+	@mkdir -p $(ELF_DIR)
+	@echo "[LD] imageview.elf (C++, libui toolkit + media + png)"
+	$(LD) $(LDFLAGS) $(IMAGEVIEW_OBJS) $(MEDIA_LIBS) -o $@
+
 # Alias lama: `make fileman` → ../build/apps/fileman.elf
-$(APP_NAMES): %: $(ELF_DIR)/%.elf
+$(ALL_NAMES): %: $(ELF_DIR)/%.elf
 
 # ==========================================================
 # CLEAN

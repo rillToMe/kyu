@@ -157,12 +157,15 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # BUKAN bagian dari kernel Ring 0 (myos.bin).
 #   apps/userlib.c  → berisi int $0x80 syscall wrappers
 #   apps/libgui.c   → GUI framework (mendefinisikan font8x16, dll)
+#   apps/media.c    → library media user-space (dipakai gallery/imageview):
+#                     seluruh isinya lewat syscall user-space, tidak ada
+#                     pemakai di Ring 0 → jangan ikut jadi dead code kernel.
 # Juga exlude test host-side (punya main()/assert.h/stdio.h) yang dijalankan di
 # host, bukan sebagai task QEMU — dikompilasi freestanding akan fatal (assert.h
 # tidak ada). aa_math_test / desktop_manifest_test / kyuzenfs_dir_test /
 # virtqueue_test / cred_test ada di test/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
-C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
+C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c apps/media.c \
                         test/aa_math_test.c test/desktop_manifest_test.cpp test/kyuzenfs_dir_test.c test/kyuzenfs_v4_test.c test/kyuzenfs_xcheck.c test/panic_test.c                        test/virtqueue_test.c test/virtio_gpu_cmd_test.c test/cred_test.c test/proc_test.c test/kill_test.c test/fd_test.c test/pipe_test.c test/fork_test.c test/color_test.c test/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
 
@@ -381,6 +384,34 @@ test/color_test: test/color_test.c test/color_cxx_check.cpp $(COLOR_SRCS) $(COLO
 	$(HOSTCC) -O2 -Wall -Wextra -Iinclude -Ilibs/color/include -o $@ test/color_test.c $(COLOR_SRCS)
 	$(HOSTCXX) -std=c++17 -Wall -Wextra -fsyntax-only -Ilibs/color/include test/color_cxx_check.cpp
 
+# --- Host-side unit test: library media bersama + cache thumbnail Gallery ---
+# Kode PRODUKSI (apps/media.c + user_apps/gallery/thumbs.cpp) di atas syscall
+# mock — pola test-pipe/test-desktop, bukan salinan logika. Yang dikunci: satu
+# tabel deteksi tipe (termasuk "keluarga gambar" yang belum bisa didekode TIDAK
+# boleh dinyatakan supported), util path, format ukuran/integer/metadata,
+# filter+urutan media_scan, probe header PNG/BMP tanpa decode penuh, fit-box +
+# skalasi RGBA, dan kebijakan cache (hit tanpa decode ulang, LRU, batas byte,
+# evict callback, tidak ada retry setelah decode gagal).
+# Jalankan: make test-media
+.PHONY: test-media
+test-media: test/media_test
+	./test/media_test
+
+# apps/media.c tetap dikompilasi sebagai C (HOSTCC) di object sendiri: kalau
+# clang++ yang mengompilasi, isinya menjadi C++ dan deklarasi syscall
+# user-space (linkage C) tidak lagi cocok dengan stub di test.
+# Header Kyuzen lewat -iquote (bukan -I) agar header HOST (<stdlib.h>) tidak
+# tertutup oleh include/stdlib.h milik Kyuzen.
+test/media_host.o: apps/media.c include/media.h include/media_scale.h
+	$(HOSTCC) -O1 -Wall -Wextra -iquote include -iquote libs/color/include -c $< -o $@
+
+test/media_test: test/media_test.cpp test/media_host.o user_apps/gallery/thumbs.cpp \
+                 include/media.h include/media_scale.h \
+                 user_apps/gallery/thumbs.hpp user_apps/gallery/platform.hpp
+	$(HOSTCXX) -O1 -Wall -Wextra -iquote include -iquote libs/color/include \
+	    -Iuser_apps -o $@ \
+	    test/media_test.cpp test/media_host.o user_apps/gallery/thumbs.cpp
+
 # --- Host-side unit test: KyuzenFS V4 (bcache + extent engine + direktori) ---
 # test/kyuzenfs_v4_test.c meng-include kernel/fs/bcache.c dan modul
 # kfs_*.c langsung; ATA/heap/spinlock di-mock ke RAM.
@@ -411,7 +442,8 @@ mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c include/kyuzenfs_v4.h
 clean-tool:
 	rm -f mkfs.kyuzenfs testimg.img test/color_utils_host.o
 	rm -f test/*.exe test/kyuzenfs_v4_test test/kyuzenfs_xcheck test/panic_test \
-	      test/ata_devmodel_test test/color_test test/textedit_test test/libui_theme_test
+	      test/ata_devmodel_test test/color_test test/textedit_test test/libui_theme_test \
+	      test/media_test test/media_host.o
 
 # ==========================================
 # LLVM libc 22.1.8 — freestanding x86_64 (Phase 0)
@@ -1461,6 +1493,7 @@ DESKTOP_HOST_TUS = test/desktop_manifest_test.cpp \
                    apps/desktop/desktop_shell.cpp \
                    libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
 test/desktop_manifest_test: $(DESKTOP_HOST_TUS) include/userlib.h include/libgui.h \
+                            include/media_scale.h include/media.h \
                             $(LIBDESKTOP_PUBLIC_HEADERS) apps/desktop/launcher.hpp apps/desktop/taskbar.hpp apps/desktop/crash_notice.hpp apps/desktop/theme.hpp \
                             apps/desktop/app_icons.hpp apps/desktop/wallpaper.hpp apps/desktop/app_preview.hpp apps/desktop/desktop_shell.hpp
 	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/libdesktop/include -Iapps/desktop -Ilibs/color/include -o $@ test/desktop_manifest_test.cpp apps/desktop/launcher.cpp apps/desktop/crash_notice.cpp apps/desktop/taskbar.cpp apps/desktop/app_icons.cpp apps/desktop/wallpaper.cpp apps/desktop/app_preview.cpp apps/desktop/desktop_shell.cpp libs/libdesktop/src/event.cpp libs/libdesktop/src/window_manager.cpp libs/libdesktop/src/system.cpp libs/libdesktop/src/canvas.cpp
@@ -1500,7 +1533,7 @@ test/libc_heap_test: test/libc_heap_test.cpp libs/libc-port/src/kyuzen_heap.hpp 
 # user_apps/), manifests/*.app, dan blok module_path di limine.conf.
 APP_NAMES = fileman viewer clock calc taskmgr notepad badptr widget_demo desktop \
             terminal settings procinfo exit_test kill_test fd_test echo cat \
-            pipe_test fork_test
+            pipe_test fork_test gallery imageview
 APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 
 # `apps` tetap target phony (menu, kompatibel dengan workflow lama). Setiap ELF
@@ -1568,6 +1601,8 @@ echo.elf: $(ELF_DIR)/echo.elf
 cat.elf: $(ELF_DIR)/cat.elf
 pipe_test.elf: $(ELF_DIR)/pipe_test.elf
 fork_test.elf: $(ELF_DIR)/fork_test.elf
+gallery.elf: $(ELF_DIR)/gallery.elf
+imageview.elf: $(ELF_DIR)/imageview.elf
 
 # Bersihkan hanya file objek/ELF user_apps (kernel tidak disentuh)
 .PHONY: clean-apps
@@ -1590,7 +1625,11 @@ LIMINE_FILES = limine/BOOTX64.EFI limine/limine-bios.sys \
 # Aset visual desktop Phase 9 (ikon + wallpaper). Modul non-app ditaruh kernel
 # di akar FS ("/<basename>"), dan limine.conf memuatnya dari path ISO yang sama
 # (flat, tanpa subdir) — karena itu staging-nya juga di akar $(ISO_ROOT).
-DESKTOP_ASSETS = assets/icons/default.png assets/icons/demo.png \
+DESKTOP_ASSETS = assets/icons/default.png assets/icons/demo.png assets/icons/clocks.png \
+				 assets/icons/folder.png assets/icons/notepad.png assets/icons/settings.png \
+				 assets/icons/terminal.png assets/icons/image_view.png\
+				 assets/icons/taskmanager.png assets/icons/calculator.png\
+				 assets/icons/gallery.png\
                  assets/wallpaper/island.png assets/wallpaper/black-hole.png \
                  assets/wallpaper/city-lanscaps.png \
                  assets/wallpaper/city-town.png \

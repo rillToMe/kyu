@@ -79,8 +79,10 @@ public:
             cx += 8;
         }
     }
-    // Blit PNG XRGB8888 (px = iw×ih) diskalakan nearest-neighbor ke rect
-    // (x,y,w,h). Menulis win->canvas langsung (libgui tak punya draw-image).
+    // Blit PNG ARGB8888 (px = iw×ih) diskalakan nearest-neighbor ke rect
+    // (x,y,w,h). Alpha per-pixel di-blend ke canvas (a=0 dilewati agar latar
+    // terlihat, semi blend integer, hasil opaque). Menulis win->canvas
+    // langsung (libgui tak punya draw-image).
     // Phase 5: clip ke window + scissor + render clip, lalu catat damage rect.
     void image(int x, int y, int w, int h, const uint32_t* px, int iw, int ih) {
         if (w <= 0 || h <= 0 || iw <= 0 || ih <= 0 || !px) return;
@@ -92,7 +94,20 @@ public:
             int sy = py * ih / h;
             for (int q = q0; q < q1; q++) {
                 int sx = q * iw / w;
-                win->canvas[(y + py) * cw + x + q] = px[sy * iw + sx];
+                uint32_t s = px[sy * iw + sx];
+                uint32_t a = s >> 24;
+                if (a == 0) continue;
+                uint32_t* d = &win->canvas[(y + py) * cw + x + q];
+                if (a == 255) { *d = s | 0xFF000000u; continue; }
+                uint32_t sr = (s >> 16) & 0xFFu, sg = (s >> 8) & 0xFFu,
+                         sb = s & 0xFFu;
+                uint32_t dr = (*d >> 16) & 0xFFu, dg = (*d >> 8) & 0xFFu,
+                         db = *d & 0xFFu;
+                uint32_t na = 255u - a;
+                uint32_t r = (sr * a + dr * na) / 255u;
+                uint32_t g = (sg * a + dg * na) / 255u;
+                uint32_t b = (sb * a + db * na) / 255u;
+                *d = 0xFF000000u | (r << 16) | (g << 8) | b;
             }
         }
         gui_damage_rect(win, dx, dy, dw, dh);

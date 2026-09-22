@@ -14,9 +14,11 @@
 //   base_canvas dengan canvas window. AKIBATNYA gambar ke base_canvas
 //   (sys_draw_image, syscall 23) TIDAK pernah terlihat.
 //   Karena itu SEMUA pixel — wallpaper, ikon, strip taskbar, kartu preview,
-//   notifikasi — digambar ke canvas window (Canvas::fill_rect/draw_text).
-//   Pixel PNG (wallpaper/ikon) di-blit dengan RLE per baris (satu fill_rect
-//   per rentang warna identik) karena libgui tidak punya draw-image.
+//   notifikasi — digambar ke canvas window (Canvas::fill_rect/draw_text untuk
+//   bentuk solid; Canvas::draw_px untuk pixel PNG ber-alpha).
+//   Pixel wallpaper foto di-blit dengan RLE per baris (satu fill_rect
+//   per rentang warna identik) karena libgui tidak punya draw-image; ikon
+//   di-blend per-pixel agar transparansi PNG utuh.
 #ifndef KYUZEN_DESKTOP_IMPL_THEME_HPP
 #define KYUZEN_DESKTOP_IMPL_THEME_HPP
 
@@ -48,6 +50,11 @@ const int LBL_MAX = CELL_W / 8;  // char label per sel, sisanya dipotong
 const int ICON_CACHE_PX = 48;  // satu ukuran cache; taskbar/preview
                                // mengecilkan saat gambar (tanpa alokasi)
 const int ICON_CACHE_N = 12;   // entri cache (umur: timpa paling lama)
+// Kekuatan penajaman (unsharp 3x3, media_sharpen_rgba) setelah downscale
+// ikon: 0 = mati. Box murni ~15% lebih lembut dari acuan Lanczos pada 256->48;
+// 50 mengangkat kontras tepi ke sekitar tingkat Lanczos tanpa halo (blur
+// selalu di dalam rentang lokal, jadi tidak pernah overshoot).
+const int ICON_SHARPEN_PCT = 50;
 const int ICON_NAME_MAX = 24;  // nama file ikon di manifest ("icon=")
 const char ICON_DEFAULT_PATH[] = "/default.png";  // fallback terpusat
 

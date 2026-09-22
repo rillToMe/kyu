@@ -15,6 +15,7 @@
 #ifndef KYUZEN_DESKTOP_CANVAS_HPP
 #define KYUZEN_DESKTOP_CANVAS_HPP
 
+#include <stdint.h>
 #include <kyuzen/desktop/geometry.hpp>
 
 namespace kyuzen {
@@ -39,6 +40,11 @@ public:
 
     void fill_rect(const Rect& r, Color c);
     void draw_text(const char* text, Point p, Color c);
+
+    // Blit ARGB8888 (alpha per-pixel) dengan blend ke latar canvas.
+    // a=0 dilewati (latar utuh), a=0xFF overwrite, sisanya blend integer.
+    // Hasil selalu opaque agar deklarasi opaque compositor valid.
+    void draw_px(int x, int y, const uint32_t* px, int w, int h);
 
     // Tandai cakupan yang berubah (dipakai Shell yang menggambar langsung
     // di luar fill_rect/draw_text — hari ini tak ada; disiapkan untuk itu).

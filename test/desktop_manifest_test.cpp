@@ -198,6 +198,13 @@ void gui_draw_text(gui_window_t* w, const char* t, int x, int y,
 void gui_flush(gui_window_t* w) {
     (void)w;
 }
+void gui_damage_rect(gui_window_t* w, int x, int y, int cw, int ch) {
+    (void)w;
+    (void)x;
+    (void)y;
+    (void)cw;
+    (void)ch;
+}
 uint32_t sys_file_size(char* f) {
     int i = find_file(strip_apps(f));
     if (i < 0) return 0;
@@ -429,6 +436,21 @@ int main(void) {
         assert(dst[0] == src[0] && dst[3] == src[1]);
         assert(dst[12] == src[2] && dst[15] == src[3]);
         assert(dst[5] == src[0] && dst[10] == src[3]);
+        // scale_icon = box + unsharp: tepi abu jadi lebih kontras (100/140 ->
+        // 93/146), sedangkan upscale murni tidak dipertajam (sama dengan
+        // scale_nearest).
+        uint32_t s4[16];
+        for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++)
+                s4[y * 4 + x] = (x < 2) ? 0xFF646464u : 0xFF8C8C8Cu;
+        uint32_t soft[4], hard[4];
+        scale_nearest(s4, 4, 4, soft, 2, 2);
+        scale_icon(s4, 4, 4, hard, 2, 2);
+        assert(soft[0] == 0xFF646464u && soft[1] == 0xFF8C8C8Cu);
+        assert(hard[0] == 0xFF5D5D5Du && hard[1] == 0xFF929292u);
+        uint32_t up2[16];
+        scale_icon(src, 2, 2, up2, 4, 4);
+        for (int i = 0; i < 16; i++) assert(up2[i] == dst[i]);
         // blit_px: RLE per baris — A A B B -> 2 fill_rect (w=2) + warna tepat.
         uint32_t row[4] = {0xFF102030u, 0xFF102030u, 0xFF405060u,
                            0xFF405060u};
