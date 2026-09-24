@@ -13,6 +13,8 @@
 // (sync.h hanya mutex/sem/condvar) dan dipakai lintas TU — deklarasi tetap
 // lokal di sini; membuat header event.h adalah out-of-scope phase ini.
 extern int pop_event(int task_id, kyuzen_event_t* out);
+extern void push_event_to(int task_id, uint32_t type, int32_t p1, int32_t p2,
+                          int32_t p3, int32_t win_id);
 
 int sys_kwm_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) {
     (void)st;
@@ -196,6 +198,25 @@ int sys_kwm_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) {
     // ============================================================
     else if (syscall_num == 67) { // sys_kwm_set_window_opaque(win_id)
         *ret = (uint64_t)kwm_set_window_opaque((int)r->rbx);
+    }
+    // ============================================================
+    // sys_wallpaper_reload (syscall 84, SYS_WALLPAPER_RELOAD di kwm_abi.h).
+    // Minta Desktop yang berjalan memuat ulang wallpaper dari konfigurasi
+    // persisten. Tanpa argumen (tanpa path user): kernel hanya mengantar
+    // SATU event bertipe tetap ke task pemilik window desktop; decode,
+    // render, dan damage terjadi di loop normal Desktop (bukan di sini).
+    // Return 0 = diterima, -1 = Desktop tak tersedia. Boleh dipanggil task
+    // mana pun — tak ada pointer user, framebuffer, atau memori desktop yang
+    // tersentuh; reload memakai konfigurasi persisten milik Desktop sendiri.
+    // ============================================================
+    else if (syscall_num == SYS_WALLPAPER_RELOAD) {
+        int owner = kwm_desktop_owner();
+        if (owner < 0) {
+            *ret = (uint64_t)-1;
+        } else {
+            push_event_to(owner, EVENT_WALLPAPER_RELOAD, 0, 0, 0, 0);
+            *ret = 0;
+        }
     }
 
     return 0;

@@ -116,6 +116,29 @@ LIBGUI_OBJ     = $(OBJ_DIR)/libs/core/libgui.o   # GUI framework lama (font8x16,
 PNG_OBJ        = $(OBJ_DIR)/libs/media/png.o   # dekoder gambar bersama (libs/media/png.c: PNG + BMP)
 MEDIA_OBJ      = $(OBJ_DIR)/libs/media/media.o # abstraksi media bersama (tipe/path/scan/probe)
 
+# --- libs/text (fontdemo saja): kzfont + backend FT (KZFONT_USE_FREETYPE).
+# FT inti TIDAK dikompilasi ulang di sini — pakai arsip freestanding root
+# ($(FT_ARCHIVE), dibangun `make` root sebelum sub-make apps; lihat
+# third_party/freetype/kyuzen.mk). Flag -D di bawah duplikat FT_KYUZEN_DEFS
+# (sub-make tidak mewarisi vars root).
+TEXT_DIR      = $(ROOT_DIR)/libs/text
+TEXT_OBJS     = $(OBJ_DIR)/libs/text/kzfont.o $(OBJ_DIR)/libs/text/kzraster_ft.o
+FT_ARCHIVE    = $(ROOT_DIR)/build/lib/libfreetype_kyuzen.a
+FT_PORT_DEFS  = -DKZFONT_USE_FREETYPE -DFT2_BUILD_LIBRARY \
+                -D'FT_CONFIG_STANDARD_LIBRARY_H=<ftkz_stdlib.h>' \
+                -D'FT_CONFIG_MODULES_H=<ftkz_modules.h>'
+FT_PORT_INCS  = -I$(ROOT_DIR)/third_party/freetype/kyuzen/include \
+                -I$(ROOT_DIR)/third_party/freetype/include \
+                -I$(TEXT_DIR)/include
+
+# --- Blob font embedded (ld -b binary, TANPA array byte manual) ---
+# Sumber = assets/fonts/*.ttf (redistributable, audit di fontdemo.c).
+# Simbol: _binary____assets_fonts_<Nama>_ttf_start/_end (lihat llvm-nm).
+FONT_TTF_DIR   = $(ROOT_DIR)/assets/fonts
+FONTDEMO_FONTS = DejaVuSans Inter-Regular NotoSansAdlam-Regular \
+                 NotoSansMono-Regular NotoSansMono-Bold
+FONT_BLOB_OBJS = $(addprefix $(OBJ_DIR)/apps/fonts/,$(addsuffix .o,$(FONTDEMO_FONTS)))
+
 # ==========================================================
 # DAFTAR APP
 # ==========================================================
@@ -134,7 +157,7 @@ MEDIA_OBJ      = $(OBJ_DIR)/libs/media/media.o # abstraksi media bersama (tipe/p
 #                 toolkit libui lewat ABI C + libs/gui/color + png + media.
 #                 Bukan kelompok lain: rule kompilasi/link-nya beda (clang++,
 #                 subdir, -I libs/gui/widget/include).
-GUI_APPS    = viewer clock calc taskmgr notepad settings widget_demo
+GUI_APPS    = viewer clock calc taskmgr notepad widget_demo fontdemo
 SYS_APPS    = echo cat
 TEST_APPS   = procinfo exit_test kill_test fd_test pipe_test fork_test badptr
 SIMPLE_APPS = $(SYS_APPS) $(TEST_APPS)
@@ -154,7 +177,7 @@ SYS_OBJS = $(addprefix $(OBJ_DIR)/system/,$(addsuffix .o,$(SYS_APPS)))
 TEST_OBJS = $(addprefix $(OBJ_DIR)/tests/,$(addsuffix .o,$(TEST_APPS)))
 ALL_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) \
            $(WIDGET_OBJS) $(PNG_OBJ) $(MEDIA_OBJ) $(COLOR_OBJS) $(APP_OBJS) \
-           $(SYS_OBJS) $(TEST_OBJS) $(CPP_APP_OBJS)
+           $(SYS_OBJS) $(TEST_OBJS) $(CPP_APP_OBJS) $(TEXT_OBJS) $(FONT_BLOB_OBJS)
 
 # Direktori object dibuat sekali (order-only) — aman `make -j8` dan tidak
 # memanggil `mkdir` untuk tiap object (mahal di Windows).
@@ -207,6 +230,29 @@ $(OBJ_DIR)/apps/viewer.o: viewer.c | $(OBJ_DIRS)
 	@echo "[CC] $< (O2)"
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
+# fontdemo memakai kzfont.h (libs/text) — header khusus per-file (bukan
+# global CFLAGS, agar app lain tak terseret include path baru).
+$(OBJ_DIR)/apps/fontdemo.o: fontdemo.c | $(OBJ_DIRS)
+	@echo "[CC] $< (libtext)"
+	$(CC) $(CFLAGS_APP) -I$(TEXT_DIR)/include -c $< -o $@
+
+# libs/text untuk fontdemo (freestanding userspace; kzraster dengan backend
+# FT penuh — arsip FT inti di-link saat LINK, bukan dikompilasi di sini).
+$(OBJ_DIR)/libs/text/kzfont.o: $(TEXT_DIR)/src/kzfont.c | $(OBJ_DIRS)
+	@echo "[CC] $<"
+	$(CC) $(CFLAGS_LIB) -I$(TEXT_DIR)/include -c $< -o $@
+
+$(OBJ_DIR)/libs/text/kzraster_ft.o: $(TEXT_DIR)/src/kzraster_ft.c | $(OBJ_DIRS)
+	@echo "[CC] $< (FT)"
+	$(CC) $(CFLAGS_LIB) $(FT_PORT_DEFS) $(FT_PORT_INCS) -c $< -o $@
+
+# Blob font: TTF -> object via ld -b binary (simbol
+# _binary____assets_fonts_<Nama>_ttf_start/_end; tanpa array byte manual).
+$(OBJ_DIR)/apps/fonts/%.o: $(FONT_TTF_DIR)/%.ttf | $(OBJ_DIRS)
+	@echo "[BIN] $<"
+	@mkdir -p $(dir $@)
+	$(LD) -m elf_x86_64 -r --format=binary -o $@ $<
+
 # clock memakai Kyuzen C SDK (snprintf/strlen dari LLVM libc): header SDK
 # via -isystem (JANGAN -I third_party/... — app hanya kenal SDK).
 $(OBJ_DIR)/apps/clock.o: clock.c | $(OBJ_DIRS)
@@ -249,9 +295,12 @@ TERMINAL_LIBS= $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(W
 MEDIA_LIBS   = $(GUI_LIBS) $(MEDIA_OBJ)
 
 # Link generic: ELF dibangun dari object app-nya + library grup-nya.
-# clock DIKECUALIKAN (di-link via SDK, ENTRY _start); fileman.elf TIDAK di
-# sini — ia dibangun root Makefile dari apps/filemanager/ (C++ SDK).
-$(filter-out $(ELF_DIR)/clock.elf,$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(GUI_APPS)))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/apps/%.o $(GUI_LIBS)
+# clock DIKECUALIKAN (di-link via SDK, ENTRY _start); fontdemo
+# DIKECUALIKAN (butuh libtext + arsip FT — rule sendiri di bawah);
+# fileman.elf TIDAK di sini — ia dibangun root Makefile dari
+# apps/filemanager/ (C++ SDK); settings.elf TIDAK di sini — ia dibangun root
+# Makefile dari apps/settings/ (C++ SDK).
+$(filter-out $(ELF_DIR)/clock.elf $(ELF_DIR)/fontdemo.elf,$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(GUI_APPS)))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/apps/%.o $(GUI_LIBS)
 	@mkdir -p $(ELF_DIR)
 	@echo "[LD] $(notdir $@) (libui toolkit + png)"
 	$(LD) $(LDFLAGS) $< $(GUI_LIBS) -o $@
@@ -290,6 +339,16 @@ $(ELF_DIR)/imageview.elf: $(IMAGEVIEW_OBJS) $(MEDIA_LIBS)
 	@mkdir -p $(ELF_DIR)
 	@echo "[LD] imageview.elf (C++, libui toolkit + media + png)"
 	$(LD) $(LDFLAGS) $(IMAGEVIEW_OBJS) $(MEDIA_LIBS) -o $@
+
+# fontdemo: toolkit + libtext + arsip FT freestanding (root) + blob font.
+# Arsip PALING AKHIR (archive: simbol diambil kiri-ke-kanan).
+$(ELF_DIR)/fontdemo.elf: $(OBJ_DIR)/apps/fontdemo.o $(GUI_LIBS) $(TEXT_OBJS) $(FONT_BLOB_OBJS) $(FT_ARCHIVE)
+	@mkdir -p $(ELF_DIR)
+	@echo "[LD] fontdemo.elf (libui toolkit + libtext + freetype + fonts)"
+	$(LD) $(LDFLAGS) $(OBJ_DIR)/apps/fontdemo.o $(GUI_LIBS) $(TEXT_OBJS) $(FONT_BLOB_OBJS) $(FT_ARCHIVE) -o $@
+
+# settings.elf TIDAK di sini — dibangun root Makefile dari apps/settings/
+# (C++ SDK, pola fileman.elf).
 
 # Alias lama: `make fileman` → ../build/apps/fileman.elf
 $(ALL_NAMES): %: $(ELF_DIR)/%.elf

@@ -284,17 +284,98 @@ static int cmd_fetch(shell_t* sh, int argc, char** argv) {
     return SHELL_OK;
 }
 
+// Cetak nilai "art" dari neofect.json (flat di akar FS, pola DESKTOP_ASSETS).
+// Return 1 bila art berhasil dicetak, 0 bila file hilang/kecil/rusak —
+// caller pakai banner ASCII lama sebagai fallback. Decode JSON minimal:
+// salin byte verbatim (UTF-8 braille lewat apa adanya), tangani escape
+// \" \\ \/ \b \f \n \r \t dan \uXXXX -> '?'. Tanpa alokasi dinamis.
+static int neofetch_print_art(shell_t* sh, const char* path) {
+    static char buf[4096];
+    for (uint32_t i = 0; i < sizeof(buf); i++) buf[i] = '\0';
+    if (!sys_file_exists((char*)path)) return 0;
+    uint32_t fsize = sys_file_size((char*)path);
+    if (fsize == 0 || fsize > sizeof(buf) - 1) return 0;
+    if (!sys_read_file_to_buffer((char*)path, buf, sizeof(buf) - 1)) return 0;
+    buf[sizeof(buf) - 1] = '\0';
+    // Cari kunci "art".
+    int i = 0;
+    while (buf[i]) {
+        if (buf[i] == '"' && buf[i+1] == 'a' && buf[i+2] == 'r' &&
+            buf[i+3] == 't' && buf[i+4] == '"') { i += 5; break; }
+        i++;
+    }
+    if (!buf[i]) return 0;
+    while (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\r' || buf[i] == '\n') i++;
+    if (buf[i] != ':') return 0;
+    i++;
+    while (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\r' || buf[i] == '\n') i++;
+    if (buf[i] != '"') return 0;
+    i++;
+    // Decode in-place (hasil selalu <= sumber).
+    int w = 0;
+    while (buf[i] && buf[i] != '"') {
+        if (w >= (int)sizeof(buf) - 1) return 0;
+        if (buf[i] == '\\') {
+            char e = buf[i+1];
+            if (!e) return 0;
+            if (e == 'n') { buf[w++] = '\n'; i += 2; }
+            else if (e == 'r') { buf[w++] = '\r'; i += 2; }
+            else if (e == 't') { buf[w++] = '\t'; i += 2; }
+            else if (e == 'b') { buf[w++] = '\b'; i += 2; }
+            else if (e == 'f') { buf[w++] = '\f'; i += 2; }
+            else if (e == '"') { buf[w++] = '"'; i += 2; }
+            else if (e == '\\') { buf[w++] = '\\'; i += 2; }
+            else if (e == '/') { buf[w++] = '/'; i += 2; }
+            else if (e == 'u') {
+                // \uXXXX tak dipakai file ini; jangan bocorkan escape.
+                for (int k = 2; k < 6; k++)
+                    if (!buf[i+k]) return 0;
+                buf[w++] = '?'; i += 6;
+            }
+            else { buf[w++] = e; i += 2; }
+        } else {
+            buf[w++] = buf[i++];
+        }
+    }
+    if (buf[i] != '"') return 0;
+    buf[w] = '\0';
+    // Cetak per baris; baris kosong terakhir (trailing \n) dilewati.
+    char line[512];
+    int li = 0;
+    for (int k = 0; k <= w; k++) {
+        char c = buf[k];
+        if (c == '\n' || c == '\0') {
+            line[li] = '\0';
+            if (!(c == '\0' && li == 0)) shell_writeln(sh, line);
+            li = 0;
+        } else if (c != '\r') {
+            if (li < (int)sizeof(line) - 1) line[li++] = c;
+        }
+    }
+    return 1;
+}
+
 static int cmd_neofetch(shell_t* sh, int argc, char** argv) {
-    (void)argc; (void)argv;
     char cpu[49]; get_cpu_string(cpu);
     char user[32]; shell_username(user, sizeof(user));
     uint32_t used = (uint32_t)(sys_used_ram() / 1024 / 1024);
     uint32_t tot  = (uint32_t)(sys_total_ram() / 1024 / 1024);
-    shell_writeln(sh, "        /\\        KyuzenOS");
-    shell_writeln(sh, "       /  \\       --------");
-    shell_write(sh, "      /____\\      User : "); shell_writeln(sh, user[0] ? user : "user");
-    shell_write(sh, "     /      \\     CPU  : "); shell_writeln(sh, cpu);
-    shell_write(sh, "    /________\\    RAM  : ");
+    const char* path = (argc >= 2 && argv[1][0]) ? argv[1] : "neofect.json";
+    if (!neofetch_print_art(sh, path)) {
+        shell_writeln(sh, "        /\\        KyuzenOS");
+        shell_writeln(sh, "       /  \\       --------");
+        shell_write(sh, "      /____\\      User : "); shell_writeln(sh, user[0] ? user : "user");
+        shell_write(sh, "     /      \\     CPU  : "); shell_writeln(sh, cpu);
+        shell_write(sh, "    /________\\    RAM  : ");
+        shell_writenum(sh, used); shell_write(sh, " MB / ");
+        shell_writenum(sh, tot);  shell_writeln(sh, " MB");
+        return SHELL_OK;
+    }
+    shell_writeln(sh, "KyuzenOS");
+    shell_writeln(sh, "--------");
+    shell_write(sh, "User : "); shell_writeln(sh, user[0] ? user : "user");
+    shell_write(sh, "CPU  : "); shell_writeln(sh, cpu);
+    shell_write(sh, "RAM  : ");
     shell_writenum(sh, used); shell_write(sh, " MB / ");
     shell_writenum(sh, tot);  shell_writeln(sh, " MB");
     return SHELL_OK;
@@ -730,7 +811,7 @@ static const shell_cmd_entry_t g_builtins[] = {
     { "hapus",    cmd_hapus,    "Hapus file",                  0 },
     { "mkdir",    cmd_mkdir,    "Buat folder",                 0 },
     { "fetch",    cmd_fetch,    "Spek OS",                     0 },
-    { "neofetch", cmd_neofetch, "Spek OS + banner",            0 },
+    { "neofetch", cmd_neofetch, "Spek OS + art (neofect.json)", 0 },
     { "sched",    cmd_sched,    "Status CPU",                  0 },
     { "time",     cmd_time,     "Waktu sekarang",              0 },
     { "start",    cmd_start,    "Jalankan app konkuren",       0 },

@@ -19,6 +19,8 @@ enum class EventType {
     Key,
     Window,  // cakupan: hanya Quit (EVENT_WIN_CLOSE) hari ini
     Quit,
+    WallpaperReload,  // EVENT_WALLPAPER_RELOAD (syscall 84): muat ulang
+                      // wallpaper dari konfigurasi persisten
 };
 
 struct Event {

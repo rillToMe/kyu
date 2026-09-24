@@ -8,6 +8,7 @@
 //                       shell melacak posisi dari MouseMove terakhir.
 //   EVENT_KEY_PRESS / EVENT_KEY_RELEASE → Key (key = param1, modifiers = param2)
 //   EVENT_WIN_CLOSE   → Quit (window_id = win_id)
+//   EVENT_WALLPAPER_RELOAD → WallpaperReload (syscall 84; tanpa parameter)
 //   lainnya (SCROLL, NONE, tak dikenal) → None (diabaikan framework)
 #include <kyuzen/desktop/event.hpp>
 
@@ -37,6 +38,8 @@ Event translate_raw(const kyuzen_event_t& raw) {
     } else if (raw.type == EVENT_WIN_CLOSE) {
         e.type = EventType::Quit;
         e.window_id = static_cast<uint32_t>(raw.win_id);
+    } else if (raw.type == EVENT_WALLPAPER_RELOAD) {
+        e.type = EventType::WallpaperReload;
     }
     return e;
 }

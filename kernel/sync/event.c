@@ -18,6 +18,8 @@
 #define EVENT_SCROLL        4   // Phase 4: P1 = delta wheel (+1 bawah / -1 atas)
 #define EVENT_KEY_RELEASE   5   // Phase 4: key up — P1 ASCII dasar, P2 modifier, P3 scancode
 #define EVENT_WIN_CLOSE     6   // Phase 5C (dicadangkan): WM minta app menutup window
+#define EVENT_WALLPAPER_RELOAD 7 // Permintaan reload wallpaper (syscall 84) ke
+                                // task desktop; P1..P3 = 0, win_id = 0
 
 typedef struct {
     uint32_t type;

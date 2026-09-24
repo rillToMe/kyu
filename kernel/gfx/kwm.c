@@ -395,6 +395,22 @@ int kwm_window_owner(int win_id) {
     return owner;
 }
 
+// Owner task dari window desktop aktif (-1 bila tak ada desktop).
+// Dipakai syscall 84 (sys_wallpaper_reload) untuk mengantar event ke task
+// yang tepat — tanpa menebak pid, tanpa broadcast.
+int kwm_desktop_owner(void) {
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    int owner = -1;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (kwm_windows[i].active && (kwm_windows[i].flags & KWM_WIN_DESKTOP)) {
+            owner = kwm_windows[i].owner_task;
+            break;
+        }
+    }
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    return owner;
+}
+
 void kwm_update_window(int win_id, uint32_t* app_buffer) {
     if(win_id < 0 || win_id >= MAX_WINDOWS) return;
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);

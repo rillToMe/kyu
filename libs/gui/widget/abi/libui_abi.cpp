@@ -5,6 +5,7 @@
 #include "core/painter.hpp"
 #include "core/widget.hpp"
 #include "primitives/label.hpp"
+#include "primitives/fttext.hpp"
 #include "primitives/button.hpp"
 #include "primitives/textbox.hpp"
 #include "primitives/checkbox.hpp"
@@ -89,6 +90,23 @@ ui_widget_t* ui_label_create(ui_window_t* win, const char* text) {
 
 void ui_label_set_text(ui_widget_t* widget, const char* text) {
     reinterpret_cast<ui::Label*>(widget)->set_text(text);
+}
+
+// --- FtText: area teks FreeType (callback milik aplikasi; toolkit
+// tetap FT-free — rasterisasi terjadi di sisi pemanggil) ---
+ui_widget_t* ui_fttext_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::FtText(w, h));
+}
+
+void ui_fttext_set_draw(ui_widget_t* widget, ui_fttext_draw_cb cb, void* userdata) {
+    ui::FtText* t = reinterpret_cast<ui::FtText*>(widget);
+    if (t) t->set_draw(cb, userdata);
+}
+
+void ui_fttext_refresh(ui_widget_t* widget) {
+    ui::FtText* t = reinterpret_cast<ui::FtText*>(widget);
+    if (t) t->refresh();
 }
 
 ui_widget_t* ui_button_create(ui_window_t* win, const char* text) {

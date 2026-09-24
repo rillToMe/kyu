@@ -41,6 +41,15 @@ public:
     void fill_rect(const Rect& r, Color c);
     void draw_text(const char* text, Point p, Color c);
 
+    // Gambar mentah via callback milik pemanggil (mis. teks FreeType dari
+    // libs/text — framework TETAP buta-font, tanpa dependensi font).
+    // cb(ud, pixels, cw, ch) menggambar langsung ke canvas XRGB (stride
+    // cw); dmg[4] (x,y,w,h, boleh 0) = bbox aktual untuk damage.
+    // Damage dicatat via jalur existing (pola draw_px).
+    typedef void (*raw_draw_cb)(void* ud, uint32_t* pixels, int cw, int ch,
+                                int dmg[4]);
+    void draw_raw(raw_draw_cb cb, void* ud);
+
     // Blit ARGB8888 (alpha per-pixel) dengan blend ke latar canvas.
     // a=0 dilewati (latar utuh), a=0xFF overwrite, sisanya blend integer.
     // Hasil selalu opaque agar deklarasi opaque compositor valid.

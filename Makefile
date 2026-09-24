@@ -387,6 +387,60 @@ tests/host/unit/color_test: tests/host/unit/color_test.c tests/host/unit/color_c
 	$(HOSTCC) -O2 -Wall -Wextra -Iinclude -Ilibs/gui/color/include -o $@ tests/host/unit/color_test.c $(COLOR_SRCS)
 	$(HOSTCXX) -std=c++17 -Wall -Wextra -fsyntax-only -Ilibs/gui/color/include tests/host/unit/color_cxx_check.cpp
 
+# --- Host-side unit test: libs/text (font manager + UTF-8 + glyph cache) ---
+# Kode PRODUKSI (libs/text/src/kzfont.c + kzraster_ft.c TANPA FT flag)
+# dengan raster backend MOCK deterministik — pola test-color. Mengunci:
+# UTF-8 valid/malformed/truncated, validasi manager + OOM-inject,
+# cache MISS->HIT ("Hello Kyuzen" 2x), measure==render, blend 0/128/255,
+# damage bbox + clip, missing-glyph skip, backend mati (tanpa FT).
+# Baris freestanding di bawah membuktikan kzfont.c bebas host libc
+# (flag == CFLAGS kernel esensial + -I yang sama dipakai apps).
+# Jalankan: make test-text
+TEXT_SRCS = libs/text/src/kzfont.c libs/text/src/kzraster_ft.c
+TEXT_HDRS = libs/text/include/kzfont.h
+
+.PHONY: test-text
+test-text: tests/host/unit/text_test
+	./tests/host/unit/text_test
+
+tests/host/unit/text_test: tests/host/unit/text_test.c $(TEXT_HDRS) $(TEXT_SRCS)
+	$(HOSTCC) -O1 -Wall -Wextra -Ilibs/text/include -Ilibs/gui/color/include -o $@ tests/host/unit/text_test.c $(TEXT_SRCS)
+	$(CC) --target=x86_64-pc-none-elf -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -Ilibs/text/include -Ilibs/gui/color/include -c libs/text/src/kzfont.c -o $(BUILD_DIR)/text-freestanding-check.o
+	rm -f $(BUILD_DIR)/text-freestanding-check.o
+
+# --- FreeType 2.14.3 freestanding + real-glyph host test ---
+# Vars di third_party/freetype/kyuzen.mk (modul minimal + port Kyuzen).
+# Object TIDAK masuk ALL_OBJS kernel (libtext = userspace; kernel
+# tetap FT-free). Archive = bukti "dapat dilink statically".
+# test-text-ft membuktikan DUA hal sekaligus: archive freestanding
+# terbangun + raster DejaVu 'A' 16px via kz API di host.
+# Jalankan: make test-text-ft
+include third_party/freetype/kyuzen.mk
+
+-include $(FT_KYUZEN_OBJS:.o=.d)
+
+FT_KYUZEN_OBJDIRS = $(sort $(dir $(FT_KYUZEN_OBJS)))
+$(FT_KYUZEN_OBJDIRS):
+	@mkdir -p $@
+
+$(OBJ_DIR)/third_party/freetype/%.o: third_party/freetype/%.c | $(FT_KYUZEN_OBJDIRS)
+	$(CC) $(FT_KYUZEN_CFLAGS) -c $< -o $@
+
+$(FT_KYUZEN_A): $(FT_KYUZEN_OBJS)
+	@mkdir -p $(dir $@)
+	llvm-ar rcs $@ $(FT_KYUZEN_OBJS)
+
+.PHONY: test-text-ft
+test-text-ft: $(FT_KYUZEN_A) tests/host/unit/text_ft_real
+	./tests/host/unit/text_ft_real
+
+tests/host/unit/text_ft_real: tests/host/unit/text_ft_real.c $(TEXT_HDRS) $(TEXT_SRCS) $(FT_KYUZEN_HDRS) $(FT_KYUZEN_SRCS) assets/fonts/DejaVuSans.ttf
+	@mkdir -p $(BUILD_DIR)/ft-host
+	$(HOSTCC) -O1 -Wall -Wextra $(FT_KYUZEN_DEFS) $(FT_KYUZEN_INCS) -c tests/host/unit/text_ft_real.c -o $(BUILD_DIR)/ft-host/text_ft_real.o
+	$(HOSTCC) -O1 -Wall -Wextra $(FT_KYUZEN_DEFS) $(FT_KYUZEN_INCS) -c libs/text/src/kzfont.c -o $(BUILD_DIR)/ft-host/kzfont.o
+	$(HOSTCC) -O1 -Wall -Wextra $(FT_KYUZEN_DEFS) $(FT_KYUZEN_INCS) -c libs/text/src/kzraster_ft.c -o $(BUILD_DIR)/ft-host/kzraster_ft.o
+	$(HOSTCC) -O1 -Wall -Wno-unused-parameter $(FT_KYUZEN_DEFS) $(FT_KYUZEN_INCS) $(FT_KYUZEN_SRCS) -o $@ $(BUILD_DIR)/ft-host/text_ft_real.o $(BUILD_DIR)/ft-host/kzfont.o $(BUILD_DIR)/ft-host/kzraster_ft.o
+
 # --- Host-side unit test: library media bersama + cache thumbnail Gallery ---
 # Kode PRODUKSI (libs/media/media.c + apps/gallery/thumbs.cpp) di atas syscall
 # mock — pola test-pipe/test-desktop, bukan salinan logika. Yang dikunci: satu
@@ -460,7 +514,7 @@ clean-tool:
 	rm -f tests/host/unit/*.exe tests/host/unit/kyuzenfs_v4_test tests/host/unit/kyuzenfs_xcheck tests/host/unit/panic_test \
 	      tests/host/unit/kyuzenfs_tree_test \
 	      tests/host/unit/ata_devmodel_test tests/host/unit/color_test tests/host/unit/textedit_test tests/host/unit/libui_theme_test \
-	      tests/host/unit/media_test tests/host/unit/media_host.o
+	      tests/host/unit/media_test tests/host/unit/media_host.o tests/host/unit/text_test tests/host/unit/text_ft_real
 
 # ==========================================
 # LLVM libc 22.1.8 — freestanding x86_64 (Phase 0)
@@ -1156,7 +1210,9 @@ LIBDESKTOP_ISOLATION = tools/desktop-phase8/check-desktop-isolation.sh
 # libc++ <cstdlib> (ditarik oleh <new>/std::nothrow) gagal assert. Semua header
 # repo di desktop/libdesktop di-include gaya kutip ("userlib.h"), jadi -iquote
 # cukup — lihat juga test-desktop & LIBC_PORT_CFLAGS.
-LIBDESKTOP_SYS_INC = -I$(LIBDESKTOP_INC_SRC) -iquote $(INCLUDE_DIR) -Ilibs/gui/color/include
+# -Ilibs/text/include: launcher.cpp memakai kzfont.h/kzfonts.h/kzfontcfg.h
+# (libs/text, bukan third_party — lolos isolasi desktop).
+LIBDESKTOP_SYS_INC = -I$(LIBDESKTOP_INC_SRC) -iquote $(INCLUDE_DIR) -Ilibs/gui/color/include -Ilibs/text/include
 
 DESKTOP_APP      ?= desktop
 # Override eksplisit (mis. tests/target/test-desktop) menang atas default ini —
@@ -1171,6 +1227,9 @@ DESKTOP_ELF       = $(ELF_DIR)/desktop.elf
 # sub-make apps; pola di bawah memicu sub-make itu bila berkas hilang).
 USERAPP_LIB_OBJS  = $(BUILD_DIR)/obj/user/libs/core/userlib.o $(BUILD_DIR)/obj/user/libs/core/libgui.o \
                     $(BUILD_DIR)/obj/user/libs/media/png.o
+# libs/text untuk label FreeType launcher (object freestanding yang sama
+# dipakai fontdemo/settings; backend FT penuh dari arsip freestanding).
+TEXT_USER_OBJS    = $(BUILD_DIR)/obj/user/libs/text/kzfont.o $(BUILD_DIR)/obj/user/libs/text/kzraster_ft.o
 
 DTSMOKE_SRC   = tools/desktop-phase8/dtsmoke.cpp
 DTSMOKE_APP   = $(LIBC_OUT)/desktop-phase8/dtsmoke.elf
@@ -1216,11 +1275,14 @@ $(DESKTOP_OBJDIR)/%.o: $(DESKTOP_IMPL_DIR)/%.cpp $(SDK_CPP_STAGE) $(DESKTOP_SELE
 $(BUILD_DIR)/obj/user/libs/core/%.o:
 	$(MAKE) -C apps all
 
-$(DESKTOP_ELF): $(DESKTOP_SELECTED) $(DESKTOP_OBJS) $(LIBDESKTOP_LIB) $(USERAPP_LIB_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+$(BUILD_DIR)/obj/user/libs/text/%.o:
+	$(MAKE) -C apps all
+
+$(DESKTOP_ELF): $(DESKTOP_SELECTED) $(DESKTOP_OBJS) $(LIBDESKTOP_LIB) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
 	@test -n "$(DESKTOP_SRCS)" || { echo "[desktop] FAIL: implementasi '$(DESKTOP_APP)' tanpa *.cpp di $(DESKTOP_IMPL_DIR)/"; exit 1; }
 	@bash $(LIBDESKTOP_ISOLATION)
 	@mkdir -p $(dir $@)
-	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(DESKTOP_OBJS) $(LIBDESKTOP_LIB) $(USERAPP_LIB_OBJS) -o $@ $(LIBDESKTOP_SYS_INC)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(DESKTOP_OBJS) $(LIBDESKTOP_LIB) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) -o $@ $(LIBDESKTOP_SYS_INC)
 	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[desktop] FAIL: _start tidak ada di desktop.elf ($(DESKTOP_APP))"; exit 1; }
 	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
 		echo "[desktop] FAIL: masih ada simbol undefined di desktop.elf ($(DESKTOP_APP))"; $(LIBC_NM) --undefined-only $@; exit 1; \
@@ -1512,6 +1574,21 @@ tests/host/unit/libui_fileman_widgets_test: tests/host/unit/libui_fileman_widget
 	$(HOSTCC) -O1 -Ilibs/gui/color/include -c libs/gui/color/src/color_utils.c -o tests/host/unit/color_utils_host.o
 	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/gui/widget/include -Ilibs/gui/color/include -o $@ tests/host/unit/libui_fileman_widgets_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp tests/host/unit/color_utils_host.o
 
+# Host test propagasi owner toolkit: ScrollView::child dan Tab::panels harus
+# menerima owner (Widget::set_visible memicu damage_full lewat owner; owner
+# null = halaman lama tak digambar ulang = ghost, mis. Settings sidebar).
+# Jalankan: make test-libui-owner
+.PHONY: test-libui-owner
+test-libui-owner: tests/host/unit/libui_owner_test
+	./tests/host/unit/libui_owner_test
+
+tests/host/unit/libui_owner_test: tests/host/unit/libui_owner_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp include/libui.h \
+                                 include/libgui.h include/userlib.h \
+                                 libs/gui/widget/include/containers/scrollview.hpp libs/gui/widget/include/containers/tab.hpp \
+                                 libs/gui/color/src/color_utils.c libs/gui/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/gui/color/include -c libs/gui/color/src/color_utils.c -o tests/host/unit/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/gui/widget/include -Ilibs/gui/color/include -o $@ tests/host/unit/libui_owner_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp tests/host/unit/color_utils_host.o
+
 # Desktop host test: modul system/desktop + backend libdesktop dikompilasi
 # langsung dengan syscall di-stub. Menguji discovery/manifest launcher,
 # terjemahan event + WindowManager, poll/klik taskbar, DAN siklus notifikasi
@@ -1529,9 +1606,10 @@ DESKTOP_HOST_TUS = tests/host/unit/desktop_manifest_test.cpp \
                    libs/gui/libdesktop/src/event.cpp libs/gui/libdesktop/src/window_manager.cpp libs/gui/libdesktop/src/system.cpp libs/gui/libdesktop/src/canvas.cpp
 tests/host/unit/desktop_manifest_test: $(DESKTOP_HOST_TUS) include/userlib.h include/libgui.h \
                             include/media_scale.h include/media.h \
+                            libs/text/src/kzfont.c libs/text/src/kzraster_ft.c libs/text/include/kzfont.h \
                             $(LIBDESKTOP_PUBLIC_HEADERS) system/desktop/launcher.hpp system/desktop/taskbar.hpp system/desktop/crash_notice.hpp system/desktop/theme.hpp \
                             system/desktop/app_icons.hpp system/desktop/wallpaper.hpp system/desktop/app_preview.hpp system/desktop/desktop_shell.hpp
-	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/gui/libdesktop/include -Isystem/desktop -Ilibs/gui/color/include -o $@ tests/host/unit/desktop_manifest_test.cpp system/desktop/launcher.cpp system/desktop/crash_notice.cpp system/desktop/taskbar.cpp system/desktop/app_icons.cpp system/desktop/wallpaper.cpp system/desktop/app_preview.cpp system/desktop/desktop_shell.cpp libs/gui/libdesktop/src/event.cpp libs/gui/libdesktop/src/window_manager.cpp libs/gui/libdesktop/src/system.cpp libs/gui/libdesktop/src/canvas.cpp
+	$(HOSTCXX) -O1 -Wall -iquote include -Ilibs/text/include -Ilibs/gui/libdesktop/include -Isystem/desktop -Ilibs/gui/color/include -o $@ tests/host/unit/desktop_manifest_test.cpp system/desktop/launcher.cpp system/desktop/crash_notice.cpp system/desktop/taskbar.cpp system/desktop/app_icons.cpp system/desktop/wallpaper.cpp system/desktop/app_preview.cpp system/desktop/desktop_shell.cpp libs/gui/libdesktop/src/event.cpp libs/gui/libdesktop/src/window_manager.cpp libs/gui/libdesktop/src/system.cpp libs/gui/libdesktop/src/canvas.cpp libs/text/src/kzfont.c libs/text/src/kzraster_ft.c
 
 # Heap user-space dinamis (Phase 9.5): tests/host/unit/libc_heap_test.cpp mengompilasi
 # libs/c/libc-port/src/kyuzen_heap.hpp APA ADANYA + FreeListHeap LLVM libc asli
@@ -1568,7 +1646,7 @@ tests/host/unit/libc_heap_test: tests/host/unit/libc_heap_test.cpp libs/c/libc-p
 # apps/), manifests/*.app, dan blok module_path di limine.conf.
 APP_NAMES = fileman viewer clock calc taskmgr notepad badptr widget_demo desktop \
             terminal settings procinfo exit_test kill_test fd_test echo cat \
-            pipe_test fork_test gallery imageview
+            pipe_test fork_test gallery imageview fontdemo
 APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 
 # `apps` tetap target phony (menu, kompatibel dengan workflow lama). Setiap ELF
@@ -1577,19 +1655,21 @@ APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 #     di dalamnya: hanya app/header yang berubah yang dikompilasi ulang), dan
 #   - ISO tetap dibangun ulang HANYA kalau timestamp ELF benar-benar berubah.
 .PHONY: apps
-apps: sdk-c sdk-cpp libdesktop
+apps: sdk-c sdk-cpp libdesktop $(FT_KYUZEN_A)
 	$(MAKE) -C apps all
 	$(MAKE) $(DESKTOP_ELF) DESKTOP_APP=$(DESKTOP_APP)
 	$(MAKE) $(FM_ELF)
+	$(MAKE) $(ST_ELF)
 
-# desktop.elf dan fileman.elf DIKECUALIKAN dari relay ini: keduanya punya rule
-# file nyata dengan prereq-nya sendiri (DESKTOP_ELF/FM_ELF). Menggabungkannya ke
-# sini akan menambahkan prereq order-only `apps` ke rule itu → `apps` memanggil
-# `$(MAKE) $(FM_ELF)` → loop rekursi RH (fork-bomb `make fileman`).
-# CATATAN: FM_ELF baru didefinisikan BELAKANGAN di file ini, jadi di sini harus
-# ditulis sebagai $(ELF_DIR)/fileman.elf — $(FM_ELF) akan mengembang kosong dan
-# fileman.elf justru ikut kena `| apps` (persis fork-bomb yang dihindari).
-$(filter-out $(DESKTOP_ELF) $(ELF_DIR)/fileman.elf,$(APP_ELFS)): | apps
+# desktop.elf, fileman.elf, dan settings.elf DIKECUALIKAN dari relay ini:
+# ketiganya punya rule file nyata dengan prereq-nya sendiri
+# (DESKTOP_ELF/FM_ELF/ST_ELF). Menggabungkannya ke sini akan menambahkan
+# prereq order-only `apps` ke rule itu → `apps` memanggil `$(MAKE) $(FM_ELF)`
+# → loop rekursi RH (fork-bomb `make fileman`).
+# CATATAN: FM_ELF/ST_ELF baru didefinisikan BELAKANGAN di file ini, jadi di
+# sini harus ditulis sebagai path literal — $(FM_ELF)/$(ST_ELF) akan mengembang
+# kosong dan ELF-nya justru ikut kena `| apps` (persis fork-bomb yang dihindari).
+$(filter-out $(DESKTOP_ELF) $(ELF_DIR)/fileman.elf $(ELF_DIR)/settings.elf,$(APP_ELFS)): | apps
 
 # --- RUST APPS (Phase 1: no_std userspace Rust) ---
 # Cargo tetap build system Rust (workspace di rust/); hasil akhir di-link dengan
@@ -1642,6 +1722,7 @@ pipe_test.elf: $(ELF_DIR)/pipe_test.elf
 fork_test.elf: $(ELF_DIR)/fork_test.elf
 gallery.elf: $(ELF_DIR)/gallery.elf
 imageview.elf: $(ELF_DIR)/imageview.elf
+fontdemo.elf: $(ELF_DIR)/fontdemo.elf
 
 # Verifikasi RUNTIME File Manager di QEMU (boot -> login root/1 -> `start
 # fileman` -> navigasi, New Folder + rename inline, Delete lewat dialog). Bukti:
@@ -1701,6 +1782,54 @@ $(FM_ELF): $(FM_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
 	fi
 	@echo "[filemanager] link OK: $(notdir $@) (C++ SDK + toolkit libui)"
 
+# ==========================================
+# SETTINGS (apps/settings) — aplikasi C++ asli
+# ==========================================
+# Pola build = pola File Manager (apps/settings/*.cpp lewat SDK C++ wrapper):
+# compiler/flags/runtime yang SAMA dengan desktop & fileman
+# (-fno-exceptions -fno-rtti -std=c++17, libc++ subset + crt yang menjalankan
+# .init_array), ditambah objek toolkit user-space (libui/libgui/userlib/png/
+# color) yang sudah dibangun apps/Makefile, PLUS objek libtext + arsip
+# FreeType freestanding (preview font + font.ui — sama seperti desktop).
+# ELF-nya tetap bernama settings.elf supaya manifest, ikon desktop, dan
+# `start settings` tidak berubah.
+SETTINGS_DIR   = apps/settings
+ST_SRCS        = $(wildcard $(SETTINGS_DIR)/*.cpp)
+ST_OBJDIR      = $(BUILD_DIR)/obj/settings
+ST_OBJS        = $(patsubst $(SETTINGS_DIR)/%.cpp,$(ST_OBJDIR)/%.o,$(ST_SRCS))
+ST_ELF         = $(ELF_DIR)/settings.elf
+ST_SYS_INC     = -iquote include -Ilibs/gui/color/include -Ilibs/text/include
+ST_HEADERS     = $(wildcard $(SETTINGS_DIR)/*.hpp)
+
+# Objek toolkit user-space (libui/libgui/userlib/png/color). Daftarnya diambil
+# dari BERKAS yang sudah dibangun apps/Makefile (glob di shell saat link), jadi
+# tidak ada daftar kedua yang bisa basi — pola yang sama dengan FM_TOOLKIT_GLOBS.
+ST_TOOLKIT_GLOBS = $(BUILD_DIR)/obj/user/libs/gui/widget/src/*/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/widget/abi/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/color/src/*.o
+
+.PHONY: settings-app
+settings-app: $(ST_ELF)
+	@echo "[settings] elf : $(ST_ELF)"
+
+$(ST_OBJDIR)/%.o: $(SETTINGS_DIR)/%.cpp $(ST_HEADERS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(ST_SYS_INC)
+
+$(ST_ELF): $(ST_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@test -n "$(ST_SRCS)" || { echo "[settings] FAIL: tidak ada *.cpp di $(SETTINGS_DIR)/"; exit 1; }
+	@$(MAKE) -C apps all
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(ST_OBJS) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $$(ls $(ST_TOOLKIT_GLOBS)) -o $@ $(ST_SYS_INC)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[settings] FAIL: _start tidak ada di settings.elf"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[settings] FAIL: masih ada simbol undefined di settings.elf"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_NM) --defined-only $@ | grep -qE " (__cxa_throw|__cxa_begin_catch|_Unwind_|__gxx_personality_|pthread_)"; then \
+		echo "[settings] FAIL: settings.elf menarik runtime exception/thread"; exit 1; \
+	fi
+	@echo "[settings] link OK: $(notdir $@) (C++ SDK + toolkit libui + libtext)"
+
 # Bersihkan hanya file objek/ELF apps (kernel tidak disentuh)
 .PHONY: clean-apps
 clean-apps:
@@ -1726,11 +1855,24 @@ DESKTOP_ASSETS = assets/icons/default.png assets/icons/demo.png assets/icons/clo
 				 assets/icons/folder.png assets/icons/notepad.png assets/icons/settings.png \
 				 assets/icons/terminal.png assets/icons/image_view.png\
 				 assets/icons/taskmanager.png assets/icons/calculator.png\
-				 assets/icons/gallery.png\
+				 assets/icons/gallery.png assets/icons/font-app.png\
                  assets/wallpaper/island.png assets/wallpaper/black-hole.png \
                  assets/wallpaper/city-lanscaps.png \
                  assets/wallpaper/city-town.png \
                  assets/wallpaper/kimi-no-nawa.png assets/wallpaper/meadow.png
+
+# Font UI (modul non-app -> akar FS, pola DESKTOP_ASSETS): dibaca
+# desktop/Settings saat runtime (sys_read_file_to_buffer). Daftar file
+# sinkron dengan KZ_FONT_FILES di libs/text/include/kzfonts.h.
+FONT_ASSETS = assets/fonts/Inter-Regular.ttf assets/fonts/DejaVuSans.ttf \
+              assets/fonts/NotoSansMono-Regular.ttf \
+              assets/fonts/NotoSansMono-Bold.ttf \
+              assets/fonts/NotoSansAdlam-Regular.ttf
+
+# Art neofetch shell (modul non-app -> akar FS, pola DESKTOP_ASSETS): dibaca
+# cmd_neofetch saat runtime via sys_read_file_to_buffer (fallback banner
+# ASCII bila file absen).
+SHELL_ASSETS = assets/shell/neofect.json
 
 # Sumber limine.conf untuk ISO. Default: file di root repo (perilaku lama, tidak
 # berubah). Smoke test libc Phase 1 menyuntikkan varian hasil generate lewat
@@ -1743,12 +1885,12 @@ boot_image.iso: $(ISO_IMAGE)
 
 $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
               $(LIMINE_CONF) assets/logo/kyuzen.png assets/logo/logo-splash.png $(MANIFESTS) $(LIMINE_FILES) \
-              $(DESKTOP_ASSETS)
+              $(DESKTOP_ASSETS) $(FONT_ASSETS) $(SHELL_ASSETS)
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@rm -f $(ISO_ROOT)/*.elf
 	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) assets/logo/kyuzen.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
 	@cp assets/logo/logo-splash.png $(ISO_ROOT)/logo.png
-	@cp $(DESKTOP_ASSETS) $(ISO_ROOT)/
+	@cp $(DESKTOP_ASSETS) $(FONT_ASSETS) $(SHELL_ASSETS) $(ISO_ROOT)/
 	@# Opsional: app smoke test libc Phase 1/2/4/5/6/7 + SDK Phase 3 + contoh C++ (tidak diproduksi build normal).
 	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
 	@if [ -f $(LIBC_PHASE2_APP) ]; then cp $(LIBC_PHASE2_APP) $(ISO_ROOT)/libc_phase2.elf; fi

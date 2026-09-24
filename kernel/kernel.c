@@ -21,7 +21,8 @@
 #include "lapic.h"
 #include "smp.h"
 #include "gfx.h"
-#include "ghal.h"   
+#include "ghal.h"
+#include "kyuzen_version.h"   // KYUZEN_VERSION kanonis (dipakai banner boot)
 
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
 __attribute__((used, section(".requests_start_marker")))
@@ -86,8 +87,8 @@ extern void kprint_num(uint64_t num);
 
 // ============================================================
 // BOOT CONSOLE — presentasi ringkas, diagnostik verbose ke serial.
+// (KYUZEN_VERSION dari kyuzen_version.h — single source of truth.)
 // ============================================================
-#define KYUZEN_VERSION "0.3.1"
 
 extern void serial_print(const char* s);
 extern int  kprint_quiet;                    // kernel/kyuzenfs.c

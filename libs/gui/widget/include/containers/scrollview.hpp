@@ -40,8 +40,18 @@ public:
     virtual ~ScrollView() { if (child) delete child; }
     void set_child(Widget* c) {
         child = c;
+        // Anak BUKAN anggota children[] (seperti Layout) jadi owner tak mengalir
+        // otomatis: teruskan eksplisit agar operasi berbasis owner
+        // (set_visible → damage_full) bekerja di seluruh subtree isi.
+        if (c) c->set_owner(owner);
         update_scroll_maxes();
         if (c) mark_dirty();
+    }
+    // Propagasi owner susulan (ui_window_add terakhir setelah build): teruskan
+    // ke isi agar subtree tak tertinggal dengan owner null.
+    virtual void set_owner(Window* o) override {
+        Widget::set_owner(o);
+        if (child) child->set_owner(o);
     }
     void set_pan(int on) {
         bool v = on != 0;

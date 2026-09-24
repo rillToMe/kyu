@@ -15,6 +15,10 @@
 // Layout FROZEN (syscall 61 ABI): win_id = slot KWM + 1, 0 = kosong.
 // Assert di bawah mengunci sizeof + offset; drift apa pun = ABI rusak.
 // Baseline terukur: sizeof=68, off 0/4/5/8/12/16/20/24/28/32/36.
+//
+// Nomor syscall KWM/desktop (dipakai kernel/syscall/syscall.c + sys_kwm.c di
+// satu sisi, libs/core/userlib.c di sisi lain — satu definisi di sini):
+#define SYS_WALLPAPER_RELOAD 84  // sys_wallpaper_reload() -> 0 / -1
 // ============================================================
 
 typedef struct {

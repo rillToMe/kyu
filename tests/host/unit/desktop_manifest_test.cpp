@@ -23,6 +23,7 @@ extern "C" {
 #include <kyuzen/desktop/window_manager.hpp>
 
 #include "crash_notice.hpp"
+#include "desktop_shell.hpp"
 #include "launcher.hpp"
 #include "taskbar.hpp"
 #include "theme.hpp"
@@ -83,6 +84,8 @@ static FakeFile FS[] = {
     {"city-town.png", "PNG"},
     {"kyuzen.png", 0},
     {"notes.txt", 0},
+    {"meadow.png", "PNG"},  // wallpaper kedua untuk uji poll (live reload)
+    {"/wallpaper.ui", 0},  // override Settings (0 = absen; diisi per-uji)
 };
 #define FS_N ((int)(sizeof(FS) / sizeof(FS[0])))
 
@@ -212,16 +215,28 @@ uint32_t sys_file_size(char* f) {
     if (t_streq(FS[i].name, "demo.png") || t_streq(FS[i].name, "default.png"))
         return 100;
     if (t_streq(FS[i].name, "city-town.png")) return 200;
+    if (t_streq(FS[i].name, "meadow.png")) return 200;
     return FS[i].data ? (uint32_t)t_slen(FS[i].data) : 0;
 }
 void sys_get_time(uint32_t* t) {
     for (int i = 0; i < 6; i++) t[i] = g_time[i];
 }
-// CATATAN Phase 9.5: sys_alloc/sys_free TIDAK lagi dipakai modul desktop
-// (buffer wallpaper 8MB @1080p kembali ke allocator standar — heap libc port
-// tumbuh on-demand; diuji di test/libc_heap_test.cpp), jadi tidak ada stub
-// heap di sini lagi. Bila ada modul desktop yang memanggilnya kembali, link
-// test ini akan gagal keras — bukan diam-diam memakai allocator palsu.
+// CATATAN Phase 9.5: sys_alloc/sys_free TIDAK dipakai modul desktop inti,
+// TETAPI launcher font UI (libs/text, font blob + glyph cache) membutuhkannya
+// kembali — stub malloc-backed di sini (jujur: heap host, bukan uheap).
+// Bila modul non-font memanggilnya, link tetap lolos — batas ini dijaga
+// oleh review, bukan linker.
+#include <cstdlib>
+void* sys_alloc(uint32_t n) { return malloc(n ? n : 1); }
+void sys_free(void* p) { free(p); }
+void* sys_realloc(void* p, uint32_t o, uint32_t n) {
+    (void)o;
+    if (n == 0) {
+        free(p);
+        return 0;
+    }
+    return realloc(p, n);
+}
 // png_decode palsu: 4x4 putih untuk PNG yang dikenal, null sisanya
 // (atau selalu null bila g_img_fail — jalur fallback total).
 static uint32_t g_fake_px[16];
@@ -231,7 +246,7 @@ uint32_t* png_decode(const char* filename, int* out_w, int* out_h) {
     for (int i = 0; filename[i]; i++)
         if (filename[i] == '/') b = &filename[i + 1];
     if (!t_streq(b, "demo.png") && !t_streq(b, "default.png") &&
-        !t_streq(b, "city-town.png"))
+        !t_streq(b, "city-town.png") && !t_streq(b, "meadow.png"))
         return 0;
     for (int i = 0; i < 16; i++) g_fake_px[i] = 0xFFFFFFFFu;
     *out_w = 4;
@@ -349,7 +364,8 @@ int main(void) {
         g_evs[2] = {1, 65, 1, 0, 0};     // KEY 'A' + shift
         g_evs[3] = {6, 0, 0, 0, 3};      // WIN_CLOSE
         g_evs[4] = {4, 1, 0, 0, 0};      // SCROLL → None
-        g_nev = 5;
+        g_evs[5] = {7, 0, 0, 0, 0};      // WALLPAPER_RELOAD (syscall 84)
+        g_nev = 6;
         g_evidx = 0;
         EventPoller poller;
         Event e = no_event();
@@ -362,6 +378,7 @@ int main(void) {
         assert(poller.poll(e) && e.type == EventType::Quit);
         assert(e.window_id == 3);
         assert(poller.poll(e) && e.type == EventType::None);
+        assert(poller.poll(e) && e.type == EventType::WallpaperReload);
         assert(!poller.poll(e));  // antrean habis
     }
 
@@ -541,6 +558,49 @@ int main(void) {
         g_img_fail = 0;
     }
 
+    // --- Live reload wallpaper (poll): ganti -> true, sama -> false,
+    // invalid -> false + gambar lama tetap. Pointer FS diganti sementara
+    // (array FS sendiri mutable; literal tak disentuh) lalu dipulihkan.
+    {
+        Wallpaper live;
+        assert(live.load(640, 480) == true);  // desktop.app -> city-town.png
+        assert(t_streq(live.selected(), "city-town.png"));
+        assert(live.poll(640, 480) == false);  // tak berubah: tanpa kerja
+        FS[5].data = "name=Desktop\nhidden=1\nwallpaper=meadow.png\n";
+        assert(live.poll(640, 480) == true);  // ganti -> reload
+        assert(live.has_image());
+        assert(t_streq(live.selected(), "meadow.png"));
+        assert(live.poll(640, 480) == false);  // sudah sinkron
+        FS[5].data = "name=Desktop\nhidden=1\nwallpaper=city-town.png\n";
+        assert(live.poll(640, 480) == true);  // kembali -> reload lagi
+        assert(t_streq(live.selected(), "city-town.png"));
+        FS[5].data = "name=Desktop\nhidden=1\nwallpaper=asing.png\n";
+        assert(live.poll(640, 480) == false);  // invalid: ditolak
+        assert(live.has_image());  // gambar lama tetap tampil
+        assert(t_streq(live.selected(), "city-town.png"));
+        FS[5].data = "name=Desktop\nhidden=1\nwallpaper=city-town.png\n";
+        assert(live.poll(640, 480) == false);  // pulih: sinkron lagi
+    }
+
+    // --- Override /wallpaper.ui mengalahkan manifest ---
+    // (Berkas non-modul: tak ditulis ulang kernel saat boot, tidak seperti
+    // /apps/desktop.app — jadi pilihan Settings selamat dari reboot.)
+    {
+        int wi = find_file("/wallpaper.ui");
+        assert(wi >= 0);
+        Wallpaper over;
+        assert(over.load(640, 480) == true);  // manifest city-town
+        assert(t_streq(over.selected(), "city-town.png"));
+        FS[wi].data = "meadow.png\n";
+        assert(over.poll(640, 480) == true);  // override menang
+        assert(t_streq(over.selected(), "meadow.png"));
+        FS[wi].data = "asing.png\n";  // invalid -> diabaikan
+        assert(over.poll(640, 480) == true);  // jatuh ke manifest
+        assert(t_streq(over.selected(), "city-town.png"));
+        FS[wi].data = 0;  // pulihkan: absen lagi
+        assert(over.poll(640, 480) == false);  // sinkron, tanpa kerja
+    }
+
     // --- Phase 9: gambar launcher (ikon PNG via RLE ke canvas window) ---
     {
         IconCache icons;
@@ -643,6 +703,212 @@ int main(void) {
         g_crash_mode = 0;
     }
     assert(NOTIF_MS >= 3000 && NOTIF_MS <= 15000);
+
+    // --- Icon box + grid kolom-mayor (anti-overlap ala Windows) ---
+    {
+        assert(BOX_W == 84 && BOX_H == 100 && BOX_LBL_MAX == 10);
+        assert(LABEL_FONT_PX == 11);
+        assert(Launcher::grid_rows(480) == (480 - TB_H - ICON_Y0) / CELL_H);
+        assert(Launcher::grid_rows(0) == 1);
+        int c = 0, r = 0;
+        Launcher::box_grid_pos(0, 6, 3, &c, &r);
+        assert(c == 0 && r == 0);
+        Launcher::box_grid_pos(1, 6, 3, &c, &r);
+        assert(c == 0 && r == 1);  // ke bawah dulu ...
+        Launcher::box_grid_pos(2, 6, 3, &c, &r);
+        assert(c == 0 && r == 2);
+        Launcher::box_grid_pos(3, 6, 3, &c, &r);
+        assert(c == 1 && r == 0);  // ... lalu kolom baru di kanan
+        Rect b0 = launcher.box_rect(0, 6, 3);
+        assert(b0.x == ICON_X0 && b0.y == ICON_Y0);
+        assert(b0.width == BOX_W && b0.height == BOX_H);
+        Rect b1 = launcher.box_rect(1, 6, 3);
+        assert(b1.x == ICON_X0 && b1.y == ICON_Y0 + CELL_H);
+        Rect b3 = launcher.box_rect(3, 6, 3);
+        assert(b3.x == ICON_X0 + CELL_W && b3.y == ICON_Y0);
+        // Klik area label ikut kena (dulu cuma kotak 48px).
+        assert(launcher.find_icon_at(pt(ICON_X0 + 40, ICON_Y0 + 70), 640,
+                                     480) == 0);
+        // Celah antar box bukan milik siapa pun (tak ada tabrakan).
+        assert(launcher.find_icon_at(pt(ICON_X0 + BOX_W + 8, ICON_Y0 + 10),
+                                     640, 480) == -1);
+        // Tak ada dua box saling menindih.
+        {
+            int cols = Launcher::grid_cols(640);
+            int rows = Launcher::grid_rows(480);
+            int cap = launcher.grid_cap(640, 480);
+            for (int i = 0; i < cap; i++)
+                for (int j = i + 1; j < cap; j++)
+                    assert(!launcher.box_rect(i, cols, rows)
+                                .intersects(launcher.box_rect(j, cols, rows)));
+        }
+        // Wrap 2 baris: kata utuh sebisa mungkin, "..." cuma di baris2.
+        {
+            char l1[16], l2[16];
+            assert(Launcher::wrap_label("Demo", l1, l2, sizeof(l1)) == 1);
+            assert(t_streq(l1, "Demo") && l2[0] == '\0');
+            assert(Launcher::wrap_label("", l1, l2, sizeof(l1)) == 1);
+            assert(l1[0] == '\0' && l2[0] == '\0');
+            assert(Launcher::wrap_label("1234567890", l1, l2, sizeof(l1)) == 1);
+            assert(t_streq(l1, "1234567890"));
+            // Spasi -> baris baru tanpa elipsis.
+            assert(Launcher::wrap_label("Very Long Name Here", l1, l2,
+                                        sizeof(l1)) == 2);
+            assert(t_streq(l1, "Very Long"));
+            assert(t_streq(l2, "Name Here"));
+            assert(Launcher::wrap_label("ab cd ef gh ij kl", l1, l2,
+                                        sizeof(l1)) == 2);
+            assert(t_streq(l1, "ab cd ef"));
+            assert(t_streq(l2, "gh ij kl"));
+            // Luber baris2 -> "..." menempel ("World" 5 + 3 = 8 muat).
+            assert(Launcher::wrap_label("Hello World Extra", l1, l2,
+                                        sizeof(l1)) == 2);
+            assert(t_streq(l1, "Hello"));
+            assert(t_streq(l2, "World..."));
+            // Tanpa spasi: potong keras, baris2 elipsis 7 + "...".
+            assert(Launcher::wrap_label("VeryLongApplicationName", l1, l2,
+                                        sizeof(l1)) == 2);
+            assert(t_streq(l1, "VeryLongAp"));
+            assert(t_streq(l2, "plicati..."));
+            // Kasus spek: 1 kata <= 10 char utuh 1 baris; spasi jadi 2 baris.
+            assert(Launcher::wrap_label("Terminal", l1, l2, sizeof(l1)) == 1);
+            assert(t_streq(l1, "Terminal"));
+            assert(Launcher::wrap_label("Kalkulator", l1, l2, sizeof(l1)) == 1);
+            assert(t_streq(l1, "Kalkulator"));
+            assert(Launcher::wrap_label("Image Viewer", l1, l2, sizeof(l1)) ==
+                   2);
+            assert(t_streq(l1, "Image"));
+            assert(t_streq(l2, "Viewer"));
+            assert(Launcher::wrap_label("Control Center", l1, l2, sizeof(l1)) ==
+                   2);
+            assert(t_streq(l1, "Control"));
+            assert(t_streq(l2, "Center"));
+            // 1 kata 13 char: character-wrap tanpa elipsis (sisa muat).
+            assert(Launcher::wrap_label("ControlCenter", l1, l2, sizeof(l1)) ==
+                   2);
+            assert(t_streq(l1, "ControlCen"));
+            assert(t_streq(l2, "ter"));
+        }
+        // State hover/selected terbaca via describe().
+        {
+            launcher.set_hover(1);
+            launcher.set_selected(2);
+            DesktopIcon di;
+            launcher.describe(0, 6, 3, &di);
+            assert(di.state == ICON_ST_NORMAL);
+            launcher.describe(1, 6, 3, &di);
+            assert(di.state == ICON_ST_HOVER);
+            launcher.describe(2, 6, 3, &di);
+            assert(di.state == ICON_ST_SELECTED);
+            launcher.set_hover(-1);
+            launcher.set_selected(-1);
+        }
+        // Sort A-Z + posisi kustom (free drag) + kembali auto.
+        {
+            launcher.sort_by_name();
+            assert(t_streq(launcher.entry(0).label, "Demo"));
+            assert(t_streq(launcher.entry(1).label, "Explorer"));
+            assert(t_streq(launcher.entry(2).label, "Kalkulator"));
+            assert(t_streq(launcher.entry(3).label, "badptr"));
+            assert(launcher.auto_arrange() == true);
+            launcher.set_auto_arrange(false);
+            launcher.set_custom_pos(0, 200, 200);
+            Rect bc = launcher.box_rect(0, 6, 3);
+            assert(bc.x == 200 && bc.y == 200);
+            assert(bc.width == BOX_W && bc.height == BOX_H);
+            assert(launcher.find_icon_at(pt(210, 210), 640, 480) == 0);
+            launcher.set_auto_arrange(true);  // buang posisi kustom
+            Rect bg = launcher.box_rect(0, 6, 3);
+            assert(bg.x == ICON_X0 && bg.y == ICON_Y0);
+        }
+    }
+
+    // --- Shell: seleksi, menu konteks kanan, free drag (canvas null) ---
+    {
+        DesktopShell sh;
+        Canvas cv;  // host: null (w=h=0) — strip dianggap tak ada
+        sh.on_start(cv);
+        assert(sh.launcher().count() == 4);
+        Event e = no_event();
+        e.type = EventType::MouseMove;
+        e.pos = pt(30, 30);
+        sh.on_event(e, cv);
+        assert(sh.launcher().hovered() == 0);  // hover box ikon 0
+        // Klik kanan di ikon -> menu app (Open/Properties), top-most.
+        e.type = EventType::MouseButton;
+        e.button = 1;
+        e.pressed = true;
+        sh.on_event(e, cv);
+        assert(sh.menu_open() && sh.menu_icon() == 0);
+        assert(sh.menu_count() == 2);
+        assert(sh.launcher().selected() == 0);
+        Rect mr = sh.menu_rect(0, 0);
+        assert(mr.width == MENU_W && mr.height == 2 * MENU_ROW_H + 8);
+        assert(sh.menu_row_at(pt(10, 15), 0, 0) == 0);
+        assert(sh.menu_row_at(pt(10, 40), 0, 0) == 1);
+        assert(sh.menu_row_at(pt(500, 500), 0, 0) == -1);
+        // Klik kiri item Open -> spawn + menu tutup.
+        int base = g_spawns;
+        e.button = 0;
+        e.pressed = true;
+        // kursor masih (30,30): pindahkan dulu ke baris menu.
+        Event mv = no_event();
+        mv.type = EventType::MouseMove;
+        mv.pos = pt(10, 15);
+        sh.on_event(mv, cv);
+        assert(sh.menu_hover() == 0);
+        sh.on_event(e, cv);
+        assert(!sh.menu_open());
+        assert(g_spawns == base + 1);
+        assert(t_streq(g_last_spawn, "/apps/fileman.elf"));
+        // Klik kanan area kosong -> menu desktop (3 item).
+        mv.pos = pt(500, 500);
+        sh.on_event(mv, cv);
+        sh.on_event(e, cv);  // kiri di kosong: batalkan seleksi
+        assert(sh.launcher().selected() == -1);
+        e.button = 1;
+        sh.on_event(e, cv);
+        assert(sh.menu_open() && sh.menu_icon() == -1);
+        assert(sh.menu_count() == 3);
+        // Klik kiri baris 0 -> toggle auto-arrange mati.
+        mv.pos = pt(10, 15);
+        sh.on_event(mv, cv);
+        e.button = 0;
+        sh.on_event(e, cv);
+        assert(!sh.menu_open());
+        assert(sh.launcher().auto_arrange() == false);
+        // Klik kiri di luar menu menutup tanpa aksi.
+        e.button = 1;
+        mv.pos = pt(500, 500);
+        sh.on_event(mv, cv);
+        sh.on_event(e, cv);
+        assert(sh.menu_open());
+        e.button = 0;
+        mv.pos = pt(500, 500);
+        sh.on_event(mv, cv);
+        sh.on_event(e, cv);
+        assert(!sh.menu_open());
+        assert(sh.launcher().auto_arrange() == false);  // tak berubah
+        // Free drag: seleksi lalu seret ikon 0 ke (100,100).
+        mv.pos = pt(30, 30);
+        sh.on_event(mv, cv);
+        sh.on_event(e, cv);  // klik pertama = seleksi + mulai drag
+        assert(sh.launcher().selected() == 0);
+        assert(g_spawns == base + 1);  // belum spawn
+        mv.pos = pt(100, 100);
+        sh.on_event(mv, cv);
+        Rect db = sh.launcher().box_rect(0, 1, 1);
+        assert(db.x == 100 - BOX_W / 2 && db.y == 100 - BOX_ICON_Y - ICON_SZ / 2);
+        e.pressed = false;  // lepas kiri = akhir drag
+        sh.on_event(e, cv);
+        e.pressed = true;
+        // Klik kedua di posisi baru = buka.
+        mv.pos = pt(100, 100);
+        sh.on_event(mv, cv);
+        sh.on_event(e, cv);
+        assert(g_spawns == base + 2);
+        assert(t_streq(g_last_spawn, "/apps/fileman.elf"));
+    }
 
     printf("desktop phase8: OK\n");
     return 0;

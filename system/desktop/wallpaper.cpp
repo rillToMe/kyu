@@ -48,9 +48,15 @@ void parse_wallpaper_key(const char* b, char* out, int cap) {
     }
 }
 
+bool streq(const char* a, const char* b) {
+    int i = 0;
+    while (a[i] && a[i] == b[i]) i++;
+    return a[i] == '\0' && b[i] == '\0';
+}
+
 }  // namespace
 
-Wallpaper::Wallpaper() : px_(0), w_(0), h_(0) {}
+Wallpaper::Wallpaper() : px_(0), w_(0), h_(0) { sel_[0] = '\0'; }
 
 int Wallpaper::pick_builtin(const char* name) {
     if (!name || !name[0]) return -1;
@@ -72,25 +78,43 @@ void Wallpaper::config_path(char* out, int cap, const char* name) {
     out[o] = '\0';
 }
 
-bool Wallpaper::load(int w, int h) {
-    if (px_) {
-        delete[] px_;
-        px_ = 0;
+void Wallpaper::read_selection(char* out, int cap) {
+    if (cap > 0) out[0] = '\0';
+    if (cap <= 1) return;
+    // 1. Override persisten Settings ("/wallpaper.ui", isi = nama builtin).
+    //    WAJIB didahulukan: /apps/desktop.app ditulis ulang kernel dari modul
+    //    ISO setiap boot (kernel.c auto-install), jadi pilihan Settings hanya
+    //    selamat di berkas non-modul — preseden settings.ui/font.ui di root.
+    if (sys_file_exists(const_cast<char*>("/wallpaper.ui"))) {
+        char wbuf[32];
+        for (int j = 0; j < 32; j++) wbuf[j] = '\0';
+        if (sys_read_file_to_buffer(const_cast<char*>("/wallpaper.ui"), wbuf,
+                                    sizeof(wbuf) - 1)) {
+            int n = 0;
+            while (wbuf[n] && wbuf[n] != '\n' && wbuf[n] != '\r' && n < cap - 1)
+                n++;
+            wbuf[n] = '\0';
+            if (pick_builtin(wbuf) >= 0) {
+                for (int j = 0; j <= n && j < cap; j++) out[j] = wbuf[j];
+                return;
+            }
+        }
     }
-    w_ = h_ = 0;
-    if (w <= 0 || h <= 0) return false;
-
-    // 1. Pilihan dari manifest desktop sendiri.
-    char sel[32];
-    sel[0] = '\0';
+    // 2. Manifest desktop (default instalasi).
     if (sys_file_exists(const_cast<char*>("/apps/desktop.app"))) {
         char mbuf[512];
         for (int j = 0; j < 512; j++) mbuf[j] = 0;
         if (sys_read_file_to_buffer(const_cast<char*>("/apps/desktop.app"),
                                     mbuf, sizeof(mbuf) - 1))
-            parse_wallpaper_key(mbuf, sel, sizeof(sel));
+            parse_wallpaper_key(mbuf, out, cap);
     }
-    // 2. Rantai fallback: pilihan -> bawaan.
+}
+
+// Muat `sel` (+fallback bawaan) ke buffer BARU; px_ diganti hanya bila sukses.
+// Gagal di titik mana pun = buffer lama utuh, tanpa bocor (raw dibebaskan).
+bool Wallpaper::loadSelection(const char* sel, int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    // Rantai fallback: pilihan -> bawaan.
     int idx = pick_builtin(sel);
     if (idx < 0) idx = pick_builtin(WALL_DEFAULT);
 
@@ -113,12 +137,23 @@ bool Wallpaper::load(int w, int h) {
             uint32_t* scr = new (std::nothrow) uint32_t[npx];
             if (scr) {
                 scale_nearest(raw, iw, ih, scr, w, h);
-                px_ = scr;
+                png_free(raw);
+                if (px_) delete[] px_;  // lama dibebaskan HANYA setelah
+                px_ = scr;              // yang baru siap (swap aman)
                 w_ = w;
                 h_ = h;
+                int n = 0;
+                if (sel) {
+                    while (sel[n] && n < 31) {
+                        sel_[n] = sel[n];
+                        n++;
+                    }
+                }
+                sel_[n] = '\0';
+                return true;
             }
             png_free(raw);
-            if (px_) return true;
+            return false;  // alokasi gagal: lama dipertahankan
         }
         // Pilihan gagal -> coba bawaan (sekali).
         idx = (t == 0) ? pick_builtin(WALL_DEFAULT) : -1;
@@ -126,6 +161,23 @@ bool Wallpaper::load(int w, int h) {
             break;  // pilihan == bawaan: tak perlu coba dua kali
     }
     return false;
+}
+
+bool Wallpaper::load(int w, int h) {
+    char sel[32];
+    read_selection(sel, sizeof(sel));
+    return loadSelection(sel, w, h);
+}
+
+bool Wallpaper::poll(int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    char sel[32];
+    read_selection(sel, sizeof(sel));
+    // Belum ada gambar (gagal saat start / file muncul belakangan): coba lagi.
+    // Sudah ada + pilihan sama + ukuran sama: tak ada kerja.
+    if (px_ && w == w_ && h == h_ && streq(sel, sel_)) return false;
+    if (!loadSelection(sel, w, h)) return false;  // lama tetap tampil
+    return true;
 }
 
 void Wallpaper::draw_bg(Canvas& canvas, Rect region, int h_tb) const {

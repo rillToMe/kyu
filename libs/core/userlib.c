@@ -202,6 +202,15 @@ int sys_get_screen_size(uint32_t* w, uint32_t* h) {
     return ret;
 }
 
+// sys_wallpaper_reload (syscall 84): minta Desktop memuat ulang wallpaper
+// dari konfigurasi persisten. Tanpa argumen. Return 0 = permintaan diterima
+// (event antre ke task desktop), -1 = Desktop tak tersedia.
+int sys_wallpaper_reload(void) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(84));
+    return ret;
+}
+
 // sys_exit: App selesai, kembali ke shell.
 // P0 Phase 2: exit(0) — syscall 34 merekam RBX sebagai status, jadi lewatkan
 // 0 eksplisit (dulu RBX tak terdefinisi, diabaikan kernel).

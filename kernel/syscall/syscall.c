@@ -7,6 +7,7 @@
 #include "vfs.h"           // SYS_DUP / SYS_DUP2 / SYS_PIPE / SYS_READDIR /
                            // SYS_RENAME / SYS_STAT
 #include "crash_notice.h"  // SYS_CRASH_NOTICE
+#include "kwm_abi.h"       // SYS_WALLPAPER_RELOAD
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -103,7 +104,8 @@ void syscall_handler(registers_t *r) {
              syscall_num == 29 || syscall_num == 30 || syscall_num == 31 ||
              syscall_num == 32 || syscall_num == 58 || syscall_num == 59 ||
              syscall_num == 60 || syscall_num == 61 || syscall_num == 62 ||
-             syscall_num == 63 || syscall_num == 66 || syscall_num == 67) {
+             syscall_num == 63 || syscall_num == 66 || syscall_num == 67 ||
+             syscall_num == SYS_WALLPAPER_RELOAD) {
         done = sys_kwm_handle(r, &uc, &ret_val, syscall_task);
     }
     else if (syscall_num == 41 || syscall_num == 52 || syscall_num == 53 ||

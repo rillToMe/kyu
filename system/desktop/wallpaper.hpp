@@ -19,6 +19,13 @@
 //
 // Render Partial memakai region: area yang ditinggalkan kartu preview
 // dipulihkan dari wallpaper (bukan render ulang seluruh layar).
+//
+// Live reload: Wallpaper mengingat pilihan manifest terakhir (sel_). poll()
+// membaca ulang kunci "wallpaper=" dan, HANYA bila berubah, memuat gambar baru
+// lewat loadSelection() (buffer baru dialokasikan dulu; yang lama diganti
+// hanya bila yang baru siap — gagal muat = wallpaper lama tetap). Dipanggil
+// DesktopShell::on_poll tiap rescan (±5 dtk, preseden ui_font_poll), tanpa
+// syscall/IPC baru dan tanpa restart desktop.
 #ifndef KYUZEN_DESKTOP_IMPL_WALLPAPER_HPP
 #define KYUZEN_DESKTOP_IMPL_WALLPAPER_HPP
 
@@ -44,8 +51,15 @@ public:
     // @1080p) dialokasikan oleh allocator standar (malloc) — heap libc port
     // tumbuh on-demand sejak Phase 9.5, jadi tidak perlu lagi jalur sys_alloc
     // khusus seperti pada workaround pasca-insiden BSOD INT 6.
+    // Gagal muat = wallpaper lama dipertahankan (objek segar = gradasi).
     bool load(int w, int h);
+    // Live reload: true = pilihan manifest berubah DAN gambar baru berhasil
+    // dimuat (pemanggil: Damage::Full). false = tak berubah / gagal (wallpaper
+    // lama tetap, tanpa efek samping). Dipanggil tiap rescan on_poll.
+    bool poll(int w, int h);
     bool has_image() const { return px_ != 0; }
+    // Pilihan manifest yang sedang tampil ("" = belum pernah load sukses).
+    const char* selected() const { return sel_; }
 
     // Latar untuk `region` (koordinat layar): foto bila ada, jika tidak
     // gradasi prosedural (h_tb = tinggi area bawah yang dikecualikan,
@@ -92,9 +106,16 @@ public:
 private:
     void draw_gradient(Canvas& canvas, Rect region, int h_tb) const;
 
+    // Muat `sel` (nama builtin manifest) + fallback bawaan ke buffer BARU;
+    // swap ke px_ hanya bila sukses (gagal = lama utuh). true = swap terjadi.
+    bool loadSelection(const char* sel, int w, int h);
+    // Baca kunci "wallpaper=" manifest ke out (boleh "", selalu NUL).
+    static void read_selection(char* out, int cap);
+
     uint32_t* px_;
     int w_;
     int h_;
+    char sel_[32];  // pilihan manifest yang sedang tampil ("")
 };
 
 }  // namespace desktop_impl

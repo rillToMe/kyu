@@ -68,6 +68,16 @@ void Canvas::draw_text(const char* text, Point p, Color c) {
                   to_gui_color(c));
 }
 
+void Canvas::draw_raw(raw_draw_cb cb, void* ud) {
+    if (!impl_ || !impl_->win || !cb) return;
+    gui_window_t* win = impl_->win;
+    int dmg[4] = { 0, 0, 0, 0 };
+    cb(ud, win->canvas, static_cast<int>(win->width),
+       static_cast<int>(win->height), dmg);
+    if (dmg[2] > 0 && dmg[3] > 0)
+        gui_damage_rect(win, dmg[0], dmg[1], dmg[2], dmg[3]);
+}
+
 void Canvas::draw_px(int x, int y, const uint32_t* px, int w, int h) {
     if (!impl_ || !impl_->win || !px || w <= 0 || h <= 0) return;
     gui_window_t* win = impl_->win;

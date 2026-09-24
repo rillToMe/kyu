@@ -46,6 +46,37 @@ const int ICON_X0 = 24;
 const int ICON_Y0 = 24;
 const int LBL_MAX = CELL_W / 8;  // char label per sel, sisanya dipotong
 
+// ---- Desktop icon box (model seleksi gaya Windows) ----
+// Tiap ikon hidup dalam bounding box tetap di dalam sel grid 96x104:
+// ikon 48px center-x di atas (BOX_ICON_Y), label maks 2 baris di bawah
+// (BOX_LBL_DY); "..." HANYA bila baris2 masih luber.
+const int BOX_W = 84;    // lebar bounding box ikon (seleksi biru ikut ini)
+const int BOX_H = 100;   // tinggi bounding box ikon
+const int BOX_ICON_Y = 8;                       // offset ikon dari atas box
+const int BOX_LBL_DY = BOX_ICON_Y + ICON_SZ + 6;  // offset label dari atas box
+const int BOX_LBL_MAX = 10;  // char label muat per baris box (bitmap 8px;
+// FT 11px muat ~13 char, tapi wrap disamakan 10 agar deterministik)
+// Ukuran font label FreeType (px). Dulu 16: "Terminal" (8 huruf) ~70px+
+// > BOX_W-8 hingga kena shrink "...". 11px ~= 50px: muat utuh 1 baris.
+const int LABEL_FONT_PX = 13;
+const int BOX_LBL_LINE_H = 18;  // jarak antar baris label (16px glyph + 2)
+// Dua baris muat dalam box: baris1 y+62..78, baris2 y+80..96 < BOX_H=100;
+// sel 104px menyisakan gap 8px ke box bawah (tak menutupi ikon berikut).
+const Color ICON_HOVER = rgb(0x2A, 0x38, 0x5E);  // latar hover (opaque;
+const Color ICON_SEL = rgb(0x2E, 0x4A, 0x8E);    // latar selected; fill_rect
+const Color ICON_SEL_EDGE = rgb(0x9C, 0xB8, 0xFF);  // outline putus-putus
+// backend tak menjamin alpha-blend, jadi highlight = warna solid)
+
+// ---- Context menu desktop/ikon (top-most, milik shell) ----
+const int MENU_W = 180;      // lebar menu
+const int MENU_ROW_H = 22;   // tinggi per baris item
+const int MENU_PAD = 4;      // padding dalam menu
+const Color MENU_BG = rgb(0x12, 0x16, 0x2A);
+const Color MENU_EDGE = rgb(0x3A, 0x4C, 0x80);
+const Color MENU_HOVER = rgb(0x2E, 0x4A, 0x8E);
+const Color MENU_TXT = rgb(0xE8, 0xEC, 0xF8);
+const Color MENU_ACC = rgb(0x2E, 0xD8, 0x6E);  // centang "aktif"
+
 // ---- Ikon aplikasi (cache + fallback) ----
 const int ICON_CACHE_PX = 48;  // satu ukuran cache; taskbar/preview
                                // mengecilkan saat gambar (tanpa alokasi)

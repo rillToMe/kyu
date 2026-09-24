@@ -104,6 +104,20 @@ void ui_window_set_escape(ui_window_t* win, ui_click_cb cb, void* userdata);
 ui_widget_t* ui_label_create(ui_window_t* win, const char* text);
 void ui_label_set_text(ui_widget_t* widget, const char* text);
 
+// --- FtText: area teks FreeType (callback milik aplikasi) ---
+// Toolkit TIDAK me-link FreeType: saat widget digambar, toolkit memanggil
+// balik draw_cb dengan canvas mentah (XRGB8888, stride = cw) + origin
+// widget (x, y, window-local konten). App meraster di dalamnya — biasanya
+// satu panggilan kz_text_draw() (libs/text) — lalu damage diurus widget
+// ini (refresh() -> mark_dirty -> Window::render -> gui_flush).
+// Kontrak: app mengukur teks (kz_text_measure) dan memilih ukuran widget
+// yang memuatnya; damage partial via refresh() setelah state berubah.
+typedef void (*ui_fttext_draw_cb)(void* userdata, uint32_t* canvas,
+                                  int cw, int ch, int x, int y);
+ui_widget_t* ui_fttext_create(ui_window_t* win, int w, int h);
+void ui_fttext_set_draw(ui_widget_t* widget, ui_fttext_draw_cb cb, void* userdata);
+void ui_fttext_refresh(ui_widget_t* widget);   // tandai dirty -> gambar ulang
+
 // --- Button ---
 ui_widget_t* ui_button_create(ui_window_t* win, const char* text);
 void ui_button_set_click(ui_widget_t* widget, ui_click_cb cb, void* userdata);

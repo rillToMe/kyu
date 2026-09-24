@@ -27,6 +27,7 @@ using kyuzen::desktop::Canvas;
 using kyuzen::desktop::Damage;
 using kyuzen::desktop::Event;
 using kyuzen::desktop::Point;
+using kyuzen::desktop::Rect;
 using kyuzen::desktop::Shell;
 using kyuzen::desktop::WindowManager;
 
@@ -40,9 +41,21 @@ public:
     void render(Canvas& canvas, Damage d) override;
     bool is_running() const override { return true; }
 
-private:
+    // Akses uji (host test): state menu + seleksi ikon.
+    bool menu_open() const { return menu_open_; }
+    int menu_icon() const { return menu_icon_; }
+    int menu_hover() const { return menu_hover_; }
+    Rect menu_rect(int w, int h) const;
+    int menu_count() const { return menu_icon_ >= 0 ? 2 : 3; }
+    int menu_row_at(Point p, int w, int h) const;
+    const Launcher& launcher() const { return launcher_; }
+
+ private:
     Damage handle_click(Point p, int w, int h);
     Damage handle_move(Point p, int w, int h);
+    Damage handle_right_click(Point p, int w, int h);
+    void menu_action(int row);
+    void draw_menu(Canvas& canvas, int w, int h) const;
     void sync_preview(int w, int h);
     void render_full(Canvas& canvas, int w, int h);
     void render_partial(Canvas& canvas, int w, int h);
@@ -56,6 +69,14 @@ private:
     WindowManager wm_;
     Point cursor_;
     uint64_t last_scan_ms_;
+    // Context menu (top-most): terbuka via klik kanan, tutup via klik kiri
+    // di luar / aksi item / Esc implisit (tak ada keyboard di shell).
+    bool menu_open_;
+    int menu_x_;     // titik klik (sebelum dijepit layar)
+    int menu_y_;
+    int menu_icon_;  // indeks ikon (menu app) atau -1 (menu desktop)
+    int menu_hover_;  // baris hover, atau -1
+    int drag_idx_;   // ikon sedang di-drag (free drag), atau -1
 };
 
 }  // namespace desktop_impl

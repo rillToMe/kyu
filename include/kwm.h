@@ -25,6 +25,10 @@ int  kwm_window_dims(int win_id, uint32_t* out_w, uint32_t* out_h);
 // Owner task dari sebuah window (-1 jika slot kosong/id invalid).
 int  kwm_window_owner(int win_id);
 
+// Owner task dari window desktop aktif (-1 bila tak ada desktop).
+// Dipakai syscall 84 untuk mengantar event reload ke task yang tepat.
+int  kwm_desktop_owner(void);
+
 // Ukuran canvas window dalam byte (0 jika slot kosong/id invalid).
 uint64_t kwm_window_canvas_bytes(int win_id);
 

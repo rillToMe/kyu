@@ -29,8 +29,17 @@ public:
         if (n >= MAX_TABS) return;
         titles[n] = _ui_strdup(title);
         panels[n] = panel;
+        // Panel BUKAN anggota children[] jadi owner tak mengalir otomatis:
+        // teruskan eksplisit (lihat ScrollView::set_child).
+        if (panel) panel->set_owner(owner);
         n++;
         mark_dirty();
+    }
+    // Propagasi owner susulan (ui_window_add terakhir setelah build).
+    virtual void set_owner(Window* o) override {
+        Widget::set_owner(o);
+        for (int i = 0; i < n; i++)
+            if (panels[i]) panels[i]->set_owner(o);
     }
     virtual int dirty_child_count() override { return n; }
     virtual Widget* dirty_child(int i) override { return panels[i]; }
