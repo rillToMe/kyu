@@ -133,8 +133,7 @@ ISO_IMAGE  = $(BUILD_DIR)/boot_image.iso
 # hanya memilih default saat boot — jalur lama tetap ada sebagai fallback.
 # Contoh pakai: make ATA_READ_PATH_DEFAULT=1 boot_image.iso
 ATA_READ_PATH_DEFAULT ?= 0
-KWM_DEBUG_FLAGS ?=
-CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw -Ilibs/gui/color/include -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT) $(KWM_DEBUG_FLAGS)
+CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw -Ilibs/gui/color/include -DATA_READ_PATH_DEFAULT=$(ATA_READ_PATH_DEFAULT)
 
 # Flags compiler untuk unit lwIP:
 #   - Mewarisi semua flag kernel (freestanding, mcmodel, mno-red-zone, dll.)
@@ -170,7 +169,6 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # dibangun apps/Makefile) — bukan task kernel, jadi dikecualikan juga.
 C_SOURCES = $(filter-out libs/core/userlib.c libs/core/libgui.c libs/media/media.c \
                          system/cat.c system/echo.c \
-                         tests/host/unit/damage_test.c tests/host/unit/damage_driver_test.c \
                         tests/host/unit/aa_math_test.c tests/host/unit/desktop_manifest_test.cpp tests/host/unit/kyuzenfs_dir_test.c tests/host/unit/kyuzenfs_v4_test.c tests/host/unit/kyuzenfs_xcheck.c tests/host/unit/panic_test.c                        tests/host/unit/virtqueue_test.c tests/host/unit/virtio_gpu_cmd_test.c tests/host/unit/cred_test.c tests/host/unit/proc_test.c tests/host/unit/kill_test.c tests/host/unit/fd_test.c tests/host/unit/pipe_test.c tests/host/unit/fork_test.c tests/host/unit/color_test.c tests/host/unit/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
 
@@ -276,41 +274,6 @@ compile_commands:
 # C_SOURCES, jalankan eksplisit: make test-virtqueue).
 HOSTCC = clang
 HOSTCXX = clang++
-
-# Real KWM/compositor + software backend, with a full-scene pixel oracle.
-.PHONY: test-damage test-damage-driver
-test-damage: $(BUILD_DIR)/tests/damage_test.exe
-	./$(BUILD_DIR)/tests/damage_test.exe
-	./$(BUILD_DIR)/tests/damage_test.exe --full
-	./$(BUILD_DIR)/tests/damage_test.exe --no-opaque
-	./$(BUILD_DIR)/tests/damage_test.exe --full --no-opaque
-	./$(BUILD_DIR)/tests/damage_test.exe --async
-	$(MAKE) test-damage-driver
-
-test-damage-driver: $(BUILD_DIR)/tests/damage_driver_test.exe
-	./$(BUILD_DIR)/tests/damage_driver_test.exe
-
-$(BUILD_DIR)/tests/damage_driver_test.exe: tests/host/unit/damage_driver_test.c \
-        tests/host/unit/damage_test_lock.h graphics/backend/virtio_gpu.c graphics/ghal.h \
-        drivers/graphics/hw/virtio_gpu_dev.c drivers/graphics/hw/virtio_gpu_dev.h \
-        drivers/graphics/hw/virtio_gpu_cmd.c drivers/graphics/hw/virtio_gpu_cmd.h \
-        drivers/graphics/hw/virtio_gpu_regs.h drivers/graphics/hw/virtqueue.c \
-        drivers/graphics/hw/virtqueue.h
-	@mkdir -p $(dir $@)
-	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function \
-	    -Igraphics -Igraphics/memory -Idrivers/graphics/hw -idirafter include \
-	    tests/host/unit/damage_driver_test.c -o $@
-
-$(BUILD_DIR)/tests/damage_test.exe: tests/host/unit/damage_test.c \
-        kernel/display.c kernel/gfx/fb.c kernel/gfx/kwm.c kernel/gfx/compositor.c \
-        kernel/gfx/kwm_internal.h kernel/gfx/damage_debug.h graphics/backend/software.c \
-        tests/host/unit/damage_test_lock.h \
-        include/display.h include/kwm.h graphics/ghal.h
-	@mkdir -p $(dir $@)
-	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function \
-	    -Igraphics -Ilibs/gui/color/include -idirafter include \
-	    tests/host/unit/damage_test.c kernel/gfx/fb.c -o $@
-
 .PHONY: test-virtqueue
 test-virtqueue: tests/host/unit/virtqueue_test
 	./tests/host/unit/virtqueue_test
@@ -1906,11 +1869,6 @@ FONT_ASSETS = assets/fonts/Inter-Regular.ttf assets/fonts/DejaVuSans.ttf \
               assets/fonts/NotoSansMono-Bold.ttf \
               assets/fonts/NotoSansAdlam-Regular.ttf
 
-# Art neofetch shell (modul non-app -> akar FS, pola DESKTOP_ASSETS): dibaca
-# cmd_neofetch saat runtime via sys_read_file_to_buffer (fallback banner
-# ASCII bila file absen).
-SHELL_ASSETS = assets/shell/neofect.json
-
 # Sumber limine.conf untuk ISO. Default: file di root repo (perilaku lama, tidak
 # berubah). Smoke test libc Phase 1 menyuntikkan varian hasil generate lewat
 # `make boot_image.iso LIMINE_CONF=...` supaya file repo tidak pernah memuat
@@ -1922,12 +1880,12 @@ boot_image.iso: $(ISO_IMAGE)
 
 $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
               $(LIMINE_CONF) assets/logo/kyuzen.png assets/logo/logo-splash.png $(MANIFESTS) $(LIMINE_FILES) \
-              $(DESKTOP_ASSETS) $(FONT_ASSETS) $(SHELL_ASSETS)
+              $(DESKTOP_ASSETS) $(FONT_ASSETS)
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@rm -f $(ISO_ROOT)/*.elf
 	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) assets/logo/kyuzen.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
 	@cp assets/logo/logo-splash.png $(ISO_ROOT)/logo.png
-	@cp $(DESKTOP_ASSETS) $(FONT_ASSETS) $(SHELL_ASSETS) $(ISO_ROOT)/
+	@cp $(DESKTOP_ASSETS) $(FONT_ASSETS) $(ISO_ROOT)/
 	@# Opsional: app smoke test libc Phase 1/2/4/5/6/7 + SDK Phase 3 + contoh C++ (tidak diproduksi build normal).
 	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
 	@if [ -f $(LIBC_PHASE2_APP) ]; then cp $(LIBC_PHASE2_APP) $(ISO_ROOT)/libc_phase2.elf; fi

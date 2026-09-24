@@ -180,53 +180,56 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
 
     int owner = smp_current_task_id();
 
+    // Alokasi + zerokan SEBELUM lock: canvas belum terpublikasi (slot masih
+    // inactive) sehingga tidak ada CPU/task lain yang bisa menyentuhnya.
+    // Lock hanya memublikasikan field — dari MB menjadi us.
+    DisplayBuffer* canvas =
+        display_buffer_create(width, height, COLOR_FORMAT_XRGB8888);
+    if (!canvas) return -1;
+    memset(canvas->pixels, 0, (size_t)bytes);
+
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
-    for(int i = 0; i < MAX_WINDOWS; i++) {
-        if(!kwm_windows[i].active) {
-            // FIX_004: alokasi DULU — slot ditandai active hanya setelah
-            // semua field siap (tidak ada zombie window saat alokasi gagal).
-            // Phase 3A: surface window = DisplayBuffer owned.
-            DisplayBuffer* canvas =
-                display_buffer_create(width, height, COLOR_FORMAT_XRGB8888);
-            if (!canvas) {
-                spinlock_unlock_irqrestore(&kwm_lock, flags);
-                return -1;
-            }
-            memset(canvas->pixels, 0, (size_t)bytes);
-            kwm_windows[i].x = x;
-            kwm_windows[i].y = y;
-            kwm_windows[i].width = width;
-            kwm_windows[i].height = height;
-            kwm_windows[i].canvas = canvas;
-            kwm_windows[i].owner_task = owner;
-            kwm_windows[i].z_index = next_z_index++;
-            kwm_windows[i].flags = 0;
-            kwm_windows[i].fully_opaque = 0;   // Phase 14: default aman — jalur scalar
-            kwm_windows[i].title[0] = '\0';
-            kwm_windows[i].active = 1;
-            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
-            // Phase 5B/5C: window baru memegang fokus — yang lama kehilangan
-            // tint titlebar-nya.
-            int prev_focus = focused_win_id;
-            focused_win_id = i;
-            int32_t ctx = kwm_windows[i].x;
-            int32_t cty = kwm_windows[i].y + KWM_TITLEBAR_H;
-            uint32_t cw = kwm_windows[i].width;
-            uint32_t ch = kwm_windows[i].height;
-            spinlock_unlock_irqrestore(&kwm_lock, flags);
-            kwm_frame_dirty(i);
-            // BUGFIX (Phase 4): jamin area KONTEN ter-invalidate sejak frame
-            // pertama — window baru tidak boleh muncul tanpa dirty region yang
-            // menutupi badannya, terlepas dari upload pertama app (frame_dirty
-            // sudah mencakupnya; ini mengunci kontrak + menutup race bila flush
-            // compositor jatuh di antara create dan upload pertama app).
-            screen_mark_dirty(ctx, cty, cw, ch);
-            if (prev_focus >= 0 && prev_focus != i) kwm_frame_dirty(prev_focus);
-            return i;
-        }
+    int slot = -1;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!kwm_windows[i].active) { slot = i; break; }
     }
+    if (slot < 0) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        display_buffer_destroy(canvas);
+        return -1;
+    }
+    // FIX_004: slot ditandai active hanya setelah semua field siap (tidak
+    // ada zombie window saat alokasi gagal).
+    kwm_windows[slot].x = x;
+    kwm_windows[slot].y = y;
+    kwm_windows[slot].width = width;
+    kwm_windows[slot].height = height;
+    kwm_windows[slot].canvas = canvas;
+    kwm_windows[slot].owner_task = owner;
+    kwm_windows[slot].z_index = next_z_index++;
+    kwm_windows[slot].flags = 0;
+    kwm_windows[slot].fully_opaque = 0;   // Phase 14: default aman — jalur scalar
+    kwm_windows[slot].title[0] = '\0';
+    kwm_windows[slot].active = 1;
+    if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
+    // Phase 5B/5C: window baru memegang fokus — yang lama kehilangan
+    // tint titlebar-nya.
+    int prev_focus = focused_win_id;
+    focused_win_id = slot;
+    int32_t ctx = kwm_windows[slot].x;
+    int32_t cty = kwm_windows[slot].y + KWM_TITLEBAR_H;
+    uint32_t cw = kwm_windows[slot].width;
+    uint32_t ch = kwm_windows[slot].height;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-    return -1;
+    kwm_frame_dirty(slot);
+    // BUGFIX (Phase 4): jamin area KONTEN ter-invalidate sejak frame
+    // pertama — window baru tidak boleh muncul tanpa dirty region yang
+    // menutupi badannya, terlepas dari upload pertama app (frame_dirty
+    // sudah mencakupnya; ini mengunci kontrak + menutup race bila flush
+    // compositor jatuh di antara create dan upload pertama app).
+    screen_mark_dirty(ctx, cty, cw, ch);
+    if (prev_focus >= 0 && prev_focus != slot) kwm_frame_dirty(prev_focus);
+    return slot;
 }
 
 // ============================================================
@@ -237,44 +240,47 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
 // z=0 (paling bawah), ukuran = layar penuh, tanpa titlebar/close,
 // klik tidak refokus (tetap diteruskan ke app utk ikon/taskbar).
 int kwm_create_desktop(void) {
+    const display_mode_t* mode = display_get_mode();
+    if (!mode || mode->width == 0 || mode->height == 0) return -1;
+    uint64_t bytes = (uint64_t)mode->width * mode->height * sizeof(uint32_t);
+
+    // Alokasi + zerokan SEBELUM lock (canvas belum terpublikasi — lihat
+    // kwm_create_window). Lock hanya cek-satu-desktop + klaim slot + publikasi.
+    DisplayBuffer* canvas =
+        display_buffer_create(mode->width, mode->height, COLOR_FORMAT_XRGB8888);
+    if (!canvas) return -1;
+    memset(canvas->pixels, 0, (size_t)bytes);
+
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (kwm_windows[i].active && (kwm_windows[i].flags & KWM_WIN_DESKTOP)) {
             spinlock_unlock_irqrestore(&kwm_lock, flags);
+            display_buffer_destroy(canvas);
             return -1;   // desktop sudah ada
         }
-    const display_mode_t* mode = display_get_mode();
-    if (!mode || mode->width == 0 || mode->height == 0) {
+    int slot = -1;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!kwm_windows[i].active) { slot = i; break; }
+    }
+    if (slot < 0) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
+        display_buffer_destroy(canvas);
         return -1;
     }
-    for (int i = 0; i < MAX_WINDOWS; i++) {
-        if (!kwm_windows[i].active) {
-            DisplayBuffer* canvas =
-                display_buffer_create(mode->width, mode->height, COLOR_FORMAT_XRGB8888);
-            if (!canvas) {
-                spinlock_unlock_irqrestore(&kwm_lock, flags);
-                return -1;
-            }
-            memset(canvas->pixels, 0, (size_t)mode->width * mode->height * sizeof(uint32_t));
-            kwm_windows[i].x = 0;
-            kwm_windows[i].y = 0;
-            kwm_windows[i].width = mode->width;
-            kwm_windows[i].height = mode->height;
-            kwm_windows[i].canvas = canvas;
-            kwm_windows[i].owner_task = smp_current_task_id();
-            kwm_windows[i].z_index = 0;          // selalu paling bawah
-            kwm_windows[i].flags = KWM_WIN_DESKTOP;
-            kwm_windows[i].fully_opaque = 0;   // Phase 14: desktop app tidak mendeklarasikan
-            kwm_windows[i].title[0] = '\0';
-            kwm_windows[i].active = 1;
-            spinlock_unlock_irqrestore(&kwm_lock, flags);
-            screen_mark_dirty(0, 0, mode->width, mode->height);
-            return i;
-        }
-    }
+    kwm_windows[slot].x = 0;
+    kwm_windows[slot].y = 0;
+    kwm_windows[slot].width = mode->width;
+    kwm_windows[slot].height = mode->height;
+    kwm_windows[slot].canvas = canvas;
+    kwm_windows[slot].owner_task = smp_current_task_id();
+    kwm_windows[slot].z_index = 0;          // selalu paling bawah
+    kwm_windows[slot].flags = KWM_WIN_DESKTOP;
+    kwm_windows[slot].fully_opaque = 0;   // Phase 14: desktop app tidak mendeklarasikan
+    kwm_windows[slot].title[0] = '\0';
+    kwm_windows[slot].active = 1;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-    return -1;
+    screen_mark_dirty(0, 0, mode->width, mode->height);
+    return slot;
 }
 
 // Set judul window (titlebar + taskbar). Hanya pemilik. -1 = gagal.
@@ -316,6 +322,9 @@ static int canvas_rect_opaque(const DisplayBuffer* canvas, Rect r) {
 int kwm_set_window_opaque(int win_id) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return -1;
 
+    // Snapshot di bawah lock; scan DI LUAR lock (anti-stall). Lifetime:
+    // lihat kwm_update_window — canvas stabil selama pemilik RUNNING di
+    // syscall ini; publikasi hint memverifikasi ulang slot + pointer.
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     if (!kwm_windows[win_id].active || !kwm_windows[win_id].canvas ||
         kwm_windows[win_id].owner_task != smp_current_task_id()) {
@@ -323,9 +332,18 @@ int kwm_set_window_opaque(int win_id) {
         return -1;
     }
     DisplayBuffer* canvas = kwm_windows[win_id].canvas;
-    // The same lock protects the scan, canvas lifetime and publication of the
-    // hint. Destroy or upload may otherwise invalidate an unlocked scan.
-    int opaque = canvas_rect_opaque(canvas, (Rect){0, 0, canvas->width, canvas->height});
+    uint32_t cw = canvas->width, ch = canvas->height;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+
+    int opaque = canvas_rect_opaque(canvas, (Rect){0, 0, cw, ch});
+
+    flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active ||
+        kwm_windows[win_id].owner_task != smp_current_task_id() ||
+        kwm_windows[win_id].canvas != canvas) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
     kwm_windows[win_id].fully_opaque = (uint8_t)opaque;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     return opaque ? 0 : -1;
@@ -419,6 +437,10 @@ int kwm_desktop_owner(void) {
 
 void kwm_update_window(int win_id, uint32_t* app_buffer) {
     if(win_id < 0 || win_id >= MAX_WINDOWS) return;
+    // Snapshot di bawah lock; copy + revalidasi DI LUAR lock (anti-stall).
+    // Aman: destroy sinkron hanya untuk task READY-terpurge (tidak jalan di
+    // CPU mana pun) atau diri sendiri — canvas tak bisa dibebaskan saat
+    // pemilik RUNNING di syscall ini. Commit memverifikasi ulang slot.
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     if(!kwm_windows[win_id].active || !kwm_windows[win_id].canvas || !app_buffer) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
@@ -429,22 +451,34 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
         return;
     }
+    DisplayBuffer* canvas = kwm_windows[win_id].canvas;
+    uint32_t cw = canvas->width, ch = canvas->height;
+    int was_opaque = kwm_windows[win_id].fully_opaque;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
 
-    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height;
-    uint32_t* dest = kwm_windows[win_id].canvas->pixels;  // stride == width
+    uint32_t size = cw * ch;
+    uint32_t* dest = canvas->pixels;  // stride == width
     // FIX_005 Tahap 4: app_buffer bisa halaman user (pengecualian shared #1,
     // dibaca langsung dengan CR3 caller) → jendela SMAP selama blit.
     user_access_begin();
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
     user_access_end();
-    if (kwm_windows[win_id].fully_opaque) {
-        DisplayBuffer* canvas = kwm_windows[win_id].canvas;
-        kwm_windows[win_id].fully_opaque = (uint8_t)canvas_rect_opaque(
-            canvas, (Rect){0, 0, canvas->width, canvas->height});
+    int still_opaque = was_opaque ?
+        canvas_rect_opaque(canvas, (Rect){0, 0, cw, ch}) : 0;
+
+    flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active ||
+        kwm_windows[win_id].owner_task != smp_current_task_id() ||
+        kwm_windows[win_id].canvas != canvas) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return;   // slot dipakai ulang/dihancurkan — damage tak valid
     }
+    kwm_windows[win_id].fully_opaque = (uint8_t)still_opaque;
     // Phase 5C: konten murni di bawah titlebar — hanya rect konten yang
     // berubah (titlebar digambar compositor, tidak ikut update).
     // Phase 10: desktop frameless — konten mulai dari y window.
+    // Posisi dibaca SEGAR di commit: pindah (drag) selama copy ikut tercakup
+    // lewat damage mover sendiri (old+new), jadi tidak ada piksel hilang.
     int32_t tb = (kwm_windows[win_id].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
     int32_t mx = kwm_windows[win_id].x;
     int32_t my = kwm_windows[win_id].y + tb;
@@ -481,6 +515,9 @@ int kwm_update_window_rect(int win_id, int32_t x, int32_t y,
     if (win_id < 0 || win_id >= MAX_WINDOWS || !app_buffer) return -1;
     if (x < 0 || y < 0 || width == 0 || height == 0) return -1;
 
+    // Snapshot di bawah lock; copy + revalidasi DI LUAR lock (anti-stall).
+    // Lifetime: lihat kwm_update_window — canvas stabil selama pemilik
+    // RUNNING di syscall ini; commit memverifikasi ulang slot + pointer.
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     if (!kwm_windows[win_id].active || !kwm_windows[win_id].canvas) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
@@ -503,7 +540,11 @@ int kwm_update_window_rect(int win_id, int32_t x, int32_t y,
     }
 
     // stride == window width (dalam elemen u32) untuk source DAN dest.
-    uint32_t* dst = kwm_windows[win_id].canvas->pixels;
+    DisplayBuffer* canvas = kwm_windows[win_id].canvas;
+    int was_opaque = kwm_windows[win_id].fully_opaque;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+
+    uint32_t* dst = canvas->pixels;
     uint32_t* src = app_buffer;
     uint64_t start = (uint64_t)y * win_w + (uint64_t)x;
     uint64_t row_bytes = (uint64_t)width * 4u;
@@ -517,10 +558,19 @@ int kwm_update_window_rect(int win_id, int32_t x, int32_t y,
     }
     user_access_end();
 
-    if (kwm_windows[win_id].fully_opaque)
-        kwm_windows[win_id].fully_opaque = (uint8_t)canvas_rect_opaque(
-            kwm_windows[win_id].canvas, (Rect){x, y, width, height});
+    int still_opaque = was_opaque ?
+        canvas_rect_opaque(canvas, (Rect){x, y, width, height}) : 0;
 
+    flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active ||
+        kwm_windows[win_id].owner_task != smp_current_task_id() ||
+        kwm_windows[win_id].canvas != canvas) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;   // slot dipakai ulang/dihancurkan — damage tak valid
+    }
+    kwm_windows[win_id].fully_opaque = (uint8_t)still_opaque;
+    // Posisi SEGAR di commit (lihat kwm_update_window): pindah selama copy
+    // tercakup lewat damage mover (old+new).
     int32_t tb = (kwm_windows[win_id].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
     int32_t mx = kwm_windows[win_id].x + x;
     int32_t my = kwm_windows[win_id].y + tb + y;
