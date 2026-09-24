@@ -202,9 +202,18 @@ int sys_get_screen_size(uint32_t* w, uint32_t* h) {
     return ret;
 }
 
-// sys_wallpaper_reload (syscall 84): minta Desktop memuat ulang wallpaper
-// dari konfigurasi persisten. Tanpa argumen. Return 0 = permintaan diterima
-// (event antre ke task desktop), -1 = Desktop tak tersedia.
+// sys_hot_reload (syscall 85): SATU syscall generik untuk semua reload runtime
+// config. target = kz_hot_reload_target (kwm_abi.h), flags = 0 (dicadangkan).
+// Return 0 = permintaan diterima (event antre ke task owner),
+// -1 = target/flags tak valid / owner tak tersedia.
+int sys_hot_reload(uint32_t target, uint32_t flags) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(85), "b"((uint64_t)target), "c"((uint64_t)flags));
+    return ret;
+}
+
+// sys_wallpaper_reload (syscall 84): LEGACY, setara
+// sys_hot_reload(KZ_HOT_RELOAD_WALLPAPER, 0). Kode baru memakai sys_hot_reload.
 int sys_wallpaper_reload(void) {
     int ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(84));

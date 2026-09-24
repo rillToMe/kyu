@@ -18,8 +18,11 @@
 #define EVENT_SCROLL        4   // Phase 4: P1 = delta wheel (+1 bawah / -1 atas)
 #define EVENT_KEY_RELEASE   5   // Phase 4: key up — P1 ASCII dasar, P2 modifier, P3 scancode
 #define EVENT_WIN_CLOSE     6   // Phase 5C (dicadangkan): WM minta app menutup window
-#define EVENT_WALLPAPER_RELOAD 7 // Permintaan reload wallpaper (syscall 84) ke
-                                // task desktop; P1..P3 = 0, win_id = 0
+#define EVENT_WALLPAPER_RELOAD 7 // LEGACY reload wallpaper (syscall 84) ke
+                                 // task desktop; P1..P3 = 0, win_id = 0
+#define EVENT_HOT_RELOAD 8       // Hot reload generik (syscall 85): P1 = target
+                                 // (kz_hot_reload_target), P2 = flags,
+// P3 = 0, win_id = 0
 
 typedef struct {
     uint32_t type;

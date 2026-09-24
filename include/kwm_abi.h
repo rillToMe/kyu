@@ -18,8 +18,26 @@
 //
 // Nomor syscall KWM/desktop (dipakai kernel/syscall/syscall.c + sys_kwm.c di
 // satu sisi, libs/core/userlib.c di sisi lain — satu definisi di sini):
-#define SYS_WALLPAPER_RELOAD 84  // sys_wallpaper_reload() -> 0 / -1
+#define SYS_WALLPAPER_RELOAD 84  // LEGACY: alias HOT_RELOAD(WALLPAPER).
+                                 // Jangan pakai untuk target baru — pakai
+                                 // SYS_HOT_RELOAD di bawah.
+#define SYS_HOT_RELOAD 85  // sys_hot_reload(target, flags) -> 0 / -1
 // ============================================================
+// Hot Reload ABI — SATU syscall generik untuk semua reload runtime config.
+//
+// Aturan: fitur baru yang butuh "terapkan segera" menambah TARGET + owner
+// handler, BUKAN syscall baru. Kernel hanya validasi + antar event ke owner;
+// actual reload milik subsystem pemilik (baca config persisten → swap aman →
+// damage/present via jalur existing).
+//
+// Target hanya ditambah bila ada consumer nyata (THEME dst. ditunda sampai
+// ada owner global — tema hari ini per-window via settings.ui).
+enum kz_hot_reload_target {
+    KZ_HOT_RELOAD_WALLPAPER = 1,  // owner: Desktop (baca /wallpaper.ui)
+    KZ_HOT_RELOAD_FONT      = 2,  // owner: Desktop/launcher (baca /font.ui)
+    KZ_HOT_RELOAD_MAX       = 2,  // batas validasi kernel (target > ini = -1)
+};
+// flags dicadangkan, harus 0 (non-nol = -1).
 
 typedef struct {
     uint32_t win_id;      // slot KWM + 1; 0 = kosong (konvensi event win_id)

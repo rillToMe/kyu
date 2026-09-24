@@ -1,10 +1,10 @@
 // apps/settings/personalization.hpp — halaman Personalization (wallpaper).
 //
-// TIDAK ada wallpaper setter syscall di repo ini. Pilihan disimpan ke
-// "/wallpaper.ui" (bukan /apps/desktop.app — berkas itu ditulis ulang kernel
-// dari modul ISO setiap boot). Desktop membaca berkas ini saat start MAUPUN
-// tiap poll rescan (live reload ≤5 dtk, preseden ui_font_poll).
-// Alur: pilih -> preview (ui_image_*) -> terapkan (persist + desktop reload).
+// Pilihan disimpan ke "/wallpaper.ui" (bukan /apps/desktop.app — berkas itu
+// ditulis ulang kernel dari modul ISO setiap boot). Desktop membaca berkas
+// ini saat start maupun saat event HOT_RELOAD(WALLPAPER) via sys_hot_reload
+// generik (syscall 85, target di kwm_abi.h).
+// Alur: pilih -> preview (ui_image_*) -> terapkan (persist + hot reload).
 //
 // Daftar wallpaper = WALL_BUILTINS milik desktop (system/desktop/theme.hpp),
 // diduplikasi di sini sebagai daftar nama saja (bukan logika decode).

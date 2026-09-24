@@ -18,10 +18,14 @@
                                 // P2 = modifier bitmask (setelah release diproses), P3 = scancode
 #define EVENT_WIN_CLOSE     6   // (Phase 5C — dicadangkan) WM meminta app menutup window.
                                 // win_id = window yang diminta; P1..P3 = 0.
-#define EVENT_WALLPAPER_RELOAD 7 // Permintaan reload wallpaper (syscall 84):
-                                // antre ke task pemilik window desktop; P1..P3
-                                // = 0, win_id = 0. Desktop memuat ulang dari
-                                // konfigurasi persisten di loop normalnya.
+#define EVENT_WALLPAPER_RELOAD 7 // LEGACY (syscall 84): antre ke task pemilik
+                                // window desktop; P1..P3 = 0, win_id = 0.
+                                // Desktop memuat ulang dari konfigurasi
+                                // persisten di loop normalnya. Target baru
+                                // memakai EVENT_HOT_RELOAD di bawah.
+#define EVENT_HOT_RELOAD 8      // Hot reload generik (syscall 85): P1 = target
+                                // (kz_hot_reload_target), P2 = flags, P3 = 0,
+// win_id = 0. Satu tipe event untuk semua target.
 
 // Bitmask modifier keyboard (P2 pada EVENT_KEY_PRESS / EVENT_KEY_RELEASE)
 #define KEY_MOD_SHIFT       0x01   // Shift kiri/kanan
@@ -220,13 +224,18 @@ int sys_kwm_get_windows(kwm_window_info_t* buf, int max);   // -> jumlah / -1
 int sys_kwm_activate_window(int win_id); // bring-to-front + fokus; 0 / -1
 int sys_get_screen_size(uint32_t* w, uint32_t* h);   // -> 0 / -1
 
-// sys_wallpaper_reload (syscall 84): minta Desktop yang berjalan memuat ulang
-// wallpaper dari konfigurasi persisten (/wallpaper.ui, fallback manifest).
-// Tanpa argumen (tanpa path user — tak ada validasi pointer yang diperlukan).
-// Return 0 = permintaan diterima (event antre ke task desktop; hasil decode
-// dilaporkan terpisah — bukan janji gambar termuat, dan tak menunggu decode),
-// -1 = Desktop tak tersedia (tanpa window desktop). Boleh dipanggil task
-// mana pun: hanya notifikasi bertipe tetap, tanpa akses compositor/memori.
+// sys_hot_reload (syscall 85): SATU syscall generik untuk semua reload runtime
+// config. target = kz_hot_reload_target (kwm_abi.h), flags = 0 (dicadangkan).
+// Kernel hanya memvalidasi + mengantar event ke owner (Desktop); decode,
+// render, dan damage terjadi di loop normal owner. Return 0 = permintaan
+// diterima (event antre ke task owner), -1 = target/flags tak valid atau
+// owner tak tersedia. Boleh dipanggil task mana pun: tanpa pointer user,
+// tanpa akses framebuffer/memori owner.
+int sys_hot_reload(uint32_t target, uint32_t flags);   // -> 0 / -1
+
+// sys_wallpaper_reload (syscall 84): LEGACY, setara
+// sys_hot_reload(KZ_HOT_RELOAD_WALLPAPER, 0). Dipertahankan untuk kompatibilitas;
+// kode baru memakai sys_hot_reload.
 int sys_wallpaper_reload(void);   // -> 0 / -1
 
 // sys_crash_notice (syscall 80): isi *out dengan ringkasan crash terakhir.

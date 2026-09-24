@@ -201,13 +201,11 @@ int sys_kwm_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) {
     }
     // ============================================================
     // sys_wallpaper_reload (syscall 84, SYS_WALLPAPER_RELOAD di kwm_abi.h).
-    // Minta Desktop yang berjalan memuat ulang wallpaper dari konfigurasi
-    // persisten. Tanpa argumen (tanpa path user): kernel hanya mengantar
-    // SATU event bertipe tetap ke task pemilik window desktop; decode,
-    // render, dan damage terjadi di loop normal Desktop (bukan di sini).
-    // Return 0 = diterima, -1 = Desktop tak tersedia. Boleh dipanggil task
-    // mana pun — tak ada pointer user, framebuffer, atau memori desktop yang
-    // tersentuh; reload memakai konfigurasi persisten milik Desktop sendiri.
+    // LEGACY: setara HOT_RELOAD(WALLPAPER). Dipertahankan untuk kompatibilitas;
+    // kode baru memakai syscall 85 di bawah. Kernel hanya mengantar SATU event
+    // bertipe tetap ke task pemilik window desktop; decode, render, dan damage
+    // terjadi di loop normal Desktop (bukan di sini). Return 0 = diterima,
+    // -1 = Desktop tak tersedia.
     // ============================================================
     else if (syscall_num == SYS_WALLPAPER_RELOAD) {
         int owner = kwm_desktop_owner();
@@ -216,6 +214,34 @@ int sys_kwm_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) {
         } else {
             push_event_to(owner, EVENT_WALLPAPER_RELOAD, 0, 0, 0, 0);
             *ret = 0;
+        }
+    }
+    // ============================================================
+    // sys_hot_reload (syscall 85, SYS_HOT_RELOAD di kwm_abi.h).
+    // SATU syscall generik: RBX = target (kz_hot_reload_target), RCX = flags
+    // (dicadangkan, harus 0). Kernel TIDAK reload apa pun: validasi target +
+    // flags, lalu antar SATU EVENT_HOT_RELOAD(P1=target) ke task pemilik
+    // window desktop. Actual reload milik owner di loop normalnya.
+    // Return 0 = diterima, -1 = target/flags tak valid / Desktop tak tersedia.
+    // Boleh dipanggil task mana pun — tanpa pointer user, tanpa akses
+    // framebuffer/memori owner. Target baru = nilai enum + cabang owner,
+    // BUKAN syscall baru.
+    // ============================================================
+    else if (syscall_num == SYS_HOT_RELOAD) {
+        uint64_t target = r->rbx;
+        uint64_t flags = r->rcx;
+        if (flags != 0 || target < KZ_HOT_RELOAD_WALLPAPER ||
+            target > KZ_HOT_RELOAD_MAX) {
+            *ret = (uint64_t)-1;
+        } else {
+            int owner = kwm_desktop_owner();
+            if (owner < 0) {
+                *ret = (uint64_t)-1;
+            } else {
+                push_event_to(owner, EVENT_HOT_RELOAD, (int32_t)target,
+                              0, 0, 0);
+                *ret = 0;
+            }
         }
     }
 

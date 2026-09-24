@@ -156,7 +156,12 @@ void FontsPage::select(int id) {
 }
 
 void FontsPage::save() {
-    fonts.save();
+    // Persist DULU (font.ui sumber kebenaran), lalu minta Desktop reload
+    // seketika via sys_hot_reload(FONT) generik. Gagal antar = config tetap
+    // tersimpan; poll berkala Desktop menutup celah (≤5 dtk) sebagai jaring
+    // pengaman, bukan jalur utama.
+    bool ok = fonts.save();
+    if (ok) sys_hot_reload(KZ_HOT_RELOAD_FONT, 0);
     select(fonts.currentId());
 }
 

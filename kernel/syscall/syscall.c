@@ -105,7 +105,7 @@ void syscall_handler(registers_t *r) {
              syscall_num == 32 || syscall_num == 58 || syscall_num == 59 ||
              syscall_num == 60 || syscall_num == 61 || syscall_num == 62 ||
              syscall_num == 63 || syscall_num == 66 || syscall_num == 67 ||
-             syscall_num == SYS_WALLPAPER_RELOAD) {
+             syscall_num == SYS_WALLPAPER_RELOAD || syscall_num == SYS_HOT_RELOAD) {
         done = sys_kwm_handle(r, &uc, &ret_val, syscall_task);
     }
     else if (syscall_num == 41 || syscall_num == 52 || syscall_num == 53 ||

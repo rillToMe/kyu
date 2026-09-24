@@ -19,8 +19,10 @@ enum class EventType {
     Key,
     Window,  // cakupan: hanya Quit (EVENT_WIN_CLOSE) hari ini
     Quit,
-    WallpaperReload,  // EVENT_WALLPAPER_RELOAD (syscall 84): muat ulang
+    WallpaperReload,  // EVENT_WALLPAPER_RELOAD (syscall 84, LEGACY): muat ulang
                       // wallpaper dari konfigurasi persisten
+    HotReload,        // EVENT_HOT_RELOAD (syscall 85): reload generik;
+                      // hot_target = kz_hot_reload_target (kwm_abi.h)
 };
 
 struct Event {
@@ -31,6 +33,7 @@ struct Event {
     int key;            // Key: ASCII (0 = non-printable)
     int modifiers;      // Key: bitmask KEY_MOD_* (diteruskan apa adanya)
     uint32_t window_id;  // Window/Quit: id window terkait (0 = tak relevan)
+    uint32_t hot_target;  // HotReload: target reload (0 = tak relevan)
 };
 
 inline Event no_event() {
@@ -43,6 +46,7 @@ inline Event no_event() {
     e.key = 0;
     e.modifiers = 0;
     e.window_id = 0;
+    e.hot_target = 0;
     return e;
 }
 

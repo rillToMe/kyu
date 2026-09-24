@@ -129,7 +129,7 @@ struct RectSink {
 struct RawEv {
     int type, p1, p2, p3, win;
 };
-static RawEv g_evs[8];
+static RawEv g_evs[10];
 static int g_nev = 0;
 static int g_evidx = 0;
 
@@ -364,8 +364,11 @@ int main(void) {
         g_evs[2] = {1, 65, 1, 0, 0};     // KEY 'A' + shift
         g_evs[3] = {6, 0, 0, 0, 3};      // WIN_CLOSE
         g_evs[4] = {4, 1, 0, 0, 0};      // SCROLL → None
-        g_evs[5] = {7, 0, 0, 0, 0};      // WALLPAPER_RELOAD (syscall 84)
-        g_nev = 6;
+        g_evs[5] = {7, 0, 0, 0, 0};      // WALLPAPER_RELOAD (syscall 84 LEGACY)
+        g_evs[6] = {8, 1, 0, 0, 0};      // HOT_RELOAD(WALLPAPER) (syscall 85)
+        g_evs[7] = {8, 2, 0, 0, 0};      // HOT_RELOAD(FONT) (syscall 85)
+        g_evs[8] = {8, 99, 0, 0, 0};     // HOT_RELOAD tak dikenal -> None aman
+        g_nev = 9;
         g_evidx = 0;
         EventPoller poller;
         Event e = no_event();
@@ -379,6 +382,13 @@ int main(void) {
         assert(e.window_id == 3);
         assert(poller.poll(e) && e.type == EventType::None);
         assert(poller.poll(e) && e.type == EventType::WallpaperReload);
+        assert(poller.poll(e) && e.type == EventType::HotReload);
+        assert(e.hot_target == (uint32_t)KZ_HOT_RELOAD_WALLPAPER);
+        assert(poller.poll(e) && e.type == EventType::HotReload);
+        assert(e.hot_target == (uint32_t)KZ_HOT_RELOAD_FONT);
+        assert(poller.poll(e) && e.type == EventType::HotReload);
+        assert(e.hot_target == 99);  // kernel tak pernah mengirim ini
+                                     // (validasi target); shell mengabaikannya
         assert(!poller.poll(e));  // antrean habis
     }
 
@@ -908,6 +918,28 @@ int main(void) {
         sh.on_event(e, cv);
         assert(g_spawns == base + 2);
         assert(t_streq(g_last_spawn, "/apps/fileman.elf"));
+    }
+
+    // --- Shell: Hot Reload generik (syscall 85) ---
+    // Canvas host null (w=h=0): reload wallpaper ditolak aman (tanpa kerja,
+    // tanpa crash, wallpaper lama utuh). Target tak dikenal = None.
+    // FONT lewat ui_font_poll (fontUI stub: file font absen = fallback).
+    {
+        DesktopShell sh;
+        Canvas cv;  // host: null (w=h=0)
+        sh.on_start(cv);
+        Event hr = no_event();
+        hr.type = EventType::HotReload;
+        hr.hot_target = (uint32_t)KZ_HOT_RELOAD_WALLPAPER;
+        assert(sh.on_event(hr, cv) == Damage::None);  // guard ukuran
+        hr.hot_target = 99;  // tak dikenal -> abaikan aman
+        assert(sh.on_event(hr, cv) == Damage::None);
+        hr.hot_target = (uint32_t)KZ_HOT_RELOAD_FONT;
+        assert(sh.on_event(hr, cv) == Damage::None);  // font absen: fallback
+        // LEGACY syscall 84: jalur kanonis sama, guard sama.
+        Event legacy = no_event();
+        legacy.type = EventType::WallpaperReload;
+        assert(sh.on_event(legacy, cv) == Damage::None);
     }
 
     printf("desktop phase8: OK\n");

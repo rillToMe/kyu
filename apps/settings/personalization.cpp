@@ -201,8 +201,9 @@ void PersonalizationPage::apply() {
         return;
     }
     // Persist DULU (sumber kebenaran), lalu minta Desktop reload seketika
-    // via syscall 84. Desktop membaca konfigurasi yang sama saat reboot.
-    if (sys_wallpaper_reload() == 0) {
+    // via sys_hot_reload(WALLPAPER) generik (syscall 85). Desktop membaca
+    // konfigurasi yang sama saat reboot.
+    if (sys_hot_reload(KZ_HOT_RELOAD_WALLPAPER, 0) == 0) {
         char msg[64];
         int k = 0;
         const char* p = "Wallpaper applied: ";

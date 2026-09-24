@@ -278,6 +278,29 @@ Damage DesktopShell::handle_move(Point p, int w, int h) {
     return Damage::Partial;
 }
 
+Damage DesktopShell::reloadWallpaper(Canvas& canvas) {
+    // Syscall 84 LEGACY maupun 85/HOT_RELOAD(WALLPAPER) tiba di sini: muat
+    // ulang dari konfigurasi persisten di loop normal (bukan konteks syscall).
+    // poll() swap aman: gagal = wallpaper lama tetap. Request beruntun aman:
+    // tiap reload membaca konfigurasi TERKINI, jadi akhirnya tampil yang
+    // terakhir (diproses satu per satu via antrean event).
+    if (wallpaper_.poll(canvas.width(), canvas.height())) {
+        print(const_cast<char*>("[desktop] wallpaper: ganti\n"));
+        return Damage::Full;
+    }
+    return Damage::None;
+}
+
+Damage DesktopShell::reloadFont() {
+    // HOT_RELOAD(FONT): jalur event-driven yang sama dengan poll berkala di
+    // on_poll (dipertahankan sebagai jaring pengaman untuk perubahan di luar
+    // API). ui_font_load swap aman: gagal = font lama tetap.
+    if (launcher_.ui_font_poll()) {
+        return Damage::Full;
+    }
+    return Damage::None;
+}
+
 Damage DesktopShell::on_event(const Event& e, Canvas& canvas) {
     int w = canvas.width();
     int h = canvas.height();
@@ -297,14 +320,16 @@ Damage DesktopShell::on_event(const Event& e, Canvas& canvas) {
     }
     if (e.type == EventType::Quit) return Damage::None;
     if (e.type == EventType::WallpaperReload) {
-        // Syscall 84 (sys_wallpaper_reload): muat ulang dari konfigurasi
-        // persisten di loop normal (bukan konteks syscall). poll() swap aman:
-        // gagal = wallpaper lama tetap. Request beruntun aman: tiap reload
-        // membaca konfigurasi TERKINI, jadi akhirnya tampil yang terakhir.
-        if (wallpaper_.poll(w, h)) {
-            print(const_cast<char*>("[desktop] wallpaper: ganti\n"));
-            return Damage::Full;
-        }
+        // LEGACY syscall 84 — satu jalur kanonis dengan HOT_RELOAD(WALLPAPER).
+        return reloadWallpaper(canvas);
+    }
+    if (e.type == EventType::HotReload) {
+        // Syscall 85 generik: dispatch per target ke owner handler. Target tak
+        // dikenal di sisi-desktop (mis. nilai masa depan) = abaikan aman.
+        if (e.hot_target == KZ_HOT_RELOAD_WALLPAPER)
+            return reloadWallpaper(canvas);
+        if (e.hot_target == KZ_HOT_RELOAD_FONT)
+            return reloadFont();
         return Damage::None;
     }
     return Damage::None;

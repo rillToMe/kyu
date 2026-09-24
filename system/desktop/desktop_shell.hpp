@@ -54,6 +54,11 @@ public:
     Damage handle_click(Point p, int w, int h);
     Damage handle_move(Point p, int w, int h);
     Damage handle_right_click(Point p, int w, int h);
+    // Canonical Hot Reload entry points (satu jalur untuk event LEGACY maupun
+    // generik): baca config persisten → swap aman → Damage. Gagal = state lama
+    // utuh, Damage::None.
+    Damage reloadWallpaper(Canvas& canvas);
+    Damage reloadFont();
     void menu_action(int row);
     void draw_menu(Canvas& canvas, int w, int h) const;
     void sync_preview(int w, int h);
