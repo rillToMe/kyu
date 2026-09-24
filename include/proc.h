@@ -29,6 +29,11 @@
 
 // --- waitpid ---
 #define PROC_WAIT_ANY ((int32_t)-1)  // wait for any child
+// Zombie-exhaustion fix: event-loop parents (desktop, shell prompt) cannot
+// block in waitpid. WNOHANG reaps one exited child or returns 0 when
+// children exist but none has exited (never blocks); -1 still means
+// "no children" (ECHILD equivalent). Blocking (options == 0) unchanged.
+#define PROC_WNOHANG  1
 
 // --- kill (P0 Phase 3) ---
 // Deterministic KyuzenOS convention, NOT POSIX signal encoding. There are
@@ -44,7 +49,7 @@
 // by SYS_DUP/SYS_DUP2 in vfs.h) ---
 #define SYS_EXIT_CODE   34   // extended: RBX = exit code (old void wrapper now passes 0)
 #define SYS_SPAWN_ARGV  68   // RBX=path, RCX=argc, RDX=argv (user char**)
-#define SYS_WAITPID     69   // RBX=pid, RCX=status* (user int* or 0), RDX=options (must 0)
+#define SYS_WAITPID     69   // RBX=pid, RCX=status* (user int* or 0), RDX=options (0 or PROC_WNOHANG)
 #define SYS_GETPID      70   // -> task id (-1 if idle)
 #define SYS_GETPPID     71   // -> parent id (PROC_NO_PARENT if none)
 #define SYS_PROC_LIST   72   // RBX=buf (user proc_info_t*), RCX=max -> count/-1

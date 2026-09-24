@@ -478,15 +478,17 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
     }
     else if (syscall_num == 69) { // sys_waitpid(pid, status*, options) — P0 Phase 2
         // RBX=pid (atau -1 = any child), RCX=status* (user int*, 0=ignore),
-        // RDX=options (must 0; no WNOHANG yet). Parent-only: unrelated pid -> -1.
-        // Blocks (no polling) via proc_wq; child exit wakes us cross-CPU.
+        // RDX=options (0 = block, PROC_WNOHANG = reap-or-0). Parent-only:
+        // unrelated pid -> -1. Blocks (no polling) via proc_wq; child exit
+        // wakes us cross-CPU.
         int32_t pid = (int32_t)r->rbx;
         uint64_t u_status = r->rcx;
         int options = (int)r->rdx;
         int32_t kstatus = 0;
         int got = -1;
-        if (options == 0 && (u_status == 0 || user_range_ok(uc, u_status, 4))) {
-            got = proc_waitpid(pid, u_status ? &kstatus : NULL, 0);
+        if ((options == 0 || options == PROC_WNOHANG) &&
+            (u_status == 0 || user_range_ok(uc, u_status, 4))) {
+            got = proc_waitpid(pid, u_status ? &kstatus : NULL, options);
             if (got >= 0 && u_status) {
                 if (copy_to_user(uc, u_status, &kstatus, 4) != 0) got = -1;
             }

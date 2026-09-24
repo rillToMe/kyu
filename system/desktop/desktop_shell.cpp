@@ -338,6 +338,11 @@ Damage DesktopShell::on_event(const Event& e, Canvas& canvas) {
 Damage DesktopShell::on_poll(Canvas& canvas) {
     (void)canvas;
     Damage d = Damage::None;
+    // Zombie-exhaustion fix: sapu child GUI yang sudah keluar tiap poll.
+    // Double-click spawn fire-and-forget; desktop tak pernah waitpid sehingga
+    // app yang ditutup menumpuk ZOMBIE dan menghabiskan slot task (launch
+    // baru gagal "slot penuh"). Non-blocking: tak mengubah perilaku loop.
+    { int st = 0; while (sys_waitpid(PROC_WAIT_ANY, &st, PROC_WNOHANG) > 0) { } }
     if (taskbar_.poll(wm_, launcher_)) d = Damage::Partial;
     // Preview menunjuk window yang mungkin hilang (tutup app): validasi.
     if (preview_.visible()) {

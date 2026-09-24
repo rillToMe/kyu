@@ -10,7 +10,7 @@
 #include "userlib.h"
 #include "shell.h"
 #include "libui.h"
-#include "color_types.h"   // tema + warna prompt memakai COLOR_RGB (libs/gui/color)
+#include "color_types.h" 
 
 // Warna prompt/caret (biru muda) — dipakai di dua tempat: accent tema dan gaya
 // prompt TextEdit. Satu definisi supaya keduanya tidak bisa menyimpang.

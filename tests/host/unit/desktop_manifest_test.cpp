@@ -111,6 +111,8 @@ static int g_kw_focus2 = 0;   // ubah fokus window ke-2 (deteksi perubahan)
 static int g_last_activate = -999;
 static uint32_t g_time[6] = {2026, 9, 21, 21, 35, 0};  // RTC palsu
 static int g_img_fail = 0;  // 1 = img_decode selalu gagal
+static int g_zombies = 0;       // child keluar yang menunggu reap (WNOHANG)
+static int g_waitpid_calls = 0;  // hitung pemanggilan sys_waitpid
 
 // Sink fill_rect palsu. Canvas host tidak bisa dipakai untuk mengamati gambar
 // (Impl-nya milik Application), jadi jalur blit pixel (RLE) diuji lewat sink
@@ -166,6 +168,20 @@ int sys_spawn(char* f) {
     g_last_spawn[sizeof(g_last_spawn) - 1] = '\0';
     g_spawns++;
     return 0;
+}
+// Zombie-exhaustion fix: on_poll sweeps exited children via WNOHANG.
+// Model: g_zombies zombie menunggu; tiap reap mengembalikan satu pid,
+// lalu -1 (tak ada child). options WNOHANG=1 diteruskan dan dihormati.
+int sys_waitpid(int pid, int* status, int options) {
+    (void)pid;
+    g_waitpid_calls++;
+    if (options != 0 && options != 1) return -1;
+    if (g_zombies > 0) {
+        g_zombies--;
+        if (status) *status = 0;
+        return 42;
+    }
+    return -1;
 }
 void sys_yield(void) {}
 void sys_exit_code(int code) {
@@ -717,7 +733,7 @@ int main(void) {
     // --- Icon box + grid kolom-mayor (anti-overlap ala Windows) ---
     {
         assert(BOX_W == 84 && BOX_H == 100 && BOX_LBL_MAX == 10);
-        assert(LABEL_FONT_PX == 11);
+        assert(LABEL_FONT_PX == 13);  // freetype era (b8f86df); dulu 11 bitmap
         assert(Launcher::grid_rows(480) == (480 - TB_H - ICON_Y0) / CELL_H);
         assert(Launcher::grid_rows(0) == 1);
         int c = 0, r = 0;
@@ -940,6 +956,22 @@ int main(void) {
         Event legacy = no_event();
         legacy.type = EventType::WallpaperReload;
         assert(sh.on_event(legacy, cv) == Damage::None);
+    }
+
+    // --- Shell: on_poll menyapu zombie (WNOHANG, tak menggantung) ---
+    {
+        DesktopShell sh;
+        Canvas cv;  // host: null
+        sh.on_start(cv);
+        g_zombies = 3;
+        int calls0 = g_waitpid_calls;
+        sh.on_poll(cv);  // harus kembali: 3 reap + 1 terminator
+        assert(g_zombies == 0);
+        assert(g_waitpid_calls == calls0 + 4);
+        g_zombies = 0;
+        int calls1 = g_waitpid_calls;
+        sh.on_poll(cv);  // tanpa child: sapu no-op, tak menggantung
+        assert(g_waitpid_calls == calls1 + 1);
     }
 
     printf("desktop phase8: OK\n");

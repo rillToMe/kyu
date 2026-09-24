@@ -485,9 +485,11 @@ int proc_kill(int32_t pid) {
     return 0;
 }
 
-// Wait for a child to exit. Blocks (no polling). Returns child pid or -1.
+// Wait for a child to exit. options == 0 blocks (no polling); options ==
+// PROC_WNOHANG reaps one exited child or returns 0 when children exist
+// but none has exited (never blocks). Returns child pid or -1 (no children).
 int proc_waitpid(int32_t pid, int32_t* status_out, int options) {
-    if (options != 0) return -1;
+    if (options != 0 && options != PROC_WNOHANG) return -1;
     int self = smp_current_task_id();
     if (self < 0 || self >= MAX_TASKS) return -1;
     if (pid != PROC_WAIT_ANY && (pid < 0 || pid >= MAX_TASKS)) return -1;
@@ -556,7 +558,14 @@ int proc_waitpid(int32_t pid, int32_t* status_out, int options) {
             return target;
         }
 
-        // No zombie yet: block until a child exit wakes us.
+        // No zombie yet: block until a child exit wakes us — unless the
+        // caller asked WNOHANG (have_child == 1 here: children alive,
+        // none exited -> 0, never block).
+        if (options == PROC_WNOHANG) {
+            spinlock_unlock_irqrestore(&scheduler_lock, s_f);
+            wait_queue_unlock(&proc_wq, wq_f);
+            return 0;
+        }
         spinlock_unlock_irqrestore(&scheduler_lock, s_f);
         wq_f = wait_block_locked(&proc_wq, wq_f);
         // loop: re-check under lock (wake-all may be for a sibling)

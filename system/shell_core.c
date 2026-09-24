@@ -1158,6 +1158,12 @@ shell_t* shell_init(const shell_io_t* io) {
 int shell_execute(shell_t* sh, const char* line) {
     if (!sh || !line) return SHELL_ERR;
 
+    // Zombie-exhaustion fix: sapu child yang sudah keluar setiap Enter.
+    // Fire-and-forget `start` tidak menunggu; tanpa sapu ini child terminal
+    // menumpuk ZOMBIE dan menghabiskan slot task. Non-blocking: 0 = tak ada
+    // yang keluar, -1 = tak ada child. Blocking waitpid lain tak tersentuh.
+    { int st = 0; while (sys_waitpid(PROC_WAIT_ANY, &st, PROC_WNOHANG) > 0) { } }
+
     char buf[SHELL_LINE_MAX];
     int i = 0;
     while (line[i] == ' ') i++;                       // buang spasi depan
