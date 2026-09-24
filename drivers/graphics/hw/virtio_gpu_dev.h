@@ -26,7 +26,7 @@
 //   offset 0 .. VGPU_RESP_SYNC_MAX  → response command SINKRON
 //     (dev_command; GET_DISPLAY_INFO butuh 408 B, sisanya <= 64 B)
 //   offset VGPU_RESP_SYNC_MAX + i*64 → response slot ASYNC per chain
-//     (submit2; satu slot per chain in-flight, dialokasikan round-robin)
+//     (submit2; two fixed response slots per owned async pair)
 #define VGPU_RESP_SYNC_MAX  512
 #define VGPU_RESP_SLOT      64
 #define VGPU_RESP_N_ASYNC   ((4096 - VGPU_RESP_SYNC_MAX) / VGPU_RESP_SLOT)   // 56
@@ -43,6 +43,7 @@
 // 8 pasang x 4 desc = 32 = controlq penuh — pool tak pernah lebih sempit
 // dari queue, jadi "pool habis" murni berarti device tidak me-reap.
 #define VGPU_ASYNC_PAIRS 8
+_Static_assert(1 + 2 * VGPU_ASYNC_PAIRS <= VGPU_RESP_N_ASYNC, "async response slots fit");
 
 // Batas timeout cursor beruntun sebelum HW cursor dinyatakan mati.
 #define VGPU_CURSOR_MAX_TIMEOUTS 3
@@ -101,13 +102,12 @@ typedef struct {
 
     // Phase 2C §9.2 — fence async present. fence_of_head[slot] = fence_id
     // chain yang sedang in-flight pada descriptor head tsb (0 = tidak ada);
-    // last_fence_done = fence tertinggi yang sudah selesai (device memproses
-    // controlq in-order, jadi fence selesai selalu monotonic).
+    // last_fence_done = contiguous watermark: BOTH commands of every batch up
+    // to this fence have completed. Used-ring completion need not be ordered.
     uint64_t fence_counter;                       // fence_id terakhir yang dialokasikan
     uint64_t last_fence_done;
     uint64_t fence_of_head[VGPU_FENCE_MAX_HEADS];
     uint8_t  slot_of_head[VGPU_FENCE_MAX_HEADS];  // response slot async per head
-    uint32_t async_slot_seq;                      // round-robin alokasi slot
 
     // Pool buffer command async (lihat VGPU_ASYNC_PAIRS): satu pasang per
     // batch in-flight. outstanding[i] = chain belum selesai (0 = bebas).
@@ -161,7 +161,8 @@ int virtio_gpu_dev_command_try(const void* cmd, uint32_t cmd_len);
 // Kirim DUA command sebagai DUA chain terpisah (spec: satu command per
 // chain), dengan SATU notify dan TANPA menunggu completion. Kedua command
 // diberi VIRTIO_GPU_FLAG_FENCE + fence_id sama. Return fence_id (>0)
-// sukses, 0 gagal (tidak ada yang dikirim / queue penuh).
+// queued, 0 if nothing was queued (busy/full). Execution failures increment
+// stats.err_count; callers retain damage until the ownership fence retires.
 uint64_t virtio_gpu_dev_submit2(const void* cmd1, uint32_t cmd1_len,
                                 const void* cmd2, uint32_t cmd2_len);
 
@@ -173,9 +174,8 @@ int virtio_gpu_dev_poll_fences(void);
 int virtio_gpu_dev_fence_done(uint64_t fence);
 
 // Blocking sampai fence selesai atau timeout (§6.9). 0 sukses, <0 timeout.
-// PRECONDITION: single-context bersama submit2/dev_command (dipanggil dari
-// titik yang sama, compositor_flush) — tidak mengambil cmd_lock karena
-// dev_command memegang lock saat polling di jalurnya sendiri.
+// Polls through cmd_lock; do not call while already owning cmd_lock. The frame
+// compositor uses fence_done instead so device latency never blocks a frame IRQ.
 int virtio_gpu_dev_fence_wait(uint64_t fence);
 
 // Kirim command cursor (UPDATE_CURSOR/MOVE_CURSOR) lewat CURSORQ — queue

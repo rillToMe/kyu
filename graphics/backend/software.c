@@ -76,11 +76,13 @@ static void sw_surface_destroy(ghal_surface_t* s) {
 static void sw_surface_upload(ghal_surface_t* s, const uint32_t* src,
                               uint32_t src_pitch, ghal_rect_t rect) {
     if (!s || !src) return;
+    if (rect.x >= src_pitch) return;
     // Clamp ke surface.
     if (rect.x >= s->width || rect.y >= s->height) return;
     if (rect.w == 0 || rect.h == 0) return;
     uint32_t maxw = s->width - rect.x;
     uint32_t maxh = s->height - rect.y;
+    if (maxw > src_pitch - rect.x) maxw = src_pitch - rect.x;
     if (rect.w > maxw) rect.w = maxw;
     if (rect.h > maxh) rect.h = maxh;
 

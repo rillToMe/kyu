@@ -170,6 +170,13 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
     }
     uint64_t bytes = (uint64_t)width * (uint64_t)height * 4ULL;
     if (bytes > (uint64_t)KWM_MAX_CANVAS_BYTES) return -1;
+    // All frame/shadow arithmetic below is int32_t. Off-screen is legal;
+    // coordinates whose visual bounds cannot be represented are not.
+    if ((int64_t)x - KWM_SHADOW_MARGIN < INT32_MIN ||
+        (int64_t)y - KWM_SHADOW_MARGIN < INT32_MIN ||
+        (int64_t)x + width + KWM_SHADOW_MARGIN > INT32_MAX ||
+        (int64_t)y + height + KWM_TITLEBAR_H + KWM_SHADOW_MARGIN + 3 > INT32_MAX)
+        return -1;
 
     int owner = smp_current_task_id();
 
@@ -185,6 +192,7 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
                 spinlock_unlock_irqrestore(&kwm_lock, flags);
                 return -1;
             }
+            memset(canvas->pixels, 0, (size_t)bytes);
             kwm_windows[i].x = x;
             kwm_windows[i].y = y;
             kwm_windows[i].width = width;
@@ -192,11 +200,11 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].canvas = canvas;
             kwm_windows[i].owner_task = owner;
             kwm_windows[i].z_index = next_z_index++;
-            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
             kwm_windows[i].flags = 0;
             kwm_windows[i].fully_opaque = 0;   // Phase 14: default aman — jalur scalar
             kwm_windows[i].title[0] = '\0';
             kwm_windows[i].active = 1;
+            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
             // Phase 5B/5C: window baru memegang fokus — yang lama kehilangan
             // tint titlebar-nya.
             int prev_focus = focused_win_id;
@@ -248,6 +256,7 @@ int kwm_create_desktop(void) {
                 spinlock_unlock_irqrestore(&kwm_lock, flags);
                 return -1;
             }
+            memset(canvas->pixels, 0, (size_t)mode->width * mode->height * sizeof(uint32_t));
             kwm_windows[i].x = 0;
             kwm_windows[i].y = 0;
             kwm_windows[i].width = mode->width;
@@ -292,9 +301,18 @@ int kwm_set_title(int win_id, const char* title) {
 // TOLAK, jangan set flag (false negative aman; false positive = korupsi visual
 // karena compositor akan memcpy piksel transparan menimpa background).
 // Dipanggil platform Rust/Slint setelah frame pertama (canvas sudah terisi).
-// CATATAN: upload parsial SESUDAH ini tidak divalidasi ulang — aplikasi
-// kooperatif (Rust/Slint, diaudit Phase 13) tidak pernah menulis alpha == 0.
+// Subsequent uploads revalidate the changed pixels under kwm_lock. An opacity
+// hint must never outlive the pixels that justified it.
 // Return 0 sukses, -1 ditolak.
+static int canvas_rect_opaque(const DisplayBuffer* canvas, Rect r) {
+    for (uint32_t y = 0; y < r.height; y++) {
+        const uint32_t* row = canvas->pixels + ((uint32_t)r.y + y) * canvas->stride + (uint32_t)r.x;
+        for (uint32_t x = 0; x < r.width; x++)
+            if ((row[x] >> 24) == 0) return 0;
+    }
+    return 1;
+}
+
 int kwm_set_window_opaque(int win_id) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return -1;
 
@@ -304,24 +322,13 @@ int kwm_set_window_opaque(int win_id) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
         return -1;
     }
-    const uint32_t* px = kwm_windows[win_id].canvas->pixels;
-    uint32_t n = kwm_windows[win_id].canvas->width * kwm_windows[win_id].canvas->height;
-    // Scan di LUAR lock: canvas bisa besar (mis. full-screen); menahan kwm_lock
-    // (spinlock, IRQ-off) selama scan memblok timer/compositor. Race benign —
-    // hanya owner (caller) yang menulis canvas ini.
+    DisplayBuffer* canvas = kwm_windows[win_id].canvas;
+    // The same lock protects the scan, canvas lifetime and publication of the
+    // hint. Destroy or upload may otherwise invalidate an unlocked scan.
+    int opaque = canvas_rect_opaque(canvas, (Rect){0, 0, canvas->width, canvas->height});
+    kwm_windows[win_id].fully_opaque = (uint8_t)opaque;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-
-    for (uint32_t i = 0; i < n; i++) {
-        if ((px[i] >> 24) == 0) return -1;   // ada piksel transparan → bukan opaque
-    }
-
-    flags = spinlock_lock_irqsave(&kwm_lock);
-    if (kwm_windows[win_id].active &&
-        kwm_windows[win_id].owner_task == smp_current_task_id()) {
-        kwm_windows[win_id].fully_opaque = 1;
-    }
-    spinlock_unlock_irqrestore(&kwm_lock, flags);
-    return 0;
+    return opaque ? 0 : -1;
 }
 
 // Isi buffer dgn info window aktif (pemakaian syscall 61, pola kfs_get_file_list).
@@ -363,9 +370,8 @@ int kwm_activate_window(int win_id) {
         return -1;
     }
     int old_focus = focused_win_id;
-            kwm_windows[win_id].z_index = next_z_index++;
-            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();   // bring-to-front
-            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
+             kwm_windows[win_id].z_index = next_z_index++;
+             if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();   // bring-to-front
     focused_win_id = win_id;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     kwm_frame_dirty(win_id);
@@ -431,6 +437,11 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
     user_access_begin();
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
     user_access_end();
+    if (kwm_windows[win_id].fully_opaque) {
+        DisplayBuffer* canvas = kwm_windows[win_id].canvas;
+        kwm_windows[win_id].fully_opaque = (uint8_t)canvas_rect_opaque(
+            canvas, (Rect){0, 0, canvas->width, canvas->height});
+    }
     // Phase 5C: konten murni di bawah titlebar — hanya rect konten yang
     // berubah (titlebar digambar compositor, tidak ikut update).
     // Phase 10: desktop frameless — konten mulai dari y window.
@@ -506,6 +517,10 @@ int kwm_update_window_rect(int win_id, int32_t x, int32_t y,
     }
     user_access_end();
 
+    if (kwm_windows[win_id].fully_opaque)
+        kwm_windows[win_id].fully_opaque = (uint8_t)canvas_rect_opaque(
+            kwm_windows[win_id].canvas, (Rect){x, y, width, height});
+
     int32_t tb = (kwm_windows[win_id].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
     int32_t mx = kwm_windows[win_id].x + x;
     int32_t my = kwm_windows[win_id].y + tb + y;
@@ -543,16 +558,16 @@ void kwm_destroy_window(int win_id) {
 // menghancurkan window task lain.
 void kwm_destroy_windows_of(int task_id) {
     // Phase 6: invalidasikan HANYA visual bounds window yang hancur, bukan
-    // seluruh layar. Bounding box semua window yang hancur diakumulasi di
-    // dalam kwm_lock (hanya 4 int, TANPA array rect — stack syscall sempit),
+    // seluruh layar. Satu rect per window diakumulasi di dalam kwm_lock,
     // lalu ditandai SETELAH unlock (screen_mark_dirty tidak boleh diambil di
     // bawah kwm_lock). Compositor merekonstruksi area terekspos dari
     // base_canvas + window yang tersisa. Bounds = frame + titlebar + shadow
     // (margin sama dengan frame_dirty_area).
     const int32_t m = KWM_SHADOW_MARGIN;
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
-    int focus_destroyed = 0, any = 0;
-    int32_t bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+    int focus_destroyed = 0;
+    Rect bounds[MAX_WINDOWS];
+    int nb = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (kwm_windows[i].active && kwm_windows[i].owner_task == task_id) {
             uint32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
@@ -560,13 +575,10 @@ void kwm_destroy_windows_of(int task_id) {
             int32_t  y0 = kwm_windows[i].y - m;
             int32_t  x1 = kwm_windows[i].x + (int32_t)kwm_windows[i].width + m;
             int32_t  y1 = kwm_windows[i].y + (int32_t)(kwm_windows[i].height + tb) + m + 3;
-            if (!any) { bx0 = x0; by0 = y0; bx1 = x1; by1 = y1; any = 1; }
-            else {
-                if (x0 < bx0) bx0 = x0;
-                if (y0 < by0) by0 = y0;
-                if (x1 > bx1) bx1 = x1;
-                if (y1 > by1) by1 = y1;
-            }
+            // Per-window marks, not one spanning bbox: two small far-apart
+            // windows must not invalidate the gap between them.
+            if (x1 > x0 && y1 > y0)
+                bounds[nb++] = (Rect){x0, y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
             if (focused_win_id == i) focus_destroyed = 1;
             kwm_free_slot(i);
         }
@@ -577,8 +589,8 @@ void kwm_destroy_windows_of(int task_id) {
     int new_focus = focused_win_id;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
 
-    if (any && bx1 > bx0 && by1 > by0)
-        screen_mark_dirty(bx0, by0, (uint32_t)(bx1 - bx0), (uint32_t)(by1 - by0));
+    for (int i = 0; i < nb; i++)
+        screen_mark_dirty(bounds[i].x, bounds[i].y, bounds[i].width, bounds[i].height);
     // Window yang mewarisi fokus berubah tint titlebar → repaint frame-nya.
     if (focus_destroyed && new_focus >= 0) kwm_frame_dirty(new_focus);
 }
@@ -586,13 +598,13 @@ void kwm_destroy_windows_of(int task_id) {
 // Destroy ALL KWM windows — hanya untuk path kernel/test, BUKAN syscall.
 // Tanpa ini, compositor akan membaca memori bebas saat render.
 void kwm_destroy_all_windows(void) {
-    // Phase 6: sama seperti kwm_destroy_windows_of — bounding box visual bounds
-    // window yang hancur, ditandai setelah unlock. (Desktop full-screen, bila
+    // Phase 6: sama seperti kwm_destroy_windows_of — satu rect per window
+    // yang hancur, ditandai setelah unlock. (Desktop full-screen, bila
     // ikut hancur, memang menutupi seluruh layar — hasilnya tetap benar.)
     const int32_t m = KWM_SHADOW_MARGIN;
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
-    int any = 0;
-    int32_t bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+    Rect bounds[MAX_WINDOWS];
+    int nb = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (kwm_windows[i].active) {
             uint32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
@@ -600,20 +612,15 @@ void kwm_destroy_all_windows(void) {
             int32_t  y0 = kwm_windows[i].y - m;
             int32_t  x1 = kwm_windows[i].x + (int32_t)kwm_windows[i].width + m;
             int32_t  y1 = kwm_windows[i].y + (int32_t)(kwm_windows[i].height + tb) + m + 3;
-            if (!any) { bx0 = x0; by0 = y0; bx1 = x1; by1 = y1; any = 1; }
-            else {
-                if (x0 < bx0) bx0 = x0;
-                if (y0 < by0) by0 = y0;
-                if (x1 > bx1) bx1 = x1;
-                if (y1 > by1) by1 = y1;
-            }
+            if (x1 > x0 && y1 > y0)
+                bounds[nb++] = (Rect){x0, y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
             kwm_free_slot(i);
         }
     }
     focused_win_id = -1;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-    if (any && bx1 > bx0 && by1 > by0)
-        screen_mark_dirty(bx0, by0, (uint32_t)(bx1 - bx0), (uint32_t)(by1 - by0));
+    for (int i = 0; i < nb; i++)
+        screen_mark_dirty(bounds[i].x, bounds[i].y, bounds[i].width, bounds[i].height);
 }
 
 // ============================================================
@@ -626,6 +633,7 @@ static void kwm_bring_to_front(int win_id) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return;
     // Caller MUST hold kwm_lock
     kwm_windows[win_id].z_index = next_z_index++;
+    if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
 }
 
 // Intercept mouse event sebelum dikirim ke user-space.
@@ -754,15 +762,15 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
             spinlock_unlock(&kwm_lock);
         }
 
-        if (close_owner >= 0) {
-            push_event_to(close_owner, EVENT_WIN_CLOSE, 0, 0, 0, target_win + 1);
-            return 1;
-        }
-
         // Repaint: z-order target berubah (bring-to-front); fokus lama
         // kehilangan tint titlebar jika bergeser. Di luar kwm_lock.
         if (target_win >= 0) kwm_frame_dirty(target_win);
         if (old_focus != target_win && old_focus >= 0) kwm_frame_dirty(old_focus);
+
+        if (close_owner >= 0) {
+            push_event_to(close_owner, EVENT_WIN_CLOSE, 0, 0, 0, target_win + 1);
+            return 1;
+        }
 
         if (start_drag) return 1;   // Klik titlebar — konsumsi, jangan ke app
         return 0;                   // Klik konten / area kosong — teruskan

@@ -11,6 +11,7 @@
 #include "ghal.h"     // Phase 2B: present lewat Graphics HAL
 #include "serial.h"   // diagnostik jalur kursor (hw vs software)
 #include "panic.h"    // lockdown: hentikan present saat BSOD aktif
+#include "damage_debug.h"
 
 extern int32_t mouse_x;
 extern int32_t mouse_y;
@@ -73,7 +74,13 @@ static int32_t g_last_cursor_x = -1;
 static int32_t g_last_cursor_y = -1;
 
 void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height) {
-    Rect r = { x, y, width, height };
+    const display_mode_t* mode = display_get_mode();
+    if (!mode) return;
+    Rect r;
+    // Clip BEFORE coalescing: unions of unbounded signed origins/unsigned
+    // extents may not fit Rect, and off-screen gaps are not screen damage.
+    if (!rect_intersect((Rect){x, y, width, height},
+                        (Rect){0, 0, mode->width, mode->height}, &r)) return;
     uint64_t flags = spinlock_lock_irqsave(&g_dirty_lock);
     dirty_region_mark(&g_screen_dirty, r);
     spinlock_unlock_irqrestore(&g_dirty_lock, flags);
@@ -150,6 +157,11 @@ static Rect window_content_rect(int w) {
 // content. Caller must hold kwm_lock and call composite_windows_in_rect(r).
 static void base_blit_for_region(DisplayBuffer* back_db, DisplayBuffer* screen_db,
                                  Rect r) {
+    if (KWM_DEBUG_DISABLE_OPAQUE_OPT) {
+        DAMAGE_ADD(base_pixel_count, (uint64_t)r.width * r.height);
+        blit_rect_db(back_db, screen_db, r);
+        return;
+    }
     Rect remain[KWM_MAX_SPLIT_RECTS];
     Rect out[KWM_MAX_SPLIT_RECTS];
     int  n = 1;
@@ -207,8 +219,10 @@ static void base_blit_for_region(DisplayBuffer* back_db, DisplayBuffer* screen_d
         n = m;
     }
 
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
+        DAMAGE_ADD(base_pixel_count, (uint64_t)remain[i].width * remain[i].height);
         blit_rect_db(back_db, screen_db, remain[i]);
+    }
 }
 
 // --- Kanvas XRGB <-> color_t (libs/color) ---
@@ -410,6 +424,7 @@ static int rect_subtract(Rect R, Rect C, Rect* out, int* m, int cap) {
 // validated fully-opaque canvas -> bulk row copy; else scalar alpha test.
 static void mix_content(const DisplayBuffer* canvas, int32_t win_x, int32_t cty,
                         int pitch4, Rect c, int opaque) {
+    DAMAGE_ADD(content_pixel_count, (uint64_t)c.width * c.height);
     for (uint32_t yy = 0; yy < c.height; yy++) {
         int32_t sy = c.y + (int32_t)yy - cty;
         const uint32_t* src = canvas->pixels +
@@ -435,7 +450,7 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
     uint32_t occ_z[MAX_WINDOWS];
     Rect     occ_rect[MAX_WINDOWS];
     int      nocc = 0;
-    for (int v = 0; v < MAX_WINDOWS; v++) {
+    for (int v = 0; !KWM_DEBUG_DISABLE_OPAQUE_OPT && v < MAX_WINDOWS; v++) {
         if (!(kwm_windows[v].active && kwm_windows[v].canvas)) continue;
         if (!kwm_windows[v].fully_opaque) continue;
         if (kwm_windows[v].z_index > next_z_index) continue;   // not composited
@@ -481,7 +496,7 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
                 // pre-Phase-14 scalar composition for a pixel-identical diff.
                 const int win_opaque_final = 0; (void)win_opaque;
 #else
-                const int win_opaque_final = win_opaque;
+                const int win_opaque_final = win_opaque && !KWM_DEBUG_DISABLE_OPAQUE_OPT;
 #endif
                 // Phase 20: drop the pixels already covered by a fully-opaque
                 // window drawn IN FRONT of this one (higher z, or same z and a
@@ -536,23 +551,23 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
                     int hovered = (hovered_close_win == w + 1);
                     color_t ico = KWM_CTL_FG;
                     if (hovered) {
-                        fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_HOVER_BG, r);
+                        fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_HOVER_BG, clip);
                         ico = KWM_CLOSE_HOVER_FG;
                     }
                     // Glyph "X": dua garis tipis 11x11, terpusat di hit area.
                     int ccx = cb.x + (int)KWM_CLOSE_BTN_W / 2;
                     int ccy = win_y + (int)KWM_TITLEBAR_H / 2;
                     titlebar_line(backbuffer, pitch4, ccx - 5, ccy - 5,
-                                  ccx + 5, ccy + 5, ico, r);
+                                  ccx + 5, ccy + 5, ico, clip);
                     titlebar_line(backbuffer, pitch4, ccx + 5, ccy - 5,
-                                  ccx - 5, ccy + 5, ico, r);
+                                  ccx - 5, ccy + 5, ico, clip);
                     // Judul: padding kiri 12px, vertikal tengah, teks off-white.
                     if (kwm_windows[w].title[0])
                         titlebar_text(backbuffer, pitch4, win_x + 12,
                                       win_y + ((int)KWM_TITLEBAR_H - 16) / 2,
                                       kwm_windows[w].title,
-                                      win_x + (int32_t)cw - KWM_CLOSE_BTN_W - 8,
-                                      KWM_TITLE_FG, r);
+                                       win_x + (int32_t)cw - KWM_CLOSE_BTN_W - 8,
+                                       KWM_TITLE_FG, clip);
                 }
             }
         }
@@ -672,17 +687,33 @@ static ghal_surface_t* g_main_surface;
 // mungkin masih dibaca DMA device (backpressure alami, bukan command baru
 // menimpa command lama yang belum selesai).
 static uint64_t g_present_fence = 0;
+static DirtyRegionList g_inflight_dirty;
+static uint64_t g_present_errors;
+static int g_present_stats_valid;
+// One shared backbuffer/scanout writer. Try-lock also handles a timer IRQ
+// interrupting a print-triggered flush; it must never spin on that owner.
+static spinlock_t g_compositor_lock = SPINLOCK_INIT;
+
+static void screen_restore_dirty(const DirtyRegionList* dirty) {
+    for (uint32_t i = 0; i < dirty->count; i++) {
+        Rect r = dirty->regions[i];
+        screen_mark_dirty(r.x, r.y, r.width, r.height);
+    }
+}
 
 
 // Dipanggil dari kernel_main SETELAH ghal_init(), sebelum timer_callbacks_init.
 void compositor_ghal_init(void) {
     if (g_main_surface != NULL) return;
+    damage_debug_init();
     const display_mode_t* m = display_get_mode();
     if (!m) return;
     // Scanout surface: backend software MEMBUNGKUS framebuffer HW (zero-copy —
     // upload menulis langsung ke layar, present no-op). Backend virtio membuat
     // resource + backing seperti biasa.
     g_main_surface = ghal_surface_create_scanout(m->width, m->height, GHAL_FMT_XRGB8888);
+    // New scanout contents are not the previous scene (firmware may leave ink).
+    screen_mark_dirty(0, 0, m->width, m->height);
     // Phase 2C §9.4 — hardware cursor bila backend mendukung (fallback aman).
     compositor_hw_cursor_init();
 }
@@ -698,7 +729,7 @@ void compositor_panic_cursor_off(void) {
     if (g_hw_cursor_active) ghal_cursor_move(-64, -64);
 }
 
-void compositor_flush() {
+static void compositor_flush_frame(void) {
     // PANIC LOCKDOWN: BSOD digambar langsung ke framebuffer. Jangan
     // recomposite / gerakkan kursor — kalau tidak, desktop menimpa layar
     // panic tiap kali mouse bergerak.
@@ -714,11 +745,35 @@ void compositor_flush() {
     if (!screen_db || !back_db) return;
     const int pitch4 = (int)(mode->pitch_bytes / 4);
     Rect screen = { 0, 0, mode->width, mode->height };
+    DAMAGE_ADD(screen_pixel_count, (uint64_t)screen.width * screen.height);
+
+    // Do not consume damage or touch backing until ALL commands of the prior
+    // frame have retired. A slow device costs a deferred attempt, never a wait
+    // in the timer IRQ or a lost invalidation.
+    if (g_present_fence && ghal_fence_pending(g_present_fence)) {
+        DAMAGE_ADD(deferred, 1);
+        return;
+    }
+    if (g_inflight_dirty.count && g_present_stats_valid) {
+        ghal_gpu_stats_t stats;
+        if (ghal_gpu_stats(&stats) != 0) {
+            DAMAGE_ADD(deferred, 1);
+            return;
+        }
+        if (stats.err_count != g_present_errors) screen_restore_dirty(&g_inflight_dirty);
+    }
+    g_present_fence = 0;
+    dirty_region_clear(&g_inflight_dirty);
 
     uint64_t flags = spinlock_lock_irqsave(&g_dirty_lock);
     DirtyRegionList dirty = g_screen_dirty;
     dirty_region_clear(&g_screen_dirty);
     spinlock_unlock_irqrestore(&g_dirty_lock, flags);
+
+    if (KWM_DEBUG_FULL_REDRAW) {
+        dirty_region_clear(&dirty);
+        dirty_region_mark(&dirty, screen);
+    }
 
     // Cursor moves every frame it's dragged; both the vacated and the new cell
     // must repaint, so fold them into the dirty set. Hardware cursor (§9.4):
@@ -745,14 +800,24 @@ void compositor_flush() {
 
     if (dirty.count == 0) return;
 
-    uint64_t kwm_flags = spinlock_lock_irqsave(&kwm_lock);
+    uint64_t kwm_flags;
+    if (!spinlock_try_lock_irqsave(&kwm_lock, &kwm_flags)) {
+        screen_restore_dirty(&dirty);
+        DAMAGE_ADD(deferred, 1);
+        return;
+    }
     for (uint32_t i = 0; i < dirty.count; i++) {
         Rect r;
         if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
+        DAMAGE_ADD(damage_rect_count, 1);
+        DAMAGE_ADD(damage_pixel_count, (uint64_t)r.width * r.height);
+        DAMAGE_ADD(composite_pixel_count, (uint64_t)r.width * r.height);
+        damage_debug_rect("[damage]", r);
         // Phase 16/17: base-blit only the parts not covered by an opaque
         // window; then compose the whole rect exactly as before.
         base_blit_for_region(back_db, screen_db, r);
         composite_windows_in_rect(r, pitch4);
+        damage_debug_rect("[composite]", r);
     }
     spinlock_unlock_irqrestore(&kwm_lock, kwm_flags);
 
@@ -787,19 +852,15 @@ void compositor_flush() {
     // MEMBUNGKUS framebuffer HW (zero-copy: upload = tulis langsung ke layar,
     // present no-op), jadi biayanya sama dengan jalur langsung lama.
     //
-    // Present: per-rect bila dirty-rect sedikit, union bila banyak.
-    // Union bounding-box atas rect yang tersebar (mis. kursor teks di tengah +
-    // HUD di pojok) bisa mencakup nyaris seluruh layar — jauh lebih mahal
-    // daripada beberapa present kecil. Threshold di bawah menghindari itu
-    // (roadmap §8.9 menyerahkan angka ini ke profiling).
-    #define PRESENT_UNION_THRESHOLD 4
+    // Present per-rect; union bounding-box hanya bila tidak mengalikan kerja.
+    // Union atas rect tersebar (kursor teks di tengah + HUD di pojok) bisa
+    // mencakup nyaris seluruh layar — jauh lebih mahal daripada beberapa
+    // present kecil. Diukur di host test: 6 piksel jauh → union 63k px.
+    #define PRESENT_UNION_MAX_INFLATION 2
     if (g_main_surface != NULL) {
-        // Backpressure (§9.2): pastikan present frame sebelumnya selesai
-        // sebelum upload menulis backing yang sama. Steady state fence sudah
-        // selesai saat flush berikutnya datang — poll single-shot, tanpa spin.
-        if (g_present_fence != 0 && ghal_fence_pending(g_present_fence))
-            ghal_fence_wait(g_present_fence);
-        g_present_fence = 0;
+        ghal_gpu_stats_t stats;
+        g_present_stats_valid = ghal_gpu_stats(&stats) == 0;
+        if (g_present_stats_valid) g_present_errors = stats.err_count;
 
         Rect rects[MAX_DIRTY_REGIONS];
         uint32_t n = 0;
@@ -808,26 +869,45 @@ void compositor_flush() {
             if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
             ghal_rect_t gr = { (uint32_t)r.x, (uint32_t)r.y, r.width, r.height };
             ghal_surface_upload(g_main_surface, backbuffer, (uint32_t)pitch4, gr);
+            DAMAGE_ADD(upload_pixel_count, (uint64_t)r.width * r.height);
             rects[n++] = r;
         }
         if (n == 0) return;
 
-        if (n <= PRESENT_UNION_THRESHOLD) {
-            for (uint32_t i = 0; i < n; i++) {
-                ghal_rect_t gr = { (uint32_t)rects[i].x, (uint32_t)rects[i].y,
-                                   rects[i].width, rects[i].height };
-                ghal_present(g_main_surface, &gr);
-            }
-        } else {
-            // Banyak rect: satu present dengan bounding box gabungan.
+        if (n > 1) {
+            // Satu present gabungan hanya bila bounding box-nya tidak
+            // mengalikan pixel kerja. Rect bertetangga → 1 submit; rect
+            // tersebar → present per-rect (submit berlebih di-retry aman).
             Rect u = rects[0];
-            for (uint32_t i = 1; i < n; i++) u = rect_union(u, rects[i]);
-            ghal_rect_t gu = { (uint32_t)u.x, (uint32_t)u.y, u.width, u.height };
-            ghal_present(g_main_surface, &gu);
+            uint64_t sum = (uint64_t)rects[0].width * rects[0].height;
+            for (uint32_t i = 1; i < n; i++) {
+                u = rect_union(u, rects[i]);
+                sum += (uint64_t)rects[i].width * rects[i].height;
+            }
+            if ((uint64_t)u.width * u.height <= sum * PRESENT_UNION_MAX_INFLATION) {
+                rects[0] = u;
+                n = 1;
+            }
         }
-        // Backend async: ghal_present tidak blocking — simpan fence untuk
-        // backpressure flush berikutnya. Backend sync: 0 (no-op).
-        g_present_fence = ghal_present_fence();
+        for (uint32_t i = 0; i < n; i++) {
+            Rect r = rects[i];
+            ghal_rect_t gr = { (uint32_t)r.x, (uint32_t)r.y, r.width, r.height };
+            if (ghal_present_checked(g_main_surface, &gr) != 0) {
+                // Some earlier rectangles may already be queued. Retry only
+                // the rejected suffix; retain accepted damage until completion.
+                for (uint32_t j = i; j < n; j++)
+                    screen_mark_dirty(rects[j].x, rects[j].y, rects[j].width, rects[j].height);
+                DAMAGE_ADD(deferred, 1);
+                break;
+            }
+            DAMAGE_ADD(present_rect_count, 1);
+            DAMAGE_ADD(present_pixel_count, (uint64_t)gr.w * gr.h);
+            damage_debug_rect("[present]", r);
+            if (ghal_capabilities() & GHAL_CAP_ASYNC_PRESENT) {
+                dirty_region_mark(&g_inflight_dirty, r);
+                g_present_fence = ghal_present_fence();
+            }
+        }
     } else {
         DisplayBuffer* fb_db = gfx_fb_buffer();
         if (fb_db) {
@@ -835,7 +915,39 @@ void compositor_flush() {
                 Rect r;
                 if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
                 blit_rect_db(fb_db, back_db, r);
+                DAMAGE_ADD(upload_pixel_count, (uint64_t)r.width * r.height);
+                DAMAGE_ADD(present_rect_count, 1);
+                DAMAGE_ADD(present_pixel_count, (uint64_t)r.width * r.height);
+                damage_debug_rect("[present]", r);
             }
-        }
+        } else screen_restore_dirty(&dirty);
     }
+}
+
+// Debug/test query: 1 while a frame is still owed to scanout (queued damage,
+// in-flight async batch, or unretired fence). Lets a test drain the queue.
+int compositor_pending(void) {
+    uint64_t flags = spinlock_lock_irqsave(&g_dirty_lock);
+    uint32_t d = g_screen_dirty.count;
+    spinlock_unlock_irqrestore(&g_dirty_lock, flags);
+    if (d) return 1;
+    // Accepted-but-unverified inflight alone is not pending: the next flush
+    // start verifies it (device error restores it to dirty above, which then
+    // reports pending). Only an unretired fence — or a fresh device error on
+    // still-unverified inflight — owes scanout work.
+    if (g_present_fence && ghal_fence_pending(g_present_fence)) return 1;
+    if (g_inflight_dirty.count) {
+        ghal_gpu_stats_t stats;
+        if (ghal_gpu_stats(&stats) != 0 || stats.err_count != g_present_errors)
+            return 1;
+    }
+    return 0;
+}
+
+void compositor_flush(void) {
+    if (!spinlock_try_lock(&g_compositor_lock)) return;
+    damage_debug_begin();
+    compositor_flush_frame();
+    damage_debug_end();
+    spinlock_unlock(&g_compositor_lock);
 }

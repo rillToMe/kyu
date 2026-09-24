@@ -139,7 +139,7 @@ static void virtio_shutdown(void) { g_virtio_active = 0; }
 static ghal_surface_t* virtio_surface_create(uint32_t w, uint32_t h, ghal_format_t fmt) {
     if (w == 0 || h == 0 || w > GHAL_MAX_DIM || h > GHAL_MAX_DIM) return NULL;
     uint64_t bytes = (uint64_t)w * h * 4;
-    if (bytes == 0 || w != 0 && (bytes / 4 / w) != h) return NULL;
+    if (bytes == 0 || (w != 0 && (bytes / 4 / w) != h)) return NULL;
     uint32_t num_pages = (uint32_t)((bytes + 4095) / 4096);
 
     gpu_page_t* pages = (gpu_page_t*)kmalloc(sizeof(gpu_page_t) * num_pages);
@@ -274,8 +274,10 @@ static int virtio_probe_scanout(uint32_t w, uint32_t h) {
 static void virtio_surface_upload(ghal_surface_t* s, const uint32_t* src,
                                   uint32_t src_pitch, ghal_rect_t rect) {
     if (!s || !src) return;
+    if (!rect.w || !rect.h || rect.x >= src_pitch) return;
     if (rect.x >= s->width || rect.y >= s->height) return;
     uint32_t maxw = s->width - rect.x, maxh = s->height - rect.y;
+    if (maxw > src_pitch - rect.x) maxw = src_pitch - rect.x;
     if (rect.w > maxw) rect.w = maxw;
     if (rect.h > maxh) rect.h = maxh;
     const uint32_t* srow = src + (uint64_t)rect.y * src_pitch + rect.x;
@@ -309,6 +311,8 @@ static void virtio_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
     if (w > dst->width - dst_rect.x) w = dst->width - dst_rect.x;
     if (h > dst->height - dst_rect.y) h = dst->height - dst_rect.y;
     if (src_rect.x >= src->width || src_rect.y >= src->height) return;
+    if (w > src->width - src_rect.x) w = src->width - src_rect.x;
+    if (h > src->height - src_rect.y) h = src->height - src_rect.y;
     const uint32_t* srow = src->backing_virt + (uint64_t)src_rect.y * src->width + src_rect.x;
     uint32_t* drow = dst->backing_virt + (uint64_t)dst_rect.y * dst->width + dst_rect.x;
     for (uint32_t y = 0; y < h; y++) {
@@ -321,39 +325,26 @@ static void virtio_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
 // Fence_id present terakhir yang berhasil dikirim (Phase 2C §9.2).
 static uint64_t g_last_present_fence = 0;
 
-// Forward (didefinisikan di bawah, dipakai Fix B di virtio_present).
-static int virtio_fence_pending(uint64_t fence);
-static void virtio_fence_wait(uint64_t fence);
-
 extern void serial_print(const char* s);
 
-static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
-    if (!s) return;
+static int virtio_present_checked(ghal_surface_t* s, const ghal_rect_t* rect) {
+    if (!s) return -1;
     ghal_rect_t r;
     if (rect) r = *rect;
     else { r.x = 0; r.y = 0; r.w = s->width; r.h = s->height; }
+    if (!r.w || !r.h || r.x >= s->width || r.y >= s->height) return -1;
+    if (r.w > s->width - r.x) r.w = s->width - r.x;
+    if (r.h > s->height - r.y) r.h = s->height - r.y;
 
     // Jaring pengaman: bila surface ini belum berhasil jadi scanout (device
     // menolak saat create / scanout probe belum tergantikan), ulangi tiap
     // frame sampai berhasil. Steady state: sudah beres di
     // virtio_surface_create_scanout() → nol command extra per frame.
-    if (!s->scanout_set) (void)virtio_set_scanout(s);
+    if (!s->scanout_set && virtio_set_scanout(s) != 0) return -1;
 
-    // Fix B: jangan menumpuk batch baru ke device yang tidak me-reap.
-    // Bila fence batch sebelumnya masih outstanding setelah wait terbatas,
-    // lewati frame ini — dirty dipertahankan compositor, dicoba lagi flush
-    // berikutnya. Menumpuk submit hanya memperdalam wedge (pool habis,
-    // tiap flush = timeout penuh).
-    if (g_last_present_fence != 0 &&
-        virtio_fence_pending(g_last_present_fence)) {
-        virtio_fence_wait(g_last_present_fence);
-        if (virtio_fence_pending(g_last_present_fence)) {
-            static uint32_t skip_n = 0;
-            if ((skip_n++ % 64) == 0)
-                serial_print("[vgpu] present: skipped, fence outstanding\n");
-            return;
-        }
-    }
+    // The compositor gates backing WRITES on the previous frame's fence.
+    // Multiple rects of this already-uploaded frame may be queued together;
+    // waiting here serialized every small rectangle and dropped failed ones.
 
     // Phase 2C §9.1+§9.2: TRANSFER + FLUSH dikirim sebagai DUA chain
     // terpisah (spec: satu command per chain — dua ctrl_hdr dalam satu
@@ -372,8 +363,13 @@ static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
     if (fence != 0) {
         g_last_present_fence = fence;
         g_vgpu.stats.present_count++;
+        return 0;
     }
-    else serial_print("[vgpu] present: submit batch failed\n");
+    return -1;
+}
+
+static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
+    (void)virtio_present_checked(s, rect);
 }
 
 // --- Fence ops (Phase 2C §9.2) ---
@@ -526,6 +522,7 @@ const ghal_backend_ops_t virtio_gpu_backend_ops = {
     .fill_rect      = virtio_fill_rect,
     .blit           = virtio_blit,
     .present        = virtio_present,
+    .present_checked = virtio_present_checked,
     .present_fence  = virtio_present_fence,
     .fence_pending  = virtio_fence_pending,
     .fence_wait     = virtio_fence_wait,

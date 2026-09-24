@@ -241,6 +241,14 @@ void ghal_present(ghal_surface_t* s, const ghal_rect_t* rect) {
     g_active->present(s, rect);
 }
 
+int ghal_present_checked(ghal_surface_t* s, const ghal_rect_t* rect) {
+    if (!g_active || !s) return -1;
+    if (g_active->present_checked) return g_active->present_checked(s, rect);
+    if (!g_active->present) return -1;
+    g_active->present(s, rect);
+    return 0; // Preserve the existing submission contract of legacy backends.
+}
+
 // --- Fence async present (Phase 2C §9.2). Backend sync: fence selalu 0,
 // jadi semua panggilan di bawah jatuh ke jalur no-op. ---
 

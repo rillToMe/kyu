@@ -147,6 +147,11 @@ typedef struct {
     int (*scanout_map)(uint32_t** pixels, uint32_t* width, uint32_t* height,
                        uint32_t* pitch_px);
     int (*scanout_flush)(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
+    // Append-only: acknowledge SUBMISSION, not completion. The legacy void
+    // present cannot report queue pressure/failure, so damage owners use this
+    // optional op and retain rejected regions. 0 accepted, <0 retry later.
+    int (*present_checked)(ghal_surface_t* s, const ghal_rect_t* rect);
 } ghal_backend_ops_t;
 
 // --- API publik dipanggil compositor ---
@@ -173,11 +178,12 @@ void ghal_fill_rect(ghal_surface_t* dst, ghal_rect_t rect, uint32_t argb);
 void ghal_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
                ghal_surface_t* src, ghal_rect_t src_rect);
 void ghal_present(ghal_surface_t* s, const ghal_rect_t* rect);
+int  ghal_present_checked(ghal_surface_t* s, const ghal_rect_t* rect);
 
 // --- Fence async present (Phase 2C §9.2) ---
-// Compositor pola pakai: sebelum upload/present frame baru, panggil
-// ghal_fence_wait(fence frame sebelumnya) — backpressure alami supaya
-// backing surface tidak ditimpa saat device masih membacanya. Pada backend
+// Before writing a new frame, poll ghal_fence_pending(previous frame) and defer
+// while pending. A wait may time out: it is never permission to overwrite DMA
+// backing without checking pending again. Pada backend
 // sync (tanpa GHAL_CAP_ASYNC_PRESENT) semuanya no-op aman.
 uint64_t ghal_present_fence(void);            // fence_id present terakhir (0 = tidak ada)
 int      ghal_fence_pending(uint64_t fence);  // 1 = masih in-flight

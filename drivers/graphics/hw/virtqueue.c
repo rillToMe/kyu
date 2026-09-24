@@ -115,20 +115,19 @@ int virtq_submit(virtq_t* vq, uint64_t* addrs, uint32_t* lens,
     }
     vq->chain_len[head] = (uint8_t)n_bufs;
 
-    // Tambahkan head ke avail ring. Deferred kick sah: device hanya membaca
-    // avail sampai avail->idx saat di-notify, jadi beberapa chain boleh
-    // masuk dulu sebelum SATU notify (roadmap §9.1).
+    // Device may poll avail without a kick. Publish descriptors/backing before
+    // idx; DMA uses coherent WB memory on x86, requiring release ordering.
     uint16_t slot = (uint16_t)(vq->avail->idx % vq->queue_size);
     vq->avail->ring[slot] = head;
-    __asm__ volatile("" ::: "memory");
-    vq->avail->idx++;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    ((volatile virtq_avail_t*)vq->avail)->idx++;
 
     return (int)head;
 }
 
 void virtq_notify(virtq_t* vq) {
     if (vq == NULL || vq->notify_addr == NULL) return;
-    __asm__ volatile("" ::: "memory");
+    __atomic_thread_fence(__ATOMIC_SEQ_CST); // backing/avail visible before MMIO kick
     *vq->notify_addr = vq->queue_index;
 }
 
@@ -137,17 +136,22 @@ void virtq_notify(virtq_t* vq) {
 // table) dan dikembalikan ke freelist.
 int virtq_poll(virtq_t* vq, uint32_t* out_head, uint32_t* out_len) {
     if (vq == NULL) return -1;
-    uint16_t used_idx = vq->used->idx;
+    uint16_t used_idx = ((volatile virtq_used_t*)vq->used)->idx;
     if (vq->last_used_idx == used_idx) return -1;   // tidak ada completion baru
+    __atomic_thread_fence(__ATOMIC_ACQUIRE); // used payload/response follows device idx
 
     virtq_used_elem_t* ue =
         &vq->used->ring[vq->last_used_idx % vq->queue_size];
     uint32_t head = ue->id;
+    if (head >= vq->queue_size || head >= VG_VQ_MAX_SIZE || !vq->chain_len[head]) {
+        vq->last_used_idx++;
+        return -1;
+    }
     if (out_head) *out_head = head;
     if (out_len)  *out_len  = ue->len;
     vq->last_used_idx++;
 
-    uint16_t n = vq->chain_len[head % VG_VQ_MAX_SIZE];
+    uint16_t n = vq->chain_len[head];
     uint16_t idx = (uint16_t)head;
     for (uint16_t i = 0; i < n; i++) {
         // Push kembali ke freelist (urutan bebas — freelist eksplisit).
@@ -157,7 +161,7 @@ int virtq_poll(virtq_t* vq, uint32_t* out_head, uint32_t* out_len) {
         vq->desc[idx].flags = 0;
         idx = next;
     }
-    vq->chain_len[head % VG_VQ_MAX_SIZE] = 0;
+    vq->chain_len[head] = 0;
     vq->num_free = (uint16_t)(vq->num_free + n);
     return 0;
 }
