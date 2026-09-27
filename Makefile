@@ -562,6 +562,49 @@ tests/host/unit/text_ft_real: tests/host/unit/text_ft_real.c $(TEXT_HDRS) $(TEXT
 	$(HOSTCC) -O1 -Wall -Wextra $(FT_KYUZEN_DEFS) $(FT_KYUZEN_INCS) -c libs/text/src/kzraster_ft.c -o $(BUILD_DIR)/ft-host/kzraster_ft.o
 	$(HOSTCC) -O1 -Wall -Wno-unused-parameter $(FT_KYUZEN_DEFS) $(FT_KYUZEN_INCS) $(FT_KYUZEN_SRCS) -o $@ $(BUILD_DIR)/ft-host/text_ft_real.o $(BUILD_DIR)/ft-host/kzfont.o $(BUILD_DIR)/ft-host/kzraster_ft.o
 
+# --- Lexbor 3.0.0 freestanding (HTML/DOM parser) - STAGE A ---
+# Vars di third_party/lexbor/kyuzen.mk (modul core/dom/html/ns/tag +
+# port Kyuzen). Object TIDAK masuk ALL_OBJS kernel (Lexbor = userspace;
+# kernel tetap Lexbor-free). Archive = bukti "dapat dilink statically".
+# test-lexbor-host membuktikan DUA hal: archive freestanding terbangun
+# + parse HTML -> DOM lookup + serialisasi berjalan di host.
+# Jalankan: make test-lexbor-host
+include third_party/lexbor/kyuzen.mk
+
+-include $(LEXBOR_KYUZEN_OBJS:.o=.d)
+
+LEXBOR_KYUZEN_OBJDIRS = $(sort $(dir $(LEXBOR_KYUZEN_OBJS)))
+$(LEXBOR_KYUZEN_OBJDIRS):
+	@mkdir -p $@
+
+$(OBJ_DIR)/third_party/lexbor/%.o: third_party/lexbor/%.c | $(LEXBOR_KYUZEN_OBJDIRS)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(LEXBOR_KYUZEN_CFLAGS) -c $< -o $@
+
+$(LEXBOR_KYUZEN_A): $(LEXBOR_KYUZEN_OBJS)
+	@mkdir -p $(dir $@)
+	$(lexbor_check_no_fp)
+	llvm-ar rcs $@ $(LEXBOR_KYUZEN_OBJS)
+
+# Host smoke test: kompilasi sumber Lexbor yang sama dengan HOSTCC
+# (ABI host, jadi conv/dtoa/strtod/diyfp tetap dikecualikan dan shim
+# int64 dipakai - logika yang diuji identik dengan build freestanding).
+LEXBOR_HOST_SRCS = $(filter-out $(LEXBOR_FP_BANNED),$(LEXBOR_KYUZEN_SRCS))
+
+.PHONY: test-lexbor-host
+test-lexbor-host: tests/host/unit/lexbor_html_test
+	./tests/host/unit/lexbor_html_test
+
+tests/host/unit/lexbor_html_test: tests/host/unit/lexbor_html_test.c $(LEXBOR_KYUZEN_HDRS) $(LEXBOR_KYUZEN_SRCS)
+	@mkdir -p $(BUILD_DIR)/lexbor-host
+	$(HOSTCC) -O1 -Wall -Wextra -Wno-unused-parameter \
+	    -I$(LEXBOR_DIR)/kyuzen/include -I$(LEXBOR_DIR)/source \
+	    tests/host/unit/lexbor_html_test.c $(LEXBOR_HOST_SRCS) -o $@
+
+# Catatan: target probe QEMU Lexbor Stage A (butuh LIBC_OUT/LIBC_TRIPLE/
+# LIBC_PORT_OBJ/LIBC_ARCHIVE) didefinisikan LEBIH BAWAH, setelah variabel
+# libc Phase 1 - karena target rule diekspansi saat file dibaca.
+
 # --- Host-side unit test: library media bersama + cache thumbnail Gallery ---
 # Kode PRODUKSI (libs/media/media.c + apps/gallery/thumbs.cpp) di atas syscall
 # mock — pola test-pipe/test-desktop, bukan salinan logika. Yang dikunci: satu
@@ -830,6 +873,68 @@ libc-phase2-qemu: $(LIBC_PHASE2_APP) $(LIBC_PHASE2_CONF)
 	@QEMU="$(QEMU)" bash tools/libc-phase2/run-qemu.sh
 	@echo "--- bukti serial [phase2] ---"; grep "\[phase2\]" $(LIBC_OUT)/phase2-serial.log || true
 	@grep -q "\[phase2\] PASS" $(LIBC_OUT)/phase2-serial.log || { echo "[libc] FAIL: [phase2] PASS tidak terlihat di serial"; exit 1; }
+
+# ==========================================
+# Lexbor 3.0.0 Stage A — probe QEMU userspace (HTML/DOM)
+# ==========================================
+# App freestanding statis (pola libc Phase 1: _start dari port libc Kyuzen)
+# yang meng-link liblexbor_kyuzen.a + libc Kyuzen, dijalankan dari console
+# shell lewat `start lexbor_phase_a`. Membuktikan archive Lexbor benar-benar
+# berjalan di userspace KyuzenOS (allocator = libc Kyuzen -> sys_alloc/
+# sys_free), bukan hanya di host. Blok ini SENGAJA di sini (setelah Phase 1)
+# supaya LIBC_OUT/LIBC_TRIPLE/LIBC_PORT_OBJ/LIBC_ARCHIVE sudah terdefinisi.
+#
+#   make lexbor-stage-a        -> build app ELF statis (Lexbor + libc)
+#   make lexbor-stage-a-qemu   -> jalankan smoke test otomatis di QEMU
+
+LEXBOR_A_OUT    = $(LIBC_OUT)/lexbor-stage-a
+LEXBOR_A_SRC    = tools/lexbor-stage-a/lexbor_phase_a.c
+LEXBOR_A_LD     = tools/lexbor-stage-a/lexbor_app.ld
+LEXBOR_A_OBJ    = $(LEXBOR_A_OUT)/lexbor_phase_a.o
+LEXBOR_A_APP    = $(LEXBOR_A_OUT)/$(LIBC_TRIPLE)/bin/lexbor_phase_a.elf
+LEXBOR_A_CONF   = $(LEXBOR_A_OUT)/iso/limine.conf
+
+.PHONY: lexbor-stage-a
+lexbor-stage-a: $(LEXBOR_A_APP)
+	@echo "[lexbor] stage-a app : $(LEXBOR_A_APP)"
+
+$(LEXBOR_A_OBJ): $(LEXBOR_A_SRC) $(LEXBOR_KYUZEN_HDRS)
+	mkdir -p $(dir $@)
+	$(LIBC_CC) $(LIBC_TARGET_FLAGS) -O2 -std=c11 \
+	    -DLEXBOR_STATIC \
+	    -I$(LEXBOR_DIR)/kyuzen/include -I$(LEXBOR_DIR)/source \
+	    -isystem $(SDK_INC) -c $< -o $@
+
+$(LEXBOR_A_APP): $(LEXBOR_A_OBJ) $(LIBC_PORT_OBJ) $(LEXBOR_KYUZEN_A) $(LIBC_ARCHIVE) $(LEXBOR_A_LD)
+	mkdir -p $(dir $@)
+	$(LIBC_LD) -m elf_x86_64 -nostdlib -T $(LEXBOR_A_LD) -o $@ \
+	    $(LEXBOR_A_OBJ) $(LIBC_PORT_OBJ) $(LEXBOR_KYUZEN_A) $(LIBC_ARCHIVE)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[lexbor] FAIL: _start tidak ada di app Stage A"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[lexbor] FAIL: masih ada simbol undefined di app Stage A"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "%xmm|%ymm|%zmm"; then \
+		echo "[lexbor] FAIL: app Stage A mengandung instruksi SSE"; exit 1; \
+	fi
+	@if $(LIBC_OBJDUMP) -d $@ | grep -Eq "	(fld|fst|fxch|fucom|fadd|fmul|fdiv|fsub|fild|fist|fcom)"; then \
+		echo "[lexbor] FAIL: app Stage A mengandung instruksi x87"; exit 1; \
+	fi
+	@echo "[lexbor] stage-a link OK: $(notdir $@) (entry _start, 0 undefined, 0 SSE/x87)"
+
+# Varian limine.conf: isi repo + satu module app Stage A (nama file harus
+# `limine.conf` di root ISO, jadi digenerate di subdirektori sendiri).
+$(LEXBOR_A_CONF): limine.conf
+	@mkdir -p $(dir $@)
+	@cp limine.conf $@
+	@printf '\n\n    # Lexbor Stage A smoke test (hanya ada di ISO uji).\n    module_path: boot():/lexbor_phase_a.elf\n    module_string: lexbor_phase_a.elf\n\n' >> $@
+
+.PHONY: lexbor-stage-a-qemu
+lexbor-stage-a-qemu: $(LEXBOR_A_APP) $(LEXBOR_A_CONF)
+	@rm -f $(ISO_IMAGE)
+	@$(MAKE) boot_image.iso LIMINE_CONF=$(LEXBOR_A_CONF)
+	@QEMU="$(QEMU)" bash tools/lexbor-stage-a/run-qemu.sh
+	@echo "--- bukti serial [lexbor-a] ---"; grep "\[lexbor-a\]" $(LEXBOR_A_OUT)/lexbor-a-serial.log || true
+	@grep -q "\[lexbor-a\] PASS" $(LEXBOR_A_OUT)/lexbor-a-serial.log || { echo "[lexbor] FAIL: [lexbor-a] PASS tidak terlihat di serial"; exit 1; }
 
 # ==========================================
 # LLVM libc 22.1.8 — Phase 4: C runtime completeness (time + utils)
@@ -2188,6 +2293,7 @@ $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
 	@cp $(DESKTOP_ASSETS) $(FONT_ASSETS) $(ISO_ROOT)/
 	@# Opsional: app smoke test libc Phase 1/2/4/5/6/7 + SDK Phase 3 + contoh C++ (tidak diproduksi build normal).
 	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
+	@if [ -f $(LEXBOR_A_APP) ]; then cp $(LEXBOR_A_APP) $(ISO_ROOT)/lexbor_phase_a.elf; fi
 	@if [ -f $(LIBC_PHASE2_APP) ]; then cp $(LIBC_PHASE2_APP) $(ISO_ROOT)/libc_phase2.elf; fi
 	@if [ -f $(LIBC_PHASE4_APP) ]; then cp $(LIBC_PHASE4_APP) $(ISO_ROOT)/libc_phase4.elf; fi
 	@if [ -f $(SDK_CPP_SMOKE_APP) ]; then cp $(SDK_CPP_SMOKE_APP) $(ISO_ROOT)/libc_phase5.elf; fi

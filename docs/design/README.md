@@ -67,6 +67,7 @@ implementation wins.
 | --- | --- |
 | [Browser Design](browser/browser.md) | Engine architecture |
 | [Browser Roadmap](browser/browser-roadmap.md) | Planned capabilities |
+| [Lexbor Stage A](browser/lexbor-stage-a.md) | Vendored Lexbor 3.0.0 HTML/DOM: freestanding archive, port layer, host + QEMU verification |
 
 ## Related Documentation
 
