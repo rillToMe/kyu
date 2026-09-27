@@ -55,7 +55,7 @@ public:
         mark_dirty();
     }
     virtual void draw(Painter& p) override {
-        if (!px || iw <= 0 || ih <= 0) { p.rect(x, y, w, h, p.theme.button_bg); return; }
+        if (!px || iw <= 0 || ih <= 0) { p.rect(x, y, w, h, p.theme.surface); return; }
         p.image(x, y, w, h, px, iw, ih);
     }
 };

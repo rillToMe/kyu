@@ -8,6 +8,8 @@
                            // SYS_RENAME / SYS_STAT
 #include "crash_notice.h"  // SYS_CRASH_NOTICE
 #include "kwm_abi.h"       // SYS_WALLPAPER_RELOAD
+#include "net_dns.h"       // SYS_RESOLVE
+#include "entropy.h"       // SYS_ENTROPY
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -109,7 +111,8 @@ void syscall_handler(registers_t *r) {
         done = sys_kwm_handle(r, &uc, &ret_val, syscall_task);
     }
     else if (syscall_num == 41 || syscall_num == 52 || syscall_num == 53 ||
-             syscall_num == 54 || syscall_num == 55 || syscall_num == 56) {
+             syscall_num == 54 || syscall_num == 55 || syscall_num == 56 ||
+             syscall_num == 86) {
         done = sys_net_handle(r, &uc, &ret_val, syscall_task);
     }
     else if (syscall_num == 65) {
@@ -118,7 +121,8 @@ void syscall_handler(registers_t *r) {
     else if (syscall_num == 4 || syscall_num == 14 || syscall_num == 15 ||
              syscall_num == 16 || syscall_num == 17 || syscall_num == 20 ||
              syscall_num == 35 || syscall_num == 36 || syscall_num == 37 ||
-             syscall_num == 38 || syscall_num == 39 || syscall_num == 46) {
+             syscall_num == 38 || syscall_num == 39 || syscall_num == 46 ||
+             syscall_num == SYS_ENTROPY) {
         done = sys_system_handle(r, &uc, &ret_val, syscall_task);
     }
     else if (syscall_num == 1 || syscall_num == 2 || syscall_num == 3 ||

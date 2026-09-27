@@ -19,8 +19,8 @@ void MenuBar::draw(Painter& p) {
     for (int i = 0; i < n; i++) {
         int tx = title_x(i), tw = title_w(i);
         bool open = win && win->popup == titles[i].menu;
-        if (open || i == hover_idx) p.rect(tx, y + 1, tw, h - 2, p.theme.button_hover);
-        p.text(titles[i].label, tx + 11, y + 4, p.theme.button_fg);
+        if (open || i == hover_idx) p.rect(tx, y + 1, tw, h - 2, p.theme.surface_elevated);
+        p.text(titles[i].label, tx + 11, y + 4, p.theme.text);
     }
 }
 

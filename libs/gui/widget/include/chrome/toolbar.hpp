@@ -55,9 +55,9 @@ public:
         p.rect(x, y, w, h, p.theme.bg);
         for (int i = 0; i < n; i++) {
             int bx = x + i * bw;
-            if (i == hover_idx) p.rect(bx + 2, y + 3, bw - 4, h - 6, p.theme.button_hover);
+            if (i == hover_idx) p.rect(bx + 2, y + 3, bw - 4, h - 6, p.theme.surface_elevated);
             int bl = _ui_strlen(btns[i].label) * 8;
-            p.text(btns[i].label, bx + (bw - bl) / 2, y + (h - 16) / 2, p.theme.fg);
+            p.text(btns[i].label, bx + (bw - bl) / 2, y + (h - 16) / 2, p.theme.text);
         }
     }
 };

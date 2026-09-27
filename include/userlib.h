@@ -75,6 +75,9 @@ uint64_t sys_used_ram(void);
 
 void print_num(uint32_t num);
 extern int strcmp(const char *s1, const char *s2);
+extern void *memmove(void *dest, const void *src, size_t count);
+extern int memcmp(const void *a, const void *b, size_t count);
+extern size_t strlen(const char *s);
 
 void get_cpu_string(char* buffer);
 
@@ -327,5 +330,17 @@ int sys_connect(int s, uint32_t ip_be, uint16_t port);  // 0 ok, -1 fail
 int sys_send(int s, const void* buf, uint32_t len);     // bytes sent or -1
 int sys_recv(int s, void* buf, uint32_t len);           // bytes, 0=closed, -1=err
 int sys_sock_close(int s);                              // -> 0 or -1
+
+// DNS resolver (syscall 86). host = hostname ("example.com"), maks 128 char.
+// out_ip_be = IPv4 network byte order. Return 0 sukses, negatif KSOCK_*
+// (lihat net_dns.h: -1 generik, -4 timeout, -5 nama tak ditemukan).
+// Literal IPv4 ("10.0.2.2") TIDAK perlu syscall — pakai net_parse_ipv4()
+// (netutil.h) dulu. Blocking ≤5s, kill-interruptible.
+int sys_resolve(const char *host, uint32_t *out_ip_be);
+
+// Entropi RDRAND (syscall 87, lihat entropy.h). out = buffer user, len ≤256.
+// Return byte terisi (>=0), ENTROPY_ERR (-1), ENTROPY_ENOHW (-2: CPU tak
+// punya RDRAND — https gagal jujur, jangan fallback ke PRNG tertebak).
+int sys_entropy(void *out, uint32_t len);
 
 #endif

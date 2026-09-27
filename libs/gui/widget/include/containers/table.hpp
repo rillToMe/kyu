@@ -131,25 +131,25 @@ public:
     virtual void draw(Painter& p) override {
         int cw = content_w();
         // header tetap
-        p.rect(x, y, cw, HEADER_H, p.theme.button_bg);
+        p.rect(x, y, cw, HEADER_H, p.theme.surface);
         int cx = x + 2;
         for (int c = 0; c < ncols; c++) {
-            p.text(col[c], cx, y + 4, p.theme.button_fg);
+            p.text(col[c], cx, y + 4, p.theme.text);
             cx += col_w[c];
         }
         p.rect(x, y + HEADER_H - 1, cw, 1, p.theme.divider);   // pemisah halus, bukan garis fg terang
         if (nrows == 0 && empty_text[0]) {
             int ew = _ui_strlen(empty_text) * 8;
             p.text(empty_text, x + (cw - ew) / 2, y + HEADER_H + (h - HEADER_H) / 2 - 8,
-                   p.theme.button_fg);
+                   p.theme.text);
         }
         // baris (scroll), setiap sel dipotong ke kolomnya
         p.set_clip(x, y + HEADER_H, cw, h - HEADER_H);
         for (int r = 0; r < nrows; r++) {
             int ry = y + HEADER_H + r * ROW_H - scroll;
             if (ry + ROW_H <= y + HEADER_H || ry >= y + h) continue;
-            if (r == selected) p.rect(x, ry, cw, ROW_H, p.theme.button_bg);
-            else if (r == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.button_hover);
+            if (r == selected) p.rect(x, ry, cw, ROW_H, p.theme.selection);
+            else if (r == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.surface_elevated);
             int cxx = x + 2;
             for (int c = 0; c < ncols; c++) {
                 p.set_clip(cxx, y + HEADER_H, col_w[c] - 2, h - HEADER_H);
@@ -158,7 +158,7 @@ public:
                     p.image(cxx, ry + 2, ICON_PX, ICON_PX, icon[r], icon_w[r], icon_h[r]);
                     tx += ICON_PX + ICON_PAD;
                 }
-                if (cells[r][c]) p.text(cells[r][c], tx, ry + 2, p.theme.fg);
+                if (cells[r][c]) p.text(cells[r][c], tx, ry + 2, p.theme.text);
                 p.set_clip(x, y + HEADER_H, cw, h - HEADER_H);
                 cxx += col_w[c];
             }

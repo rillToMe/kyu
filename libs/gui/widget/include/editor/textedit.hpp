@@ -26,7 +26,7 @@ public:
 
     // Terminal: prefix prompt berwarna (gaya shell Linux). Baris yang DIAWALI
     // `ps1` digambar dengan `ps1_len` karakter pertama memakai `ps1_color`,
-    // sisanya theme.fg. ps1_len == 0 = fitur mati (notepad & co).
+    // sisanya theme.text. ps1_len == 0 = fitur mati (notepad & co).
     char ps1[32];
     int ps1_len;
     color_t ps1_color;
@@ -51,7 +51,7 @@ public:
 
     TextEdit(int width, int height) : len(0), cur(0), scroll_top(0),
                                       readonly(false), enter_cb(0), enter_data(0),
-                                      ps1_len(0), ps1_color(COLOR_RGB(0x7C, 0xC7, 0xFF)),
+                                       ps1_len(0), ps1_color(COLOR_HEX(0x7CC7FF)),
                                       sel_anchor(-1), wrap(false),
                                       change_cb(0), change_data(0),
                                       n_ops(0), op_pos(0), undo_on(false) {
@@ -138,6 +138,10 @@ public:
     }
     // Readonly (output terminal) tak boleh mencuri fokus dari input.
     virtual bool focusable() override { return !readonly; }
+    // Phase C: editor multiline menelan Tab (indentasi 4 spasi) — traversal
+    // Tab melewatinya; keluar via Shift+Tab? TIDAK: Tab DAN Shift+Tab milik
+    // editor (unindent tidak ada). Keluar fokus via klik/Esc.
+    virtual bool wants_tab() override { return true; }
 
     // Batas edit terminal (enter_cb): tepat SETELAH prompt ps1 di baris
     // terakhir — prompt "user@host:~$ " tidak boleh dihapus/dinusulkan oleh
@@ -521,11 +525,12 @@ public:
     }
     virtual void draw(Painter& p) override {
         clamp_scroll();
-        // Area teks = permukaan "editor" (charcoal #1E1E1E, bukan hitam murni)
-        // + garis tepi 1px sebagai batas dari menubar/status bar.
+        // Area teks = permukaan editor + garis tepi 1px (focus saat fokus
+        // keyboard, divider saat tidak) sebagai batas dari menubar/status bar.
         p.rect(x, y, w, h, p.theme.editor);
-        p.rect(x, y, w, 1, p.theme.divider);
-        p.rect(x, y + h - 1, w, 1, p.theme.divider);
+        color_t edge = has_focus ? p.theme.focus : p.theme.divider;
+        p.rect(x, y, w, 1, edge);
+        p.rect(x, y + h - 1, w, 1, edge);
         p.set_clip(x, y, w, h);
         int colw = (w - 8) / CHAR_W;    // kolom yang muat (margin 4px)
         // Lewati scroll_top baris LAYAR (bukan baris dokumen — wrap mengubahnya).
@@ -549,9 +554,9 @@ public:
                 int ci = idx + c;
                 // Blok seleksi digambar sebagai latar sebelum karakternya.
                 if (ci >= hlo && ci < hhi)
-                    p.rect(cx, vy, CHAR_W, LINE_H, p.theme.button_hover);
+                    p.rect(cx, vy, CHAR_W, LINE_H, p.theme.surface_elevated);
                 char t[2] = { text[ci], '\0' };
-                color_t col = (ps1_here && c < ps1_len) ? ps1_color : p.theme.fg;
+                color_t col = (ps1_here && c < ps1_len) ? ps1_color : p.theme.text;
                 p.text(t, cx, vy + 1, col);
                 cx += CHAR_W;
             }

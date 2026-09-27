@@ -20,7 +20,7 @@ alokasi heap dan tanpa float/SSE.
 
 | File | Isi |
 |------|-----|
-| `include/color_types.h` | `color_t`, `color_format_t`, `COLOR_RGB`/`COLOR_RGBA`, `COLOR_RGB_INIT`/`COLOR_RGBA_INIT` (initializer constexpr), `color_to_u32`/`color_from_u32`, `color_with_alpha`/`color_opaque` (inline) |
+| `include/color_types.h` | `color_t`, `color_format_t`, `COLOR_RGB`/`COLOR_RGBA`, `COLOR_RGB_INIT`/`COLOR_RGBA_INIT` (initializer constexpr), `COLOR_HEX(0xRRGGBB)` (initializer hex satu-token, a=255), `color_to_u32`/`color_from_u32`, `color_with_alpha`/`color_opaque` (inline) |
 | `include/color_blend.h` | `color_blend_alpha` (inline), `color_div255`, seam batch `color_blend_span` |
 | `src/color_blend.c` | Batch span; `COLOR_BLEND_USE_SIMD` = hook SIMD (SSE2/AVX) |
 | `include/color_space.h` | `color_hsl_t`/`color_hsv_t` + 4 fungsi konversi |
@@ -40,6 +40,7 @@ Tidak ada `libs/gui/color/Makefile` sendiri: sumber ikut build system yang ada
 | Zero-allocation | Semua fungsi menerima/mengembalikan nilai `color_t`; tidak ada `malloc`/`kmalloc` di mana pun |
 | `FORMAT_ARGB` (default) = `0xAARRGGBB` | Sama dengan tipe warna compositor; RGBA/ABGR/BGRA untuk variasi framebuffer hardware |
 | `COLOR_RGB_INIT`/`*_INIT` = **constant expression**, bukan pemanggilan inline | Tema ditulis sebagai tabel `static const color_t`; `COLOR_RGB()`/`color_make()` adalah panggilan inline sehingga tidak sah sebagai initializer C (`initializer element is not a compile-time constant`). Nilainya identik dengan `COLOR_RGB(r, g, b)` (di-assert di `tests/host/unit/color_test.c`) |
+| `COLOR_HEX(0xRRGGBB)` = braced-list, semantik `0xRRGGBB` (BUKAN `0xAARRGGBB`) | Gula ergonomi di atas representasi yang sama: `COLOR_HEX(0x1E1E1E) == COLOR_RGB_INIT(0x1E,0x1E,0x1E)`, a=255, zero-overhead, C/C++ constant-init. BUKAN ekspresi: argumen fungsi/assignment di C tetap `COLOR_RGB()` (compound literal ditolak: bukan constant-expr di C, dynamic-init di C++ freestanding). Alpha non-255 tetap `COLOR_RGBA(_INIT)` — tidak ada `COLOR_HEX_A` (nol consumer saat ditambahkan) |
 | HSL/HSV: hue 0..359 derajat, s/l/v 0..255 | Picker UI menampilkan derajat; hindari fixed-point yang membingungkan di API |
 | Header C/C++ compatible | toolkit `libs/gui/widget/` (C++17; dulu `apps/libui.cpp`) memakai header yang sama; makro `COLOR_RGB`/`COLOR_RGBA` memanggil fungsi inline, bukan compound literal C |
 | Palet `static const` di header | Tiap TU dapat salinan sendiri (tanpa storage global bersama), bebas warning di C & C++ |

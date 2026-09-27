@@ -1,0 +1,33 @@
+[fixture] serving E:\Project\02_Software_Engineering\low-level\kyuzen-os\tests\browser_site on 127.0.0.1:8771
+[fixture] "GET / HTTP/1.1" 200 -
+[fixture] "GET /style.css HTTP/1.1" 200 -
+[fixture] "GET /image.png HTTP/1.1" 200 -
+[fixture] code 404, message File not found
+[fixture] "GET /nope.png HTTP/1.1" 404 -
+[fixture] "GET /page2.html HTTP/1.1" 200 -
+[fixture] "GET / HTTP/1.1" 200 -
+[fixture] "GET /style.css HTTP/1.1" 200 -
+[fixture] "GET /image.png HTTP/1.1" 200 -
+[fixture] code 404, message File not found
+[fixture] "GET /nope.png HTTP/1.1" 404 -
+[fixture] "GET / HTTP/1.1" 200 -
+[fixture] "GET /style.css HTTP/1.1" 200 -
+[fixture] "GET /image.png HTTP/1.1" 200 -
+[fixture] code 404, message File not found
+[fixture] "GET /nope.png HTTP/1.1" 404 -
+[fixture] "GET / HTTP/1.1" 200 -
+[fixture] "GET /style.css HTTP/1.1" 200 -
+[fixture] "GET /image.png HTTP/1.1" 200 -
+[fixture] code 404, message File not found
+[fixture] "GET /nope.png HTTP/1.1" 404 -
+[fixture] "GET /loop1 HTTP/1.1" 302 -
+[fixture] "GET /loop2 HTTP/1.1" 302 -
+[fixture] "GET /loop1 HTTP/1.1" 302 -
+[fixture] "GET /loop2 HTTP/1.1" 302 -
+[fixture] "GET /loop1 HTTP/1.1" 302 -
+[fixture] "GET /loop2 HTTP/1.1" 302 -
+[fixture] "GET /loop1 HTTP/1.1" 302 -
+[fixture] "GET /loop2 HTTP/1.1" 302 -
+[fixture] "GET /loop1 HTTP/1.1" 302 -
+[fixture] "GET /loop2 HTTP/1.1" 302 -
+[fixture] "GET /loop1 HTTP/1.1" 302 -

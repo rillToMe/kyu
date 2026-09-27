@@ -46,7 +46,7 @@ public:
             if (children[i]->visible) children[i]->draw(p);
     }
     virtual Widget* pick(int mx, int my) override {
-        if (!visible) return 0;
+        if (!visible || !enabled) return 0;
         for (int i = count - 1; i >= 0; i--) {
             Widget* r = children[i]->pick(mx, my);
             if (r) return r;

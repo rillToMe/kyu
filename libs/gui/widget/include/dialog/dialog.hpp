@@ -90,17 +90,26 @@ public:
     // Dipanggil Window saat ESC menutup dialog, SEBELUM objek ini dihapus.
     // PromptDialog memakainya untuk mengirim "dibatalkan" ke aplikasi.
     virtual void on_cancel() {}
+    // Phase C: dialog = satu stop fokus modal. Kiri/Kanan pindah hover antar
+    // tombol, Enter/Spasi aktifkan. PromptDialog menimpa on_key sendiri
+    // (input teks primer) sehingga ini hanya untuk dialog biasa.
+    virtual bool focusable() override { return true; }
+    virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override;
     virtual void draw(Painter& p) override {
         // Modal = permukaan "panel" (#252526) + border halus (#454545-ish) +
         // garis aksen tipis di tepi atas (identitas dialog, senada titlebar
-        // modern) + divider di atas baris tombol.
+        // modern) + divider di atas baris tombol. Border menjadi focus saat
+        // dialog memegang fokus keyboard (Phase C, di dalam bounds).
+        color_t edge = has_focus ? p.theme.focus : p.theme.mborder;
         p.rect(x, y, w, h, p.theme.panel);
         p.rect(x, y, w, 2, p.theme.accent);
-        p.rect(x, y, w, 1, p.theme.mborder);
-        p.rect(x, y + h - 1, w, 1, p.theme.mborder);
-        p.rect(x, y, 1, h, p.theme.mborder);
-        p.rect(x + w - 1, y, 1, h, p.theme.mborder);
-        p.text(title, x + 16, y + 14, p.theme.button_fg);       // judul putih
+        p.rect(x, y, w, 1, edge);
+        p.rect(x, y + h - 1, w, 1, edge);
+        p.rect(x, y, 1, h, edge);
+        p.rect(x + w - 1, y, 1, h, edge);
+        p.text(title, x + 16, y + 14, p.theme.text);       // judul
+        // Divider halus di bawah judul (hierarki judul > isi, tanpa geser layout).
+        p.rect(x + 16, y + 32, w - 32, 1, p.theme.border_subtle);
         // Isi: baris ber-prefix aksen digambar dgn warna acc_text (amber).
         {
             int ty = y + 36, start = 0, i = 0;
@@ -112,7 +121,7 @@ public:
                     // p.text() menggambar sampai NUL — pinjam byte baris itu.
                     const_cast<char*>(text)[i] = '\0';
                     p.text(text + start, x + 16, ty,
-                           acc ? p.theme.acc_text : p.theme.fg);
+                           acc ? p.theme.acc_text : p.theme.text);
                     const_cast<char*>(text)[i] = save;
                     if (save == '\0') break;
                     start = i + 1;
@@ -125,9 +134,15 @@ public:
         int by = btn_row_y();
         for (int i = 0; i < n_btns; i++) {
             int bx = btn_x(i);
-            p.rect(bx, by, btn_w(i), 28,
-                   i == hover_btn ? p.theme.button_hover : p.theme.btnfill);
-            p.text(btns[i], bx + 10, by + 6, p.theme.button_fg);
+            // Tombol pertama = aksi primer (aksen); sisanya sekunder.
+            // Konvensi native OK/Batal: primer di kiri.
+            bool primary = (i == 0);
+            color_t fill = primary
+                ? (i == hover_btn ? p.theme.accent_hover : p.theme.accent)
+                : (i == hover_btn ? p.theme.surface_elevated : p.theme.btnfill);
+            color_t txt = primary ? p.theme.accent_contrast : p.theme.text;
+            p.rect(bx, by, btn_w(i), 28, fill);
+            p.text(btns[i], bx + 10, by + 6, txt);
         }
     }
     void mark_btn(int i) {

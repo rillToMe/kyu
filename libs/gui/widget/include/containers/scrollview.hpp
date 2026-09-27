@@ -231,14 +231,14 @@ public:
         if (!hbar_shown()) return;
         int vw = content_w();
         int by = y + h - BAR_W;
-        p.rect(x, by, vw, BAR_W, p.theme.button_bg);
+        p.rect(x, by, vw, BAR_W, p.theme.surface);
         int tw = hbar_thumb_w();
         int range = vw - tw;
         int tx = range > 0 ? x + hscroll * range / hscroll_max : x;
         p.rect(tx, by, tw, BAR_W, p.theme.accent);
     }
     virtual void draw(Painter& p) override {
-        if (!child) { p.rect(x, y, w, h, p.theme.button_bg); draw_bar(p); return; }
+        if (!child) { p.rect(x, y, w, h, p.theme.surface); draw_bar(p); return; }
         int ox, oy;
         child_offset(ox, oy);
         child->x = x + ox; child->y = y + oy;

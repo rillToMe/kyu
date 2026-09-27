@@ -15,10 +15,15 @@
 namespace ui {
 
 // Format file "settings.ui" — lihat include/libui.h (blok ui_settings_save).
-// Tag 4 byte membedakan v1 (28 byte) dari file lama v0 (24 byte, tanpa tag).
+// Tag 4 byte membedakan v2 (10 byte) dari v1 (28 byte) dan file lama v0
+// (24 byte, tanpa tag).
 constexpr int  SETTINGS_TAG_LEN = 4;
 constexpr char SETTINGS_TAG[SETTINGS_TAG_LEN + 1] = "KTH1";
 constexpr int  SETTINGS_V1_LEN = SETTINGS_TAG_LEN + (int)sizeof(ui_theme_t);
+constexpr char SETTINGS_TAG_V2[SETTINGS_TAG_LEN + 1] = "KTH2";
+// v2 = tag + mode(1) + aksen(1) + custom(r,g,b,a) = 10 byte. Palet penuh
+// diturunkan saat load (apply_config), jadi file tetap kecil.
+constexpr int  SETTINGS_V2_LEN = SETTINGS_TAG_LEN + 2 + 4;
 
 static bool tag_match(const char* b, const char* tag) {
     for (int i = 0; i < SETTINGS_TAG_LEN; i++)
@@ -41,6 +46,10 @@ class Window {
 public:
     gui_window_t* gw;
     Theme theme;
+    // Phase A: konfigurasi mode × aksen terakhir (valid bila cfg_valid).
+    // Menentukan format settings_save (v2) vs tema legacy (v1).
+    ui_theme_config_t theme_cfg;
+    bool cfg_valid;
     Layout* root;
     bool running;
     int mouse_x, mouse_y;
@@ -48,16 +57,23 @@ public:
     Widget* focused;   // fokus keyboard intra-window (TextBox)
     Widget* grabbed;   // widget yang memegang drag (left-down sampai release)
     Widget* popup;     // overlay (menu dropdown) digambar paling atas (Phase 8)
+    Widget* popup_owner;   // Phase D: pemilik popup (0 = menu biasa); diberi
+                           // tahu via on_popup_dismiss() saat popup ditutup
     Widget* top_bars[4];   // bar full-width (MenuBar/Toolbar), di atas root
     int n_bars;
     int bar_h;         // tinggi kumulatif bar → offset root
     // Phase 9 — Desktop Services
     Dialog* dialog;        // modal aktif (0 = none); dimiliki window
+    Widget* focus_prev;    // Phase C: fokus sebelum dialog dibuka (restore saat tutup)
     char* notify_text;     // toast (0 = none); dimiliki window
     uint64_t notify_until; // sys_uptime() deadline auto-expire
     Widget* drag_src;      // widget draggable yang sedang diseret (0 = none)
     const char* drag_payload;
     int drag_x, drag_y;
+    // Phase D: tooltip presentasional (tanpa fokus/traversal).
+    uint64_t tip_since;    // sys_uptime() saat hovered terakhir berganti
+    Widget* tip_target;    // target yang sedang ditampilkan (0 = none)
+    bool tip_shown;
     int cur_cursor;        // bentuk kursor yang sudah di-set ke kernel
     struct Shortcut { uint8_t mods, key; ui_click_cb cb; void* data; };
     Shortcut shortcuts[32];      // Phase 11: notepad punya banyak accelerator
@@ -65,8 +81,7 @@ public:
     // Phase 10: tick periodik tiap iterasi event loop. Callback return 1 =
     // ada perubahan → toolkit render (jam/task manager refresh tanpa event).
     ui_tick_cb tick_cb;
-    void* tick_data;
-    // ESC global: bila callback-nya di-set, APLIKASI yang memutuskan (mis.
+    void* tick_data;    // ESC global: bila callback-nya di-set, APLIKASI yang memutuskan (mis.
     // Notepad menutup bar cari dulu, baru keluar); bila 0, ESC menutup window
     // seperti perilaku lama.
     ui_click_cb escape_cb;
@@ -79,11 +94,12 @@ public:
     int dirty_x, dirty_y, dirty_w, dirty_h;
 
     Window(uint32_t width, uint32_t height)
-        : gw(gui_create_window(width, height)), root(0),
+        : gw(gui_create_window(width, height)), theme_cfg(), cfg_valid(false), root(0),
           running(gw != 0), mouse_x(0), mouse_y(0), hovered(0),
-          focused(0), grabbed(0), popup(0), n_bars(0), bar_h(0),
-          dialog(0), notify_text(0), notify_until(0),
+          focused(0), grabbed(0), popup(0), popup_owner(0), n_bars(0), bar_h(0),
+          dialog(0), focus_prev(0), notify_text(0), notify_until(0),
           drag_src(0), drag_payload(0), drag_x(0), drag_y(0),
+          tip_since(0), tip_target(0), tip_shown(false),
           cur_cursor(UI_CURSOR_ARROW), n_shortcuts(0),
           tick_cb(0), tick_data(0), escape_cb(0), escape_data(0),
           key_cb(0), key_data(0),
@@ -103,7 +119,18 @@ public:
     void set_theme(const ui_theme_t* t) {
         if (!t) return;
         theme.set(t);   // sekalian hitung ulang permukaan turunan (derive())
+        cfg_valid = false;   // tema legacy → save memakai format v1
         damage_full();   // tema mengubah warna SEMUA widget → broad by design
+    }
+
+    // Phase A: tema dari mode × aksen. Mengganti tema dari jalur legacy
+    // (dan sebaliknya) kapan saja; 0 = abaikan.
+    void set_config(const ui_theme_config_t* c) {
+        if (!c) return;
+        theme.apply_config(c);
+        theme_cfg = *c;
+        cfg_valid = true;    // save memakai format v2 (mode+aksen+custom)
+        damage_full();
     }
 
     // Bar full-width (MenuBar/Toolbar) di puncak window, di atas root.
@@ -153,6 +180,10 @@ public:
             popup->set_hover(false);
         }
         popup = 0;
+        // Phase D: beri tahu pemilik (mis. ComboBox) agar flag internal sinkron.
+        Widget* o = popup_owner;
+        popup_owner = 0;
+        if (o) o->on_popup_dismiss();
         mark_menubars();
     }
 
@@ -178,8 +209,8 @@ public:
         }
         if (popup) { if (popup->track_hover(mouse_x, mouse_y)) changed = true; }
         if (hovered) { if (hovered->track_hover(mouse_x, mouse_y)) changed = true; }
-        // Phase 9: sinkronkan bentuk kursor kernel dgn widget yang di-hover.
-        int want = hovered ? hovered->cursor_kind : UI_CURSOR_ARROW;
+    // Phase 9: sinkronkan bentuk kursor kernel dgn widget yang di-hover.
+    int want = hovered ? hovered->cursor_kind : UI_CURSOR_ARROW;
         if (want != cur_cursor) {
             cur_cursor = want;
             sys_kwm_set_cursor(want);
@@ -188,10 +219,78 @@ public:
     }
 
     void set_focus(Widget* n) {
+        if (n && !n->enabled) n = 0;   // Phase B: disabled tak bisa memegang fokus
+        // Phase C (C7): fokus lama mungkin menunjuk widget yang sudah
+        // di-delete. Sanitized di sini (tanpa deref) sebelum disentuh.
+        if (focused && !focus_alive()) focused = 0;
         if (n == focused) return;
         if (focused) focused->set_focus(false);
         focused = n;
         if (focused) focused->set_focus(true);
+    }
+
+    // --- Phase C: traversal fokus deterministik (insertion order DFS) ----
+    // Urutan = bar (urutan add_bar) lalu subtree root (urutan ui_layout_add).
+    // Subtree invisible/disabled di-prune. Popup menu (mouse-driven) bukan
+    // stop traversal. Tanpa API tab-index: hierarchy sudah cukup.
+    enum { FOCUS_MAX = 64 };
+    static void collect_focus(Widget* w, Widget** out, int* n) {
+        if (!w || !w->visible || !w->enabled) return;   // prune subtree
+        if (w->focusable()) {
+            if (*n < FOCUS_MAX) out[(*n)++] = w;
+        }
+        int k = w->dirty_child_count();
+        for (int i = 0; i < k; i++) collect_focus(w->dirty_child(i), out, n);
+    }
+    int tab_order(Widget** out) {
+        int n = 0;
+        for (int i = 0; i < n_bars && n < FOCUS_MAX; i++)
+            collect_focus(top_bars[i], out, &n);
+        collect_focus(root, out, &n);
+        return n;
+    }
+    // Widget masih hidup di pohon? (perbandingan pointer, tanpa deref —
+    // aman dipanggil dengan pointer yang mungkin sudah di-delete).
+    static bool owned_walk(Widget* r, Widget* q) {
+        if (!r || !q) return false;
+        if (r == q) return true;
+        int k = r->dirty_child_count();
+        for (int i = 0; i < k; i++)
+            if (owned_walk(r->dirty_child(i), q)) return true;
+        return false;
+    }
+    bool owns_widget(Widget* q) {
+        for (int i = 0; i < n_bars; i++)
+            if (owned_walk(top_bars[i], q)) return true;
+        return owned_walk(root, q);
+    }
+    // Fokus hidup = menunjuk dialog modal atau node di pohon. Hanya
+    // perbandingan pointer (tanpa deref) → aman untuk pointer dangling.
+    bool focus_alive() {
+        if (!focused) return false;
+        if (focused == dialog) return true;
+        return owns_widget(focused);
+    }
+    Widget* first_focusable() {
+        Widget* list[FOCUS_MAX];
+        int n = tab_order(list);
+        return n > 0 ? list[0] : 0;
+    }
+    // Tab maju / Shift+Tab mundur, wrap-around. Fokus di luar daftar
+    // (dihapus) → mulai dari ujung (self-healing, tanpa deref).
+    // Dialog modal: trap — fokus tetap di dialog.
+    void focus_traversal(bool fwd) {
+        if (dialog) { set_focus(dialog); return; }
+        Widget* list[FOCUS_MAX];
+        int n = tab_order(list);
+        if (n == 0) { set_focus(0); return; }
+        int idx = -1;
+        for (int i = 0; i < n; i++)
+            if (list[i] == focused) { idx = i; break; }
+        int nx;
+        if (idx < 0) nx = fwd ? 0 : n - 1;
+        else nx = fwd ? (idx + 1) % n : (idx - 1 + n) % n;
+        set_focus(list[nx]);
     }
 
     // --- Shortcut (Phase 9): registry per-window, cek di KEY_PRESS. ---
@@ -226,7 +325,7 @@ public:
         render();
     }
 
-    // --- Dialog modal (Phase 9) ---
+    // --- Dialog modal (Phase 9) + fokus dialog (Phase C) ---
     void open_dialog(Dialog* d) {
         if (dialog && dialog != d) delete dialog;
         dialog = d;
@@ -234,6 +333,9 @@ public:
         d->y = ((int)gw->height - d->h) / 2 - 20;   // sedikit di atas tengah
         if (d->x < 0) d->x = 0;
         if (d->y < 0) d->y = 0;
+        focus_prev = focused;   // restore saat tutup (C11)
+        set_focus(d);           // dialog = satu stop fokus modal (C9)
+        hide_tip();             // Phase D: tooltip tak boleh di atas modal
         damage_overlay(d);
         render();
     }
@@ -241,8 +343,15 @@ public:
         if (!dialog) return;
         if (hovered == dialog) hovered = 0;
         damage_overlay(dialog);   // hapus dialog + shadow
-        delete dialog;
+        Dialog* d = dialog;
         dialog = 0;
+        // Restore sebelum delete: prev yang masih hidup + enabled dipakai,
+        // sisanya fallback stop pertama (tanpa deref pointer mati).
+        Widget* back = (focus_prev && owns_widget(focus_prev) &&
+                        focus_prev->enabled) ? focus_prev : first_focusable();
+        focus_prev = 0;
+        set_focus(back);
+        delete d;
         render();
     }
 
@@ -260,13 +369,30 @@ public:
         if (c) c(dd, ok ? buf : 0);
     }
 
-    // --- Settings (Phase 9): persist theme ke KyuzenFS "settings.ui" ---
-    // Dua versi format (lihat include/libui.h):
-    //   v1 — tag "KTH1" + 6 x color_t = 28 byte  (yang ditulis sekarang)
+    // --- Settings (Phase 9 + Phase A): persist theme ke KyuzenFS "settings.ui" ---
+    // Tiga versi format (lihat include/libui.h):
+    //   v2 — tag "KTH2" + mode(1) + aksen(1) + custom(r,g,b,a) = 10 byte
+    //          (tema config; palet diturunkan saat load via apply_config)
+    //   v1 — tag "KTH1" + 6 x color_t = 28 byte  (yang ditulis jalur legacy)
     //   v0 — 6 x uint32 0x00RRGGBB = 24 byte      (file lama; tetap dibaca)
-    // Ukuran payload beda (24 vs 28) + tag, jadi versinya bisa dibedakan
+    // Panjang beda (10 vs 28 vs 24) + tag, jadi versinya bisa dibedakan
     // tanpa menyentuh struct ABI.
     int settings_save() {
+        if (cfg_valid) {
+            int fd = sys_open("settings.ui", O_WRONLY | O_CREAT | O_TRUNC);
+            if (fd < 0) return 0;
+            char buf[SETTINGS_V2_LEN];
+            buf[0] = 'K'; buf[1] = 'T'; buf[2] = 'H'; buf[3] = '2';
+            buf[4] = (char)theme_cfg.mode;
+            buf[5] = (char)theme_cfg.accent;
+            buf[6] = (char)theme_cfg.custom.r;
+            buf[7] = (char)theme_cfg.custom.g;
+            buf[8] = (char)theme_cfg.custom.b;
+            buf[9] = (char)theme_cfg.custom.a;
+            int n = sys_write_fd(fd, buf, SETTINGS_V2_LEN);
+            sys_close(fd);
+            return n == SETTINGS_V2_LEN;
+        }
         int fd = sys_open("settings.ui", O_WRONLY | O_CREAT | O_TRUNC);
         if (fd < 0) return 0;
         char buf[SETTINGS_V1_LEN];
@@ -285,7 +411,18 @@ public:
         int n = sys_read_fd(fd, buf, SETTINGS_V1_LEN);
         sys_close(fd);
         ui_theme_t t;
-        if (n == SETTINGS_V1_LEN && tag_match(buf, SETTINGS_TAG)) {
+        if (n == SETTINGS_V2_LEN && tag_match(buf, SETTINGS_TAG_V2)) {
+            ui_theme_config_t c;
+            c.mode = (ui_theme_mode_t)(unsigned char)buf[4];
+            c.accent = (ui_theme_accent_t)(unsigned char)buf[5];
+            c.custom = color_make((uint8_t)buf[6], (uint8_t)buf[7],
+                                  (uint8_t)buf[8], (uint8_t)buf[9]);
+            // Enum di luar rentang (file korup) → tolak, tema tidak berubah.
+            if (c.mode > UI_THEME_LIGHT || c.accent > UI_ACCENT_CUSTOM)
+                return 0;
+            set_config(&c);
+            return 1;
+        } else if (n == SETTINGS_V1_LEN && tag_match(buf, SETTINGS_TAG)) {
             memcpy(&t, buf + SETTINGS_TAG_LEN, sizeof(t));       // v1
         } else if (n == (int)sizeof(ui_theme_t)) {
             // v0: theme ditulis sebagai 6 x uint32 0x00RRGGBB.
@@ -310,17 +447,93 @@ public:
         p.rect(nx, ny + 27, 210, 1, p.theme.mborder);
         p.rect(nx, ny, 1, 28, p.theme.mborder);
         p.rect(nx + 209, ny, 1, 28, p.theme.mborder);
-        p.text(notify_text, nx + 8, ny + 6, p.theme.fg);
+        p.text(notify_text, nx + 8, ny + 6, p.theme.text);
     }
     void draw_drag_ghost(Painter& p) {
         int tw = drag_payload ? _ui_strlen(drag_payload) * 8 + 12 : 24;
         int gx = drag_x + 4, gy = drag_y + 4;
-        p.rect(gx, gy, tw, 18, p.theme.button_hover);
+        p.rect(gx, gy, tw, 18, p.theme.surface_elevated);
         p.rect(gx, gy, tw, 1, p.theme.accent);
         p.rect(gx, gy + 17, tw, 1, p.theme.accent);
         p.rect(gx, gy, 1, 18, p.theme.accent);
         p.rect(gx + tw - 1, gy, 1, 18, p.theme.accent);
-        if (drag_payload) p.text(drag_payload, gx + 6, gy + 2, p.theme.fg);
+        if (drag_payload) p.text(drag_payload, gx + 6, gy + 2, p.theme.text);
+    }
+
+    // --- Phase D: tooltip (ringan, presentasional) ---
+    // Delay hover sebelum tampil (pola notify: sys_uptime tiap iterasi loop).
+    enum { TIP_DELAY_MS = 600, TIP_H = 20, TIP_PAD_X = 6 };
+    // Rect tooltip untuk target + panjang teks: di atas target, fallback di
+    // bawah, clamp horizontal + vertikal ke window. Fungsi murni (unit-test).
+    static void tip_calc(const Widget* t, int len, int ww, int wh,
+                         int* ox, int* oy, int* ow, int* oh) {
+        int w = len * 8 + TIP_PAD_X * 2, h = TIP_H;
+        int x = t->x;
+        if (x + w > ww) x = ww - w;
+        if (x < 0) x = 0;
+        int y = t->y - h - 4;
+        if (y < 0) y = t->y + t->h + 4;
+        if (y + h > wh) y = wh - h;
+        if (y < 0) y = 0;
+        *ox = x; *oy = y; *ow = w; *oh = h;
+    }
+    static int tip_len(const char* s) {
+        int n = 0;
+        if (s) while (s[n] && n < 64) n++;
+        return n;
+    }
+    void damage_tip_target(Widget* t) {
+        if (!t || !t->tooltip || !t->tooltip[0]) return;
+        int x, y, w, h;
+        tip_calc(t, tip_len(t->tooltip), (int)gw->width, (int)gw->height,
+                 &x, &y, &w, &h);
+        damage_rect(x, y, w, h);
+    }
+    void hide_tip() {
+        if (!tip_shown && !tip_target) return;
+        // Target mungkin sudah dihancurkan: damage luas bila tak terbukti hidup.
+        if (tip_target && owns_widget(tip_target)) damage_tip_target(tip_target);
+        else damage_full();
+        tip_shown = false;
+        tip_target = 0;
+    }
+    // Phase D: kemajuan timer tooltip (dipanggil tiap iterasi run loop).
+    // Return true bila ada perubahan visual (pemanggil me-render).
+    // Bentuk terpisah agar unit-testable dengan waktu palsu.
+    bool tip_tick(uint64_t now) {
+        if (tip_shown) {
+            if (!owns_widget(tip_target) || tip_target != hovered) {
+                hide_tip();
+                return true;
+            }
+            return false;
+        }
+        if (dialog || !hovered || !hovered->tooltip || !hovered->tooltip[0])
+            return false;
+        if (now - tip_since < (uint64_t)TIP_DELAY_MS) return false;
+        tip_target = hovered;
+        tip_shown = true;
+        damage_tip_target(tip_target);
+        return true;
+    }
+    void draw_tip(Painter& p) {
+        // Validasi di titik gambar (tanpa deref buta): target mati/hilang
+        // fokus-hover → jangan gambar.
+        if (!tip_shown || !tip_target || !owns_widget(tip_target) ||
+            tip_target != hovered || !tip_target->tooltip || !tip_target->tooltip[0]) {
+            tip_shown = false;
+            tip_target = 0;
+            return;
+        }
+        int x, y, w, h;
+        tip_calc(tip_target, tip_len(tip_target->tooltip),
+                 (int)gw->width, (int)gw->height, &x, &y, &w, &h);
+        p.rect(x, y, w, h, p.theme.surface_elevated);
+        p.rect(x, y, w, 1, p.theme.border);
+        p.rect(x, y + h - 1, w, 1, p.theme.border);
+        p.rect(x, y, 1, h, p.theme.border);
+        p.rect(x + w - 1, y, 1, h, p.theme.border);
+        p.text(tip_target->tooltip, x + TIP_PAD_X, y + (h - 16) / 2, p.theme.text);
     }
 
     // --- Phase 5: damage rect (satu bbox). Over-report BOLEH, under TIDAK. ---
@@ -413,6 +626,7 @@ public:
         }
         if (notify_text) draw_notify(p);  // toast paling atas
         if (drag_src) draw_drag_ghost(p); // ghost drag
+        if (tip_shown) draw_tip(p);       // tooltip paling atas (validasi di dalam)
         gui_flush(gw);
     }
 
@@ -426,6 +640,9 @@ public:
             // Phase 9: auto-expire notifikasi. Loop bangun ~60/s via
             // sys_yield + timer IRQ → cukup cek tiap iterasi, tanpa timer infra.
             if (notify_text && sys_uptime() >= notify_until) notify_dismiss();
+            // Phase D: tooltip — tampil setelah hover diam, sembunyi bila
+            // target mati/berpindah (logika di tip_tick agar unit-testable).
+            if (tip_tick(sys_uptime())) render();
             // Phase 10: tick periodik — jam/task manager render hanya saat berubah.
             if (tick_cb && tick_cb(tick_data)) render();
             if (sys_get_event(&ev)) {
@@ -445,6 +662,8 @@ public:
                         if (track_hover()) {
                             // Widget hover/bar yang berubah menandai rect-nya
                             // sendiri; render() memanennya (bukan seluruh widget).
+                            hide_tip();   // Phase D: hover pindah → timer tooltip ulang
+                            tip_since = sys_uptime();
                             render();
                         }
                     }
@@ -566,10 +785,30 @@ public:
                             }
                         }
                         if (!handled) {
-                            if (focused)
-                                focused->on_key((uint8_t)ev.param1,
-                                                (uint32_t)ev.param3,
-                                                (uint32_t)ev.param2);
+                            uint32_t sc = (uint32_t)ev.param3 & 0xFFu;
+                            // Phase C: baca fokus lewat validasi (tanpa deref
+                            // buta — menutup UAF laten bila fokus dihancurkan).
+                            Widget* f = focus_alive() ? focused : 0;
+                            if (f && !f->enabled) f = 0;
+                            // Phase C: Tab/Shift+Tab = traversal fokus.
+                            // Dikecualikan: Ctrl/Alt+Tab (shortcut app/WM) dan
+                            // editor multiline (wants_tab: Tab = indentasi).
+                            // Registry shortcut dicek lebih dulu di atas.
+                            bool tab = (sc == 0x0F) &&
+                                       !(mods & (KEY_MOD_CTRL | KEY_MOD_ALT));
+                            if (tab && (!f || !f->wants_tab())) {
+                                // Phase D: popup (mis. ComboBox) ditutup dulu
+                                // agar traversal tak bocor ke balik popup.
+                                if (popup) {
+                                    Widget* old = popup;
+                                    close_popup();
+                                    damage_overlay(old);
+                                }
+                                focus_traversal(!(mods & KEY_MOD_SHIFT));
+                            } else if (f)
+                                f->on_key((uint8_t)ev.param1,
+                                          (uint32_t)ev.param3,
+                                          (uint32_t)ev.param2);
                             else if (key_cb)
                                 key_cb(key_data, (uint32_t)ev.param1,
                                        (uint32_t)ev.param3, (uint32_t)ev.param2);

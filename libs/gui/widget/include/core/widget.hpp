@@ -16,6 +16,7 @@ class Widget {
 public:
     int x, y, w, h;
     bool visible;
+    bool enabled;          // Phase B: false = redup + tak menerima input.
     bool has_focus;          // diset Window saat fokus keyboard intra-window
     ui_click_cb click_cb;
     void* userdata;
@@ -26,6 +27,9 @@ public:
     // Phase 9: Drag & Drop + bentuk kursor per-widget.
     bool draggable;
     char* dnd_payload;
+    // Phase D: tooltip presentasional per-widget (teks milik widget;
+    // ditampilkan Window setelah hover delay, tanpa fokus/traversal).
+    char* tooltip;
     bool drop_target;
     ui_drop_cb drop_cb;
     void* drop_data;
@@ -40,13 +44,13 @@ public:
     // digambar ulang, bukan hanya kotak widget itu sendiri.
     class Window* owner;
 
-    Widget() : x(0), y(0), w(0), h(0), visible(true), has_focus(false),
-              click_cb(0), userdata(0), right_cb(0), right_data(0),
-              draggable(false), dnd_payload(0),
+    Widget() : x(0), y(0), w(0), h(0), visible(true), enabled(true), has_focus(false),
+               click_cb(0), userdata(0), right_cb(0), right_data(0),
+               draggable(false), dnd_payload(0), tooltip(0),
               drop_target(false), drop_cb(0), drop_data(0),
               cursor_kind(UI_CURSOR_ARROW),
               dirty(false), dm_x(0), dm_y(0), dm_w(0), dm_h(0), owner(0) {}
-    virtual ~Widget() { _ui_free(dnd_payload); }
+    virtual ~Widget() { _ui_free(dnd_payload); _ui_free(tooltip); }
     // Pemilik dipasang Window saat widget masuk pohon (Layout menurunkan ke anak).
     virtual void set_owner(Window* o) { owner = o; }
     virtual void draw(Painter& p) = 0;
@@ -56,7 +60,19 @@ public:
     // yang tidak visible, jadi baris yang disembunyikan tidak makan tempat.
     // Definisi di luar class: butuh Window lengkap (damage_full).
     void set_visible(bool on);
+    // Phase B: enabled/disabled generik. Disabled = digambar redup + pick()
+    // mengembalikan 0 (tak bisa hover/klik/fokus). State transient (hover/
+    // pressed) dibersihkan agar tak ada visual sticky.
+    void set_enabled(bool on) {
+        if (enabled == on) return;
+        enabled = on;
+        if (!on) { set_hover(false); on_release(); }
+        mark_dirty();
+    }
     virtual bool focusable() { return false; }   // TextBox → true
+    // Phase C: true = widget menelan Tab sendiri (editor multiline).
+    // Traversal Tab melewati widget ini; false = Tab memindahkan fokus.
+    virtual bool wants_tab() { return false; }
     // Phase 8: akumulasi rect kotor (window-local) — over-report BOLEH.
     void mark_area(int ax, int ay, int aw, int ah) {
         if (aw <= 0 || ah <= 0) return;
@@ -83,8 +99,11 @@ public:
     // Layout: hitung ulang posisi anak sebelum pengumpulan damage (reflow).
     virtual void settle() {}
     // Hit-test: widget paling dalam yang memuat (mx,my), atau 0.
+    // Disabled tidak bisa di-hit (tanpa hover/klik/fokus) — satu titik
+    // penegakan untuk semua widget; override (Tab/Layout) mendelegasikan
+    // ke anak yang menjaga dirinya sendiri.
     virtual Widget* pick(int mx, int my) {
-        if (!visible) return 0;
+        if (!visible || !enabled) return 0;
         return (mx >= x && mx < x + w && my >= y && my < y + h) ? this : 0;
     }
     // Phase 5: union bounds subtree ke (x0,y0,x1,y1) — untuk damage render luas
@@ -123,16 +142,27 @@ public:
     void set_right_click(ui_pos_click_cb cb, void* u) { right_cb = cb; right_data = u; }
     // Phase 9: DnD. Widget draggable memulai drag saat klik-tahan; click_cb
     // tidak dipanggil (threshold-drag untuk seret-langsung adalah masa depan).
-    void set_draggable(const char* payload) {
-        char* n = _ui_strdup(payload ? payload : "");
+    void set_draggable(const char* payload) {        char* n = _ui_strdup(payload ? payload : "");
         if (!n) return;
         _ui_free(dnd_payload);
         dnd_payload = n;
         draggable = true;
     }
+    // Phase D: tooltip teks (disalin; 0/"" menghapus). Presentasional saja:
+    // tanpa fokus, tanpa traversal, tanpa mengubah fokus aplikasi.
+    void set_tooltip(const char* text) {
+        char* n = (!text || !text[0]) ? 0 : _ui_strdup(text);
+        if (text && text[0] && !n) return;
+        _ui_free(tooltip);
+        tooltip = n;
+        mark_dirty();
+    }
     void set_drop_target(ui_drop_cb cb, void* u) {
         drop_target = true; drop_cb = cb; drop_data = u;
     }
+    // Phase D: dipanggil Window saat popup milik widget ini DITUTUP dari luar
+    // (klik di luar, ESC, Tab, dtor) — sinkronkan flag internal. Default kosong.
+    virtual void on_popup_dismiss() {}
     void set_cursor(int kind) { cursor_kind = kind; }
 };
 

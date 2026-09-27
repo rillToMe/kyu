@@ -86,7 +86,7 @@ public:
         p.rect(x + 16, iy + 23, w - 32, 1, p.theme.mborder);
         p.rect(x + 16, iy, 1, 24, p.theme.mborder);
         p.rect(x + w - 17, iy, 1, 24, p.theme.mborder);
-        p.text(input, x + INPUT_PAD_X, iy + 4, p.theme.fg);
+        p.text(input, x + INPUT_PAD_X, iy + 4, p.theme.text);
         p.rect(x + INPUT_PAD_X + cur * 8, iy + 4, 2, 16, p.theme.caret);   // caret cyan
     }
     // out-of-class: butuh Window lengkap (close_prompt / close_dialog)

@@ -34,7 +34,7 @@ void previewDraw(void* ud, std::uint32_t* canvas, int cw, int ch, int x, int y) 
     FontsPage* p = static_cast<FontsPage*>(ud);
     kz_font_t* f = (p) ? p->fonts.font() : nullptr;
     if (!f || !canvas) return;
-    color_t fg = COLOR_RGB(0xE8, 0xE8, 0xEC);
+    color_t fg = COLOR_HEX(0xE8E8EC);
     int dmg[4];
     kz_text_draw(canvas, (std::uint32_t)cw, (std::uint32_t)ch, f, x + 4, y + 24,
                  fg, "The quick brown fox", dmg);

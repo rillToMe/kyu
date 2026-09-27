@@ -304,7 +304,7 @@ public:
         p.set_clip(x, y, cw, h);
         if (n == 0 && empty_text[0]) {
             int tw = _ui_strlen(empty_text) * 8;
-            p.text(empty_text, x + (cw - tw) / 2, y + h / 2 - 8, p.theme.fg);
+            p.text(empty_text, x + (cw - tw) / 2, y + h / 2 - 8, p.theme.text);
         }
         int first, last;
         visible_range(first, last);
@@ -314,8 +314,8 @@ public:
         for (int i = first; i <= last; i++) {
             int cx, cy;
             cell_rect(i, cx, cy);
-            if (i == selected) p.rect(cx + 1, cy + 1, cell_w - 2, cell_h - 2, p.theme.button_bg);
-            else if (i == hover_cell) p.rect(cx + 1, cy + 1, cell_w - 2, cell_h - 2, p.theme.button_hover);
+            if (i == selected) p.rect(cx + 1, cy + 1, cell_w - 2, cell_h - 2, p.theme.selection);
+            else if (i == hover_cell) p.rect(cx + 1, cy + 1, cell_w - 2, cell_h - 2, p.theme.surface_elevated);
             const Cell& cell = cells[i];
             int tx = cx + PAD;
             int ty = cy + PAD;
@@ -326,17 +326,17 @@ public:
                         ty + (thumb_box - cell.ph) / 2,
                         cell.pw, cell.ph, cell.px, cell.pw, cell.ph);
             } else {
-                p.rect(tx, ty, inner_w, thumb_box, p.theme.button_bg);
+                p.rect(tx, ty, inner_w, thumb_box, p.theme.surface);
                 if (cell.placeholder == PH_ERROR) {
                     int mw = thumb_box / 2;
                     p.rect(tx + (inner_w - mw) / 2, ty + (thumb_box - mw) / 2, mw, mw,
-                           p.theme.button_hover);
-                    p.text("!", tx + inner_w / 2 - 4, ty + thumb_box / 2 - 8, p.theme.fg);
+                           p.theme.surface_elevated);
+                    p.text("!", tx + inner_w / 2 - 4, ty + thumb_box / 2 - 8, p.theme.text);
                 }
             }
             label_for(cell, label, (int)sizeof(label), max_chars);
             int lw = _ui_strlen(label) * 8;
-            p.text(label, cx + (cell_w - lw) / 2, cy + PAD + thumb_box + 2, p.theme.fg);
+            p.text(label, cx + (cell_w - lw) / 2, cy + PAD + thumb_box + 2, p.theme.text);
         }
         p.clear_clip();
         draw_bar(p);

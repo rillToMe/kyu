@@ -24,10 +24,19 @@ class FtText : public Widget {
 public:
     ui_fttext_draw_cb draw_cb;
     void* draw_data;
-    FtText(int w_, int h_) : draw_cb(0), draw_data(0) { w = w_; h = h_; }
+    // Browser viewport: klik kiri + koordinat window-local (hit-test link).
+    // Terpisah dari click_cb generik (tanpa koordinat) agar widget lama utuh.
+    ui_pos_click_cb pos_cb;
+    void* pos_data;
+    FtText(int w_, int h_) : draw_cb(0), draw_data(0), pos_cb(0), pos_data(0) { w = w_; h = h_; }
     void set_draw(ui_fttext_draw_cb cb, void* u) {
         draw_cb = cb; draw_data = u;
         mark_dirty();
+    }
+    void set_pos_click(ui_pos_click_cb cb, void* u) { pos_cb = cb; pos_data = u; }
+    virtual void on_click(int mx, int my) override {
+        if (pos_cb) pos_cb(pos_data, mx, my);
+        else Widget::on_click(mx, my);
     }
     void refresh() { mark_dirty(); }
     virtual void draw(Painter& p) override {

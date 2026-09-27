@@ -7,6 +7,7 @@
 #include "kyuzenfs.h"  // kfs_get_total/used_space
 #include "pci.h"       // acpi_poweroff, system_reboot (deklarasi existing)
 #include "rtc.h"       // rtc_read_time
+#include "entropy.h"   // SYS_ENTROPY
 
 // get_cpu_string (kernel/cpu.c) tidak punya owner header kernel (deklarasi
 // user-ABI ada di userlib.h) dan hanya dipakai satu TU di sini — tetap lokal.
@@ -75,6 +76,19 @@ int sys_system_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st
     else if (syscall_num == 46) { // sys_sleep — non-busy sleep RBX ms
         // Task masuk sleep queue (TASK_SLEEPING); CPU bebas jalankan task lain.
         task_sleep_ms((uint32_t)r->rbx);
+    }
+    else if (syscall_num == SYS_ENTROPY) { // sys_entropy(out*, len)
+        // RBX = buffer user, RCX = len. Isi via bounce kernel (RDRAND tak
+        // boleh menulis langsung ke user — dan range dicek dulu).
+        uint32_t len = (uint32_t)r->rcx;
+        int n = ENTROPY_ERR;
+        if (len > 0 && len <= ENTROPY_MAX &&
+            user_range_ok(uc, r->rbx, len)) {
+            uint8_t kbuf[ENTROPY_MAX];
+            n = entropy_fill(kbuf, len);
+            if (n > 0) copy_to_user(uc, r->rbx, kbuf, (uint32_t)n);
+        }
+        *ret = (uint64_t)(int64_t)n;
     }
 
     return 0;

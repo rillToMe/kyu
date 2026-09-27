@@ -143,11 +143,11 @@ public:
                 p.rect(x + 8, ry + SEP_H / 2, w - 16, 1, p.theme.divider);
                 continue;
             }
-            if (i == hover_idx) p.rect(x + 1, ry, w - 2, ROW_H, p.theme.button_hover);
+            if (i == hover_idx) p.rect(x + 1, ry, w - 2, ROW_H, p.theme.surface_elevated);
             // Kolom centang (View > Word Wrap) — kotak accent, bukan glyph,
             // karena font bitmap toolkit hanya punya ASCII.
             if (items[i].checked) p.rect(x + 8, ry + (ROW_H - 8) / 2, 8, 8, p.theme.accent);
-            color_t fg = items[i].disabled ? color_darken(p.theme.fg, SHADE_55) : p.theme.fg;
+            color_t fg = items[i].disabled ? p.theme.text_disabled : p.theme.text;
             p.text(items[i].label, x + 24, ry + (ROW_H - 16) / 2, fg);
             if (items[i].acc) {
                 // Shortcut ("Ctrl+S") pakai warna aksen khusus agar menonjol

@@ -86,7 +86,7 @@ public:
     void draw_bar(Painter& p) {
         if (scroll_max <= 0) return;
         int bx = x + w - BAR_W;
-        p.rect(bx, y, BAR_W, h, p.theme.button_bg);
+        p.rect(bx, y, BAR_W, h, p.theme.surface);
         int th = bar_thumb_h();
         int range = h - th;
         int ty = range > 0 ? y + scroll * range / scroll_max : y;

@@ -127,6 +127,9 @@ int media_probe_image(const char* path, int* w, int* h, const char** fmt);
 // ------------------------------------------------------------
 uint32_t* image_decode(const char* filename, int* out_w, int* out_h);
 void image_free(uint32_t* buf);
+// Decode dari buffer memori (mis. body HTTP). Batas dimensi gila (4096²)
+// di dalam; batas aplikasi (browser: input 512KB, piksel 2048²) milik caller.
+uint32_t* image_decode_memory(const uint8_t* data, uint32_t len, int* out_w, int* out_h);
 
 #ifdef __cplusplus
 }

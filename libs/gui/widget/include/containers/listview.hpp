@@ -74,9 +74,9 @@ public:
         for (int i = 0; i < n; i++) {
             int ry = y + i * ROW_H - scroll;
             if (ry + ROW_H <= y || ry >= y + h) continue;
-            if (i == selected) p.rect(x, ry, cw, ROW_H, p.theme.button_bg);
-            else if (i == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.button_hover);
-            p.text(items[i], x + 4, ry + 2, p.theme.fg);
+            if (i == selected) p.rect(x, ry, cw, ROW_H, p.theme.selection);
+            else if (i == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.surface_elevated);
+            p.text(items[i], x + 4, ry + 2, p.theme.text);
         }
         p.clear_clip();
         draw_bar(p);

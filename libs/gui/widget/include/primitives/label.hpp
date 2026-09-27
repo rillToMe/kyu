@@ -24,7 +24,7 @@ public:
         w = _ui_strlen(text) * 8;
         mark_dirty();               // bounds baru
     }
-    virtual void draw(Painter& p) override { p.text(text, x, y, p.theme.fg); }
+    virtual void draw(Painter& p) override { p.text(text, x, y, p.theme.text); }
 };
 
 } // namespace ui

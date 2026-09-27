@@ -111,6 +111,7 @@ LIBUI_COLOR_OBJS = $(OBJ_DIR)/libs/gui/color/src/color_utils.o
 
 USERLIB_OBJ    = $(OBJ_DIR)/libs/core/userlib.o  # int $0x80 syscall wrappers
 USERUTIL_OBJ   = $(OBJ_DIR)/libs/core/userutil.o # helper identitas bersama (UID → username)
+NETUTIL_OBJ    = $(OBJ_DIR)/libs/core/netutil.o  # helper klien net reusable (resolve/dial)
 SHELLCORE_OBJ  = $(OBJ_DIR)/system/shell_core.o # shell engine bersama (parser/registry/built-in)
 LIBGUI_OBJ     = $(OBJ_DIR)/libs/core/libgui.o   # GUI framework lama (font8x16, dll)
 PNG_OBJ        = $(OBJ_DIR)/libs/media/png.o   # dekoder gambar bersama (libs/media/png.c: PNG + BMP)
@@ -157,7 +158,7 @@ FONT_BLOB_OBJS = $(addprefix $(OBJ_DIR)/apps/fonts/,$(addsuffix .o,$(FONTDEMO_FO
 #                 toolkit libui lewat ABI C + libs/gui/color + png + media.
 #                 Bukan kelompok lain: rule kompilasi/link-nya beda (clang++,
 #                 subdir, -I libs/gui/widget/include).
-GUI_APPS    = viewer clock calc taskmgr notepad widget_demo fontdemo
+GUI_APPS    = viewer clock calc notepad widget_demo fontdemo xml_demo
 SYS_APPS    = echo cat
 TEST_APPS   = procinfo exit_test kill_test fd_test pipe_test fork_test badptr
 SIMPLE_APPS = $(SYS_APPS) $(TEST_APPS)
@@ -175,7 +176,7 @@ ALL_ELFS = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(ALL_NAMES)))
 APP_OBJS = $(addprefix $(OBJ_DIR)/apps/,$(addsuffix .o,$(GUI_APPS) $(OTHER_APPS)))
 SYS_OBJS = $(addprefix $(OBJ_DIR)/system/,$(addsuffix .o,$(SYS_APPS)))
 TEST_OBJS = $(addprefix $(OBJ_DIR)/tests/,$(addsuffix .o,$(TEST_APPS)))
-ALL_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) \
+ALL_OBJS = $(USERLIB_OBJ) $(USERUTIL_OBJ) $(NETUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) \
            $(WIDGET_OBJS) $(PNG_OBJ) $(MEDIA_OBJ) $(COLOR_OBJS) $(APP_OBJS) \
            $(SYS_OBJS) $(TEST_OBJS) $(CPP_APP_OBJS) $(TEXT_OBJS) $(FONT_BLOB_OBJS)
 
@@ -288,8 +289,8 @@ $(OBJ_DIR)/apps/imageview/%.o: imageview/%.cpp | $(OBJ_DIRS)
 # ==========================================================
 # LINK (satu rule per grup; isi link identik dengan sebelumnya)
 # ==========================================================
-GUI_LIBS     = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
-TERMINAL_LIBS= $(USERLIB_OBJ) $(USERUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
+GUI_LIBS     = $(USERLIB_OBJ) $(NETUTIL_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
+TERMINAL_LIBS= $(USERLIB_OBJ) $(USERUTIL_OBJ) $(NETUTIL_OBJ) $(SHELLCORE_OBJ) $(LIBGUI_OBJ) $(WIDGET_OBJS) $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
 # App media (gallery/imageview): toolkit + png + media (deteksi tipe, scan
 # direktori, probe header) — media.o dipakai KEDUA app.
 MEDIA_LIBS   = $(GUI_LIBS) $(MEDIA_OBJ)
@@ -297,10 +298,11 @@ MEDIA_LIBS   = $(GUI_LIBS) $(MEDIA_OBJ)
 # Link generic: ELF dibangun dari object app-nya + library grup-nya.
 # clock DIKECUALIKAN (di-link via SDK, ENTRY _start); fontdemo
 # DIKECUALIKAN (butuh libtext + arsip FT — rule sendiri di bawah);
-# fileman.elf TIDAK di sini — ia dibangun root Makefile dari
-# apps/filemanager/ (C++ SDK); settings.elf TIDAK di sini — ia dibangun root
-# Makefile dari apps/settings/ (C++ SDK).
-$(filter-out $(ELF_DIR)/clock.elf $(ELF_DIR)/fontdemo.elf,$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(GUI_APPS)))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/apps/%.o $(GUI_LIBS)
+# taskmgr DIKECUALIKAN — dibangun root Makefile dari apps/taskmgr/
+# (C++ SDK, pola settings.elf); fileman.elf TIDAK di sini — ia dibangun root
+# Makefile dari apps/filemanager/ (C++ SDK); settings.elf TIDAK di sini — ia
+# dibangun root Makefile dari apps/settings/ (C++ SDK).
+$(filter-out $(ELF_DIR)/clock.elf $(ELF_DIR)/fontdemo.elf $(ELF_DIR)/taskmgr.elf,$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(GUI_APPS)))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/apps/%.o $(GUI_LIBS)
 	@mkdir -p $(ELF_DIR)
 	@echo "[LD] $(notdir $@) (libui toolkit + png)"
 	$(LD) $(LDFLAGS) $< $(GUI_LIBS) -o $@

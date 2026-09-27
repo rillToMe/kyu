@@ -17,11 +17,12 @@ public:
     enum { HANDLE_W = 8 };
     int min, max, val;
     bool dragging;
+    bool hover;
     ui_click_cb change_cb;
     void* change_data;
 
     Slider(int mn, int mx) : min(mn), max(mx), val(mn), dragging(false),
-                             change_cb(0), change_data(0) {
+                             hover(false), change_cb(0), change_data(0) {
         w = 160; h = 20;
         if (max <= min) max = min + 1;
     }
@@ -42,9 +43,11 @@ public:
         int span = max - min;
         set_value(min + (mx - x) * span / nw);   // mx - x = posisi dalam widget
     }
+    virtual bool focusable() override { return enabled; }
+    virtual void set_hover(bool on) override { hover = on; mark_dirty(); }
     virtual bool on_drag(int mx, int my) override {
         (void)my;
-        if (!dragging) return false;
+        if (!enabled || !dragging) return false;
         int old = val;
         clamp_to(mx);
         if (val != old && change_cb) change_cb(change_data);
@@ -53,16 +56,47 @@ public:
     virtual void on_release() override { dragging = false; }
     virtual void on_click(int mx, int my) override {
         (void)my;
+        if (!enabled) return;
         dragging = true;
         int old = val;
         clamp_to(mx);
         if (val != old && change_cb) change_cb(change_data);
     }
+    // Keyboard: panah ±1, PgUp/PgDn ±sepuluh rentang, Home/End ujung.
+    virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
+        (void)ascii; (void)mods;
+        if (!enabled) return;
+        uint32_t sc = scancode & 0xFF;
+        int span = max - min;
+        int step = span / 10;
+        if (step < 1) step = 1;
+        int old = val, nv = val;
+        switch (sc) {
+        case 0x4B: nv = val - 1; break;        // Left
+        case 0x4D: nv = val + 1; break;        // Right
+        case 0x49: nv = val - step; break;     // PgUp
+        case 0x51: nv = val + step; break;     // PgDn
+        case 0x47: nv = min; break;            // Home
+        case 0x4F: nv = max; break;            // End
+        default: return;
+        }
+        set_value(nv);
+        if (val != old && change_cb) change_cb(change_data);
+    }
     virtual void draw(Painter& p) override {
-        p.rect(x, y + h / 2 - 2, w, 4, p.theme.button_bg);
+        // Track 4px + outline 1px (definisi di Light Mode) + thumb aksen.
+        int cy = y + h / 2;
+        color_t edge = !enabled      ? p.theme.border_subtle
+                     : has_focus     ? p.theme.focus
+                                     : p.theme.border_subtle;
+        p.rect(x, cy - 3, w, 6, edge);
+        p.rect(x + 1, cy - 2, w - 2, 4, p.theme.surface_elevated);
         int span = max - min;
         int hx = span ? (val - min) * (w - HANDLE_W) / span : 0;
-        p.rect(x + hx, y, HANDLE_W, h, p.theme.accent);
+        color_t th = !enabled            ? p.theme.text_disabled
+                   : (hover || dragging) ? p.theme.accent_hover
+                                         : p.theme.accent;
+        p.rect(x + hx, y, HANDLE_W, h, th);
     }
 };
 

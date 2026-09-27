@@ -12,7 +12,7 @@
 
 #include "userlib.h"
 #include "libui.h"
-#include "color_utils.h"   // palet + COLOR_RGB_INIT/COLOR_WHITE_INIT (libs/gui/color)
+#include "color_utils.h"   // COLOR_HEX/color_hex (libs/gui/color)
 
 static ui_widget_t* status;     // label status (di atas tab)
 static ui_widget_t* lbl;        // counter "+1" (regresi Phase 6)
@@ -108,6 +108,8 @@ static void on_tree(void* userdata) {
 
 // --- Phase 9: Desktop Services ---
 static ui_window_t* g_win;
+// Phase D: grup radio panel "Baru" (milik demo; dihancurkan sebelum window).
+static ui_radio_group_t* g_phase_d_group = 0;
 
 static void on_dialog(void* userdata, int index) {
     (void)userdata;
@@ -135,19 +137,19 @@ static void on_notif_btn(void* userdata) {
 
 // Preset tema — disalin ke window oleh ui_window_set_theme (bukan pointer).
 static const ui_theme_t tema_gelap = {
-    COLOR_RGB_INIT(0x12, 0x12, 0x12), COLOR_RGB_INIT(0xE0, 0xE0, 0xE0),
-    COLOR_RGB_INIT(0xE9, 0x45, 0x60), COLOR_RGB_INIT(0x0F, 0x34, 0x60),
-    COLOR_WHITE_INIT,          COLOR_RGB_INIT(0x2A, 0x4A, 0x7E),
+    COLOR_HEX(0x121212), COLOR_HEX(0xE0E0E0),
+    COLOR_HEX(0xE94560), COLOR_HEX(0x0F3460),
+    COLOR_HEX(0xFFFFFF), COLOR_HEX(0x2A4A7E),
 };
 static const ui_theme_t tema_terang = {
-    COLOR_RGB_INIT(0xF0, 0xF0, 0xF0), COLOR_RGB_INIT(0x22, 0x22, 0x22),
-    COLOR_RGB_INIT(0xD3, 0x2F, 0x2F), COLOR_RGB_INIT(0xCF, 0xD8, 0xDC),
-    COLOR_RGB_INIT(0x22, 0x22, 0x22), COLOR_RGB_INIT(0x90, 0xA4, 0xAE),
+    COLOR_HEX(0xF0F0F0), COLOR_HEX(0x222222),
+    COLOR_HEX(0xD32F2F), COLOR_HEX(0xCFD8DC),
+    COLOR_HEX(0x222222), COLOR_HEX(0x90A4AE),
 };
 static const ui_theme_t tema_hijau = {
-    COLOR_RGB_INIT(0x0D, 0x1F, 0x14), COLOR_RGB_INIT(0xDF, 0xF2, 0xE0),
-    COLOR_RGB_INIT(0x4C, 0xAF, 0x50), COLOR_RGB_INIT(0x1B, 0x4D, 0x2E),
-    COLOR_RGB_INIT(0xE8, 0xF5, 0xE9), COLOR_RGB_INIT(0x2E, 0x7D, 0x46),
+    COLOR_HEX(0x0D1F14), COLOR_HEX(0xDFF2E0),
+    COLOR_HEX(0x4CAF50), COLOR_HEX(0x1B4D2E),
+    COLOR_HEX(0xE8F5E9), COLOR_HEX(0x2E7D46),
 };
 
 static void on_theme(void* userdata) {
@@ -219,12 +221,12 @@ void main(void) {
     g_win = win;
 
     ui_theme_t th;
-    th.bg           = COLOR_RGB(0x12, 0x12, 0x12);
-    th.fg           = COLOR_RGB(0xE0, 0xE0, 0xE0);
-    th.accent       = COLOR_RGB(0xE9, 0x45, 0x60);
-    th.button_bg    = COLOR_RGB(0x0F, 0x34, 0x60);
-    th.button_fg    = COLOR_WHITE;
-    th.button_hover = COLOR_RGB(0x2A, 0x4A, 0x7E);
+    th.bg           = color_hex(0x121212);
+    th.fg           = color_hex(0xE0E0E0);
+    th.accent       = color_hex(0xE94560);
+    th.button_bg    = color_hex(0x0F3460);
+    th.button_fg    = color_hex(0xFFFFFF);
+    th.button_hover = color_hex(0x2A4A7E);
     ui_window_set_theme(win, &th);
 
     // --- MenuBar + Toolbar (bar full-width) ---
@@ -315,6 +317,45 @@ void main(void) {
     ui_treeview_set_change(pohon, on_tree, 0);
     ui_tab_add(tab, "Pohon", pohon);
 
+    // Baru (Phase D): Radio + ComboBox + Separator + Grid + Tooltip.
+    // Grup radio milik demo (dihancurkan sebelum window, pola menu konteks).
+    {
+        ui_widget_t* db = ui_vbox_create(win, 8);
+        ui_layout_add(db, ui_label_create(win, "Radio:"));
+        ui_radio_group_t* rg = ui_radio_group_create();
+        ui_widget_t* r1 = ui_radio_create(win, "Pagi");
+        ui_widget_t* r2 = ui_radio_create(win, "Siang");
+        ui_widget_t* r3 = ui_radio_create(win, "Malam");
+        ui_radio_set_group(r1, rg);
+        ui_radio_set_group(r2, rg);
+        ui_radio_set_group(r3, rg);
+        ui_radio_set_selected(r1, 1);
+        ui_layout_add(db, r1);
+        ui_layout_add(db, r2);
+        ui_layout_add(db, r3);
+        ui_widget_t* cbx = ui_combobox_create(win, 160);
+        ui_combobox_add_item(cbx, "Merah");
+        ui_combobox_add_item(cbx, "Hijau");
+        ui_combobox_add_item(cbx, "Biru");
+        ui_combobox_set_selected(cbx, 0);
+        ui_layout_add(db, cbx);
+        ui_widget_t* sep = ui_separator_create(win, UI_SEP_HORIZONTAL);
+        ui_widget_set_size(sep, 300, 1);
+        ui_layout_add(db, sep);
+        ui_widget_t* gr = ui_grid_create(win, 2, 2, 8);
+        ui_widget_set_size(gr, 200, 64);
+        ui_grid_put(gr, ui_button_create(win, "G1"), 0, 0);
+        ui_grid_put(gr, ui_button_create(win, "G2"), 0, 1);
+        ui_grid_put(gr, ui_button_create(win, "G3"), 1, 0);
+        ui_grid_put(gr, ui_button_create(win, "G4"), 1, 1);
+        ui_layout_add(db, gr);
+        ui_widget_t* tip = ui_button_create(win, "Hover saya");
+        ui_widget_set_tooltip(tip, "Ini tooltip Phase D");
+        ui_layout_add(db, tip);
+        ui_tab_add(tab, "Baru", db);
+        g_phase_d_group = rg;
+    }
+
     // Gulir: ScrollView membungkus VBox 15 label
     {
         ui_widget_t* sv = ui_scrollview_create(win, 320, 274);
@@ -375,6 +416,8 @@ void main(void) {
     ui_window_add(win, box);
 
     ui_window_run(win);          // blocking; keluar via X titlebar / ESC
+    ui_radio_group_destroy(g_phase_d_group);
+    g_phase_d_group = 0;
     ui_window_destroy(win);
     sys_exit();
 }

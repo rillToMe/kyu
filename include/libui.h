@@ -41,6 +41,12 @@ typedef struct ui_widget ui_widget_t;   // basis semua widget (label, button, la
 // Tema — 6 warna `color_t` (libs/color). Byte alpha diabaikan painter (semua
 // permukaan window opaque), jadi isi saja dengan COLOR_RGB(). Untuk tabel
 // `static const` di C pakai bentuk initializer COLOR_RGB_INIT()/COLOR_WHITE_INIT.
+//
+// JALUR LEGACY (tetap didukung penuh): 6 warna eksplisit dari aplikasi.
+// Toolkit memetakannya ke role semantik internal (surface = button_bg,
+// surface_elevated = button_hover, selection = button_bg, focus = accent,
+// ...); tampilan aplikasi legacy tidak berubah. Untuk tema mode+aksen baru
+// pakai ui_theme_config_t + ui_window_set_theme_config di bawah.
 typedef struct ui_theme {
     color_t bg;             // latar window
     color_t fg;             // teks umum
@@ -49,6 +55,31 @@ typedef struct ui_theme {
     color_t button_fg;      // teks tombol
     color_t button_hover;   // latar tombol saat hover
 } ui_theme_t;
+
+// --- Phase A: mode + aksen (non-breaking; ui_theme_t di atas tidak berubah) ---
+// Kombinasi mode × aksen menurunkan palet semantik penuh secara deterministik
+// (lihat docs/design/gui/ui-theme-system.md): Dark+Purple dsb. berasal dari
+// mode = DARK + accent = PURPLE, bukan tema hardcoded terpisah.
+typedef enum {
+    UI_THEME_DARK = 0,      // charcoal netral (default)
+    UI_THEME_LIGHT = 1      // terang first-class
+} ui_theme_mode_t;
+
+typedef enum {
+    UI_ACCENT_NEUTRAL = 0,  // abu netral (default — tanpa ketergantungan biru)
+    UI_ACCENT_BLUE = 1,     // aksen biru (opsional, bukan default)
+    UI_ACCENT_PURPLE = 2,
+    UI_ACCENT_GREEN = 3,
+    UI_ACCENT_ORANGE = 4,
+    UI_ACCENT_RED = 5,
+    UI_ACCENT_CUSTOM = 6    // pakai field `custom` di bawah
+} ui_theme_accent_t;
+
+typedef struct ui_theme_config {
+    ui_theme_mode_t mode;
+    ui_theme_accent_t accent;
+    color_t custom;         // base aksen bila accent == UI_ACCENT_CUSTOM
+} ui_theme_config_t;
 
 // Callback klik tombol. userdata = argumen ui_button_set_click.
 typedef void (*ui_click_cb)(void* userdata);
@@ -76,6 +107,10 @@ void ui_window_set_key(ui_window_t* win, ui_key_cb cb, void* userdata);
 ui_window_t* ui_window_create(uint32_t width, uint32_t height);
 void ui_window_destroy(ui_window_t* win);
 void ui_window_set_theme(ui_window_t* win, const ui_theme_t* theme); // 0 = default
+// Phase A: pasang tema dari mode + aksen (Dark/Light × 6 aksen + custom).
+// Mengganti tema dari jalur legacy (dan sebaliknya) kapan saja; seluruh
+// window digambar ulang. 0 = abaikan (tema tidak berubah).
+void ui_window_set_theme_config(ui_window_t* win, const ui_theme_config_t* cfg);
 void ui_window_add(ui_window_t* win, ui_widget_t* widget);   // tambah ke layout root
 void ui_window_run(ui_window_t* win);   // blocking sampai window ditutup (X / ESC)
 // Minta event loop berhenti (mis. perintah `logout` di terminal). Efektif
@@ -117,10 +152,22 @@ typedef void (*ui_fttext_draw_cb)(void* userdata, uint32_t* canvas,
 ui_widget_t* ui_fttext_create(ui_window_t* win, int w, int h);
 void ui_fttext_set_draw(ui_widget_t* widget, ui_fttext_draw_cb cb, void* userdata);
 void ui_fttext_refresh(ui_widget_t* widget);   // tandai dirty -> gambar ulang
+// Browser viewport: klik kiri + koordinat window-local (hit-test link).
+void ui_fttext_set_click(ui_widget_t* widget, ui_pos_click_cb cb, void* userdata);
 
 // --- Button ---
 ui_widget_t* ui_button_create(ui_window_t* win, const char* text);
 void ui_button_set_click(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+// Phase B: varian visual tombol (aditif, default SECONDARY bila tak dipanggil).
+// PRIMARY = isi aksen (aksi utama dialog), SECONDARY = permukaan + border,
+// DANGER = isi danger. Nilai di luar rentang = SECONDARY.
+enum { UI_BUTTON_SECONDARY = 0, UI_BUTTON_PRIMARY = 1, UI_BUTTON_DANGER = 2 };
+void ui_button_set_variant(ui_widget_t* widget, int variant);
+// Phase B: enabled generik per-widget (aditif, default enabled). Disabled =
+// digambar redup + tak menerima hover/klik/fokus; fokus yang sedang dipegang
+// dilepas. Berlaku untuk Button/TextBox/CheckBox/Slider (widget lain
+// mengabaikan secara visual tapi tetap tak bisa di-hit).
+void ui_widget_set_enabled(ui_widget_t* widget, int enabled);
 
 // --- Klik kanan (menu konteks) ---
 // Widget menerima klik kanan (EVENT_MOUSE_CLICK P1=1) dan memanggil cb dengan
@@ -135,6 +182,10 @@ ui_widget_t* ui_textbox_create(ui_window_t* win, int width);
 void ui_textbox_set_text(ui_widget_t* widget, const char* text);
 const char* ui_textbox_text(ui_widget_t* widget);      // pointer buffer internal
 void ui_textbox_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+// Phase C: error state (state + rendering saja; validasi milik aplikasi).
+// error != 0 → border danger (+ tint background); 0 → normal kembali.
+// Coexist dengan fokus: border tetap focus ring saat fokus.
+void ui_textbox_set_error(ui_widget_t* widget, int is_error);
 // Tandai seluruh isi sebagai terpilih: tombol pengubah teks berikutnya
 // MENGGANTI isi (bukan menambah) dan isinya digambar sebagai blok terpilih.
 // Dipakai File Manager untuk ganti-nama inline (nama lama langsung bisa
@@ -148,6 +199,20 @@ void ui_checkbox_set_checked(ui_widget_t* widget, int checked);
 int ui_checkbox_checked(ui_widget_t* widget);
 void ui_checkbox_set_toggle(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 
+// --- Radio (Phase D) ---
+// Lingkaran + label; tepat satu terpilih per grup (klik/panah/Enter/Spasi).
+// Tanpa grup = mandiri (klik memilih, tak bisa batal).
+ui_widget_t* ui_radio_create(ui_window_t* win, const char* label);
+void ui_radio_set_selected(ui_widget_t* widget, int selected);  // diam (tanpa change_cb)
+void ui_radio_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+// Grup: bukan widget (tanpa bounds/gambar/traversal); ownership eksplisit.
+// Hancurkan grup → anggota terlepas; hancurkan radio → keluar grup.
+typedef struct ui_radio_group ui_radio_group_t;
+ui_radio_group_t* ui_radio_group_create(void);
+void ui_radio_group_destroy(ui_radio_group_t* group);
+void ui_radio_set_group(ui_widget_t* widget, ui_radio_group_t* group);  // 0 = lepas
+ui_widget_t* ui_radio_get_selected(ui_radio_group_t* group);  // 0 = tak ada / grup 0
+
 // --- Slider (Phase 7) ---
 // Track horizontal + handle yang bisa diseret. w=160, h=20.
 // change_cb dipanggil saat nilai berubah (klik langsung / drag).
@@ -160,6 +225,30 @@ void ui_slider_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 // Fill horizontal 0..100, read-only. w ditentukan caller, h=16.
 ui_widget_t* ui_progressbar_create(ui_window_t* win, int width);
 void ui_progressbar_set_value(ui_widget_t* widget, int value);   // clamp 0..100
+
+// --- ComboBox (Phase D) ---
+// Kotak tertutup + popup daftar (reuse popup Menu). String disalin toolkit.
+// change_cb dipanggil saat seleksi DIKOMIT (klik item / Enter / panah langsung);
+// set_selected programatik diam. -1 = tak ada.
+ui_widget_t* ui_combobox_create(ui_window_t* win, int width);
+int ui_combobox_add_item(ui_widget_t* widget, const char* label);  // -> index / -1
+int ui_combobox_remove_item(ui_widget_t* widget, int index);       // 1 = terhapus
+void ui_combobox_clear(ui_widget_t* widget);
+int ui_combobox_count(ui_widget_t* widget);
+int ui_combobox_selected(ui_widget_t* widget);
+void ui_combobox_set_selected(ui_widget_t* widget, int index);     // diam
+void ui_combobox_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- Separator (Phase D) ---
+// Garis visual non-interaktif (tebal 1px; panjang via ui_widget_set_size).
+// Transparan terhadap mouse, tak focusable, tak masuk traversal.
+enum { UI_SEP_HORIZONTAL = 0, UI_SEP_VERTICAL = 1 };
+ui_widget_t* ui_separator_create(ui_window_t* win, int orientation);
+
+// --- Tooltip (Phase D) ---
+// Teks bantuan per-widget (disalin; 0/"" menghapus). Presentasional: tampil
+// setelah hover 600ms, tanpa fokus/traversal, hilang saat pointer pindah.
+void ui_widget_set_tooltip(ui_widget_t* widget, const char* text);
 
 // --- Image (Phase 7) ---
 // Menampilkan PNG dari KyuzenFS, diskalakan nearest-neighbor ke rect w×h.
@@ -237,6 +326,22 @@ int  ui_textedit_scroll_rows(ui_widget_t* widget);   // jumlah baris LAYAR
 // tersembunyi (tidak makan ruang), jadi baris opsional (bar cari Notepad)
 // bisa muncul-hilang tanpa menulis ulang tata letak.
 void ui_widget_set_visible(ui_widget_t* widget, int visible);
+// Posisi window-local widget (x/y kiri-atas). Browser: origin FtText untuk
+// hit-test link (widget digeser ScrollView saat scroll).
+void ui_widget_pos(ui_widget_t* widget, int* out_x, int* out_y);
+// Phase D: perataan dalam sel/kontainer (Grid; VBox/HBox tetap start).
+enum { UI_ALIGN_START = 0, UI_ALIGN_CENTER = 1, UI_ALIGN_END = 2, UI_ALIGN_STRETCH = 3 };
+// Phase D: mode ukuran track Grid (kolom/baris).
+enum { UI_TRACK_AUTO = 0, UI_TRACK_FIXED = 1, UI_TRACK_FILL = 2 };
+// Phase D: padding kontainer (kiri/atas/kanan/bawah, px). Nilai negatif
+// dijepit 0 oleh toolkit.
+typedef struct ui_padding {
+    int left, top, right, bottom;
+} ui_padding_t;
+// Phase D: skala spacing hasil audit UI (4/8/12/16/24 — dipakai konsisten di
+// toolkit + aplikasi; bukan sistem desain baru).
+enum { UI_SPACE_XS = 4, UI_SPACE_SM = 8, UI_SPACE_MD = 12,
+       UI_SPACE_LG = 16, UI_SPACE_XL = 24 };
 // VBox: susun anaknya vertikal (masing-masing setinggi ukurannya,
 // diberi spacing pixel). Win disediakan agar API seragam tapi
 // widget hasilnya milik caller (bukan window).
@@ -261,6 +366,9 @@ void ui_scrollview_set_child(ui_widget_t* widget, ui_widget_t* child);
 // membesarkan gambar tidak melompat ke pojok kiri-atas. Scrollbar cuma muncul
 // saat isi benar-benar melebihi view, sesuai perilaku image viewer biasa.
 void ui_scrollview_set_pan(ui_widget_t* widget, int on);
+// Browser viewport: baca/atur offset scroll vertikal (hit-test + keyboard).
+int ui_scrollview_scroll(ui_widget_t* widget);
+void ui_scrollview_set_scroll(ui_widget_t* widget, int pos);
 
 // --- ListView ---
 // Daftar item vertikal (row 20px); klik memilih & memanggil change_cb.
@@ -339,6 +447,23 @@ void ui_treeview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata)
 // Strip tab + panel aktif. Panel dimiliki oleh Tab (didelete saat destroy).
 ui_widget_t* ui_tab_create(ui_window_t* win, int w, int h);
 void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel);
+// Phase C: judul disabled (tak bisa klik/panah/fokus, tampil redup).
+// Index di luar rentang → tanpa efek.
+void ui_tab_set_enabled(ui_widget_t* widget, int index, int enabled);
+
+// --- Grid (Phase D) ---
+// Kontainer baris × kolom (subclass Layout: ownership/dirty/traversal sama).
+// Track: AUTO (isi) / FIXED (px) / FILL (sisa dibagi rata). Anak ditaruh via
+// ui_grid_put (row-major manual); overlap/invalid diabaikan deterministik.
+// Ukuran Grid ditentukan caller (ui_widget_set_size) seperti kontainer lain.
+ui_widget_t* ui_grid_create(ui_window_t* win, int rows, int cols, int gap);
+int ui_grid_put(ui_widget_t* grid, ui_widget_t* child, int row, int col);
+int ui_grid_put_span(ui_widget_t* grid, ui_widget_t* child, int row, int col,
+                     int row_span, int col_span);   // span dijepit muat
+void ui_grid_set_col(ui_widget_t* grid, int col, int mode, int px);
+void ui_grid_set_row(ui_widget_t* grid, int row, int mode, int px);
+void ui_grid_set_padding(ui_widget_t* grid, ui_padding_t pad);
+void ui_grid_set_align(ui_widget_t* grid, int align);   // UI_ALIGN_* dalam sel
 
 // --- Menu konteks (popup mandiri) ---
 // Menu yang TIDAK dipasang ke MenuBar — dipakai File Manager untuk menu klik
@@ -435,11 +560,15 @@ enum { UI_CURSOR_ARROW = 0, UI_CURSOR_IBEAM = 1, UI_CURSOR_HAND = 2 };
 void ui_widget_set_cursor(ui_widget_t* widget, int kind);
 
 // --- Settings (persist theme ke KyuzenFS "settings.ui") ---
-// Format file (dua versi, ukuran beda sehingga bisa dibedakan):
+// Format file (tiga versi, ukuran beda sehingga bisa dibedakan):
+//   v2 — tag "KTH2" (4 byte) + mode(1) + aksen(1) + custom(r,g,b,a) = 10 byte
+//          (ditulis bila tema terakhir dari ui_window_set_theme_config;
+//          palet diturunkan saat load)
 //   v1 — tag "KTH1" (4 byte) + 6 × color_t (r,g,b,a) = 28 byte
 //   v0 — 6 × uint32 0x00RRGGBB tanpa tag = 24 byte (file lama, tetap dibaca)
-// Load menolak file yang bukan theme valid (ukuran tak dikenal atau semua nol)
-// dan memakai jalur v0 untuk file lama. Return 1 sukses, 0 gagal/tak ada file.
+// Load menolak file yang bukan theme valid (ukuran tak dikenal, tag salah,
+// enum di luar rentang, atau semua nol) dan memakai jalur v0 untuk file lama.
+// Return 1 sukses, 0 gagal/tak ada file.
 int ui_settings_save(ui_window_t* win);
 int ui_settings_load(ui_window_t* win);
 

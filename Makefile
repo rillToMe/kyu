@@ -167,7 +167,7 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # `make conc`/`make heap-stress`.
 # Util CLI system/cat.c + system/echo.c adalah ELF user-space (ENTRY main,
 # dibangun apps/Makefile) — bukan task kernel, jadi dikecualikan juga.
-C_SOURCES = $(filter-out libs/core/userlib.c libs/core/libgui.c libs/media/media.c \
+C_SOURCES = $(filter-out libs/core/userlib.c libs/core/libgui.c libs/core/netutil.c libs/media/media.c \
                          system/cat.c system/echo.c \
                         tests/host/unit/aa_math_test.c tests/host/unit/desktop_manifest_test.cpp tests/host/unit/kyuzenfs_dir_test.c tests/host/unit/kyuzenfs_v4_test.c tests/host/unit/kyuzenfs_xcheck.c tests/host/unit/panic_test.c                        tests/host/unit/virtqueue_test.c tests/host/unit/virtio_gpu_cmd_test.c tests/host/unit/cred_test.c tests/host/unit/proc_test.c tests/host/unit/kill_test.c tests/host/unit/fd_test.c tests/host/unit/pipe_test.c tests/host/unit/fork_test.c tests/host/unit/color_test.c tests/host/unit/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
@@ -247,6 +247,10 @@ $(OBJ_DIR)/kernel/net/net_ping.o: kernel/net/net_ping.c | $(OBJ_DIRS)
 
 # net_socket.c: butuh LWIP_CFLAGS karena include lwIP tcp headers
 $(OBJ_DIR)/kernel/net/net_socket.o: kernel/net/net_socket.c | $(OBJ_DIRS)
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
+
+# net_dns.c: butuh LWIP_CFLAGS karena include lwIP dns headers
+$(OBJ_DIR)/kernel/net/net_dns.o: kernel/net/net_dns.c | $(OBJ_DIRS)
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # Tahap 1: Compile Assembly
@@ -369,6 +373,123 @@ test-fork: tests/host/unit/fork_test
 
 tests/host/unit/fork_test: tests/host/unit/fork_test.c include/proc.h include/cred.h include/task.h include/vfs.h
 	$(HOSTCC) -O2 -Wall -Wextra -o $@ tests/host/unit/fork_test.c -Iinclude
+
+# --- Host-side unit test: network socket lifecycle ---
+# The REAL kernel/net/net_socket.c against fake lwIP headers
+# (tests/host/unit/netstub/) + scheduler/timer mocks. Covers close/reuse
+# stale handles, exit cleanup + 8-slot recovery, cross-process denial,
+# stale PCB callbacks, kill-while-waiting, RX flood (no ack-then-drop),
+# timeouts, exec reown, and the normal TCP client path. No QEMU needed.
+# Run: make test-netsock.
+.PHONY: test-netsock
+test-netsock: tests/host/unit/netsock_test
+	./tests/host/unit/netsock_test
+
+tests/host/unit/netsock_test: tests/host/unit/netsock_test.c kernel/net/net_socket.c include/net_socket.h \
+		tests/host/unit/netstub/lwip/tcp.h tests/host/unit/netstub/lwip/pbuf.h \
+		tests/host/unit/netstub/lwip/err.h tests/host/unit/netstub/lwip/ip_addr.h
+	$(HOSTCC) -O1 -Wall -Wextra -DKSOCK_HOST_TEST -o $@ tests/host/unit/netsock_test.c \
+	    -iquote tests/host/unit/netstub -iquote include -iquote tests/host/unit
+
+# --- Host-side unit test: DNS resolver backend (sys_resolve) ---
+# The REAL kernel/net/net_dns.c against fake lwIP dns.h + timer/sleep/lock
+# mocks. Covers cached/async/negative/timeout/misuse paths, arg validation,
+# and busy-lock release after every outcome. No QEMU needed.
+# Run: make test-netdns.
+.PHONY: test-netdns
+test-netdns: tests/host/unit/netdns_test
+	./tests/host/unit/netdns_test
+
+tests/host/unit/netdns_test: tests/host/unit/netdns_test.c kernel/net/net_dns.c include/net_dns.h \
+		tests/host/unit/netstub/lwip/dns.h \
+		tests/host/unit/netstub/lwip/err.h tests/host/unit/netstub/lwip/ip_addr.h
+	$(HOSTCC) -O1 -Wall -Wextra -DNETDNS_HOST_TEST -o $@ tests/host/unit/netdns_test.c \
+	    -iquote tests/host/unit/netstub -iquote include -iquote tests/host/unit
+
+# --- Host-side unit test: reusable net client helpers (netutil) ---
+# The REAL libs/core/netutil.c with stubbed sys_* calls. Covers IPv4 literal
+# parsing (accept/reject), resolve fast-path vs syscall routing, and dial
+# success/failure cleanup (no leaked socket). No QEMU needed.
+# Run: make test-netutil.
+.PHONY: test-netutil
+test-netutil: tests/host/unit/netutil_test
+	./tests/host/unit/netutil_test
+
+tests/host/unit/netutil_test: tests/host/unit/netutil_test.c libs/core/netutil.c include/netutil.h
+	$(HOSTCC) -O1 -Wall -Wextra -o $@ tests/host/unit/netutil_test.c \
+	    -iquote include -iquote tests/host/unit
+
+# --- Host-side unit test: browser engine URL + HTTP ---
+# Pure C++17, no Kyuzen headers (same sources the freestanding app uses).
+# Covers URL parse/resolve shapes + HTTP framing/redirects/limits/errors
+# via a scripted Transport. No QEMU needed.
+# Run: make test-browser-url-http.
+.PHONY: test-browser-url-http
+test-browser-url-http: tests/host/unit/browser_url_http_test
+	./tests/host/unit/browser_url_http_test
+
+tests/host/unit/browser_url_http_test: tests/host/unit/browser_url_http_test.cpp \
+		apps/browser/engine/url.hpp apps/browser/engine/url.cpp \
+		apps/browser/engine/http.hpp apps/browser/engine/http.cpp
+	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra -o $@ tests/host/unit/browser_url_http_test.cpp
+
+# --- Host-side unit test: browser engine HTML + DOM ---
+# Forgiving subset parser: recovery rules, entities, void/raw-text elements,
+# title/style/link extraction, nesting caps. No QEMU needed.
+# Run: make test-browser-html.
+.PHONY: test-browser-html
+test-browser-html: tests/host/unit/browser_html_test
+	./tests/host/unit/browser_html_test
+
+tests/host/unit/browser_html_test: tests/host/unit/browser_html_test.cpp \
+		apps/browser/engine/dom.hpp apps/browser/engine/html.hpp \
+		apps/browser/engine/html.cpp
+	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra -o $@ tests/host/unit/browser_html_test.cpp
+
+# --- Host-side unit test: browser engine CSS + layout + hit test ---
+# Cascade/specificity/inheritance + block/inline layout, wrapping, images,
+# alignment, pre, display:none, link hit-testing. Fixed host metric.
+# Run: make test-browser-css-layout.
+.PHONY: test-browser-css-layout
+test-browser-css-layout: tests/host/unit/browser_css_layout_test
+	./tests/host/unit/browser_css_layout_test
+
+tests/host/unit/browser_css_layout_test: tests/host/unit/browser_css_layout_test.cpp \
+		apps/browser/engine/dom.hpp apps/browser/engine/html.hpp \
+		apps/browser/engine/html.cpp apps/browser/engine/css.hpp \
+		apps/browser/engine/css.cpp apps/browser/engine/layout.hpp \
+		apps/browser/engine/layout.cpp
+	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra -o $@ tests/host/unit/browser_css_layout_test.cpp
+
+# --- BearSSL host lib + brssl tool (TLS) ---
+# Full lib (all src/*/*.c) compiled for host into build/host-tls/.
+# brssl generates PREBUILT trust-anchor C arrays (`brssl ta`) so the OS
+# port needs no runtime PEM parsing. Run: make test-tls.
+BL_SRC_DIR = third_party/bearssl/src
+BL_INC_DIR = third_party/bearssl/inc
+BL_OBJ_DIR = $(BUILD_DIR)/host-tls/bearssl
+BL_SRCS = $(wildcard $(BL_SRC_DIR)/*/*.c) $(BL_SRC_DIR)/settings.c
+BL_OBJS = $(patsubst $(BL_SRC_DIR)/%.c,$(BL_OBJ_DIR)/%.o,$(BL_SRCS))
+BL_TOOLS = $(wildcard third_party/bearssl/tools/*.c)
+
+$(BL_OBJ_DIR)/%.o: $(BL_SRC_DIR)/%.c
+	@mkdir -p $(@D)
+	$(HOSTCC) -O1 -I$(BL_INC_DIR) -I$(BL_SRC_DIR) -c $< -o $@
+
+build/host-tls/brssl: $(BL_OBJS) $(BL_TOOLS)
+	@mkdir -p $(@D)
+	$(HOSTCC) -O1 -I$(BL_INC_DIR) -I$(BL_SRC_DIR) -Ithird_party/bearssl/tools -o $@ $(BL_TOOLS) $(BL_OBJS)
+
+apps/browser/tls/tas_testca.inc: build/host-tls/brssl tests/browser_site/certs/testca.crt
+	@mkdir -p $(@D)
+	build/host-tls/brssl ta tests/browser_site/certs/testca.crt > $@
+
+.PHONY: test-tls
+test-tls: tests/host/unit/tls_test
+	python tests/browser_site/run_tls_test.py
+
+tests/host/unit/tls_test: tests/host/unit/tls_test.c $(BL_OBJS) apps/browser/tls/tas_testca.inc
+	$(HOSTCC) -O1 -Wall -Wextra -I$(BL_INC_DIR) -Iapps/browser/tls -o $@ tests/host/unit/tls_test.c $(BL_OBJS)
 
 # --- Host-side unit test: libs/gui/color (tipe, blend, ruang warna, utility UI) ---
 # Sumber library asli dikompilasi di host (integer murni → tak butuh QEMU);
@@ -1226,6 +1347,7 @@ DESKTOP_ELF       = $(ELF_DIR)/desktop.elf
 # Object C userspace yang dipakai link desktop (userlib/libgui — dibangun
 # sub-make apps; pola di bawah memicu sub-make itu bila berkas hilang).
 USERAPP_LIB_OBJS  = $(BUILD_DIR)/obj/user/libs/core/userlib.o $(BUILD_DIR)/obj/user/libs/core/libgui.o \
+                    $(BUILD_DIR)/obj/user/libs/core/netutil.o \
                     $(BUILD_DIR)/obj/user/libs/media/png.o
 # libs/text untuk label FreeType launcher (object freestanding yang sama
 # dipakai fontdemo/settings; backend FT penuh dari arsip freestanding).
@@ -1553,11 +1675,25 @@ tests/host/unit/textedit_test: tests/host/unit/textedit_test.cpp $(wildcard libs
 test-libui-theme: tests/host/unit/libui_theme_test
 	./tests/host/unit/libui_theme_test
 
-tests/host/unit/libui_theme_test: tests/host/unit/libui_theme_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp include/libui.h \
+tests/host/unit/libui_theme_test: tests/host/unit/libui_theme_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp include/libui.h include/libui_xml.h \
                        include/libgui.h include/aa_math.h \
                        libs/gui/color/src/color_utils.c libs/gui/color/include/color_utils.h
 	$(HOSTCC) -O1 -Ilibs/gui/color/include -c libs/gui/color/src/color_utils.c -o tests/host/unit/color_utils_host.o
 	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/gui/widget/include -Ilibs/gui/color/include -o $@ tests/host/unit/libui_theme_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp tests/host/unit/color_utils_host.o
+
+# Host test XML deklaratif -> libui (Phase E): parser/skema/inflater/
+# ownership/ekuivalensi/matriks tema. Pola sama seperti test-libui-theme
+# (toolkit di-link apa adanya, syscall+libgui di-stub, alokasi dihitung).
+# Jalankan: make test-libui-xml
+.PHONY: test-libui-xml
+test-libui-xml: tests/host/unit/libui_xml_test
+	./tests/host/unit/libui_xml_test
+
+tests/host/unit/libui_xml_test: tests/host/unit/libui_xml_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp include/libui.h include/libui_xml.h \
+                       include/libgui.h \
+                       libs/gui/color/src/color_utils.c libs/gui/color/include/color_utils.h
+	$(HOSTCC) -O1 -Ilibs/gui/color/include -c libs/gui/color/src/color_utils.c -o tests/host/unit/color_utils_host.o
+	$(HOSTCXX) -std=c++17 -O1 -Wall -iquote . -iquote include -Ilibs/gui/widget/include -Ilibs/gui/color/include -o $@ tests/host/unit/libui_xml_test.cpp $(wildcard libs/gui/widget/src/*/*.cpp) libs/gui/widget/abi/libui_abi.cpp tests/host/unit/color_utils_host.o
 
 # Host test kontrak toolkit File Manager: libs/gui/widget/**/*.cpp di-LINK seperti
 # test-libui-theme, lalu diperiksa: index menu yang menghitung separator, hit-test
@@ -1646,7 +1782,7 @@ tests/host/unit/libc_heap_test: tests/host/unit/libc_heap_test.cpp libs/c/libc-p
 # apps/), manifests/*.app, dan blok module_path di limine.conf.
 APP_NAMES = fileman viewer clock calc taskmgr notepad badptr widget_demo desktop \
             terminal settings procinfo exit_test kill_test fd_test echo cat \
-            pipe_test fork_test gallery imageview fontdemo
+            pipe_test fork_test gallery imageview fontdemo xml_demo browser
 APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 
 # `apps` tetap target phony (menu, kompatibel dengan workflow lama). Setiap ELF
@@ -1660,16 +1796,19 @@ apps: sdk-c sdk-cpp libdesktop $(FT_KYUZEN_A)
 	$(MAKE) $(DESKTOP_ELF) DESKTOP_APP=$(DESKTOP_APP)
 	$(MAKE) $(FM_ELF)
 	$(MAKE) $(ST_ELF)
+	$(MAKE) $(TM_ELF)
+	$(MAKE) $(BW_ELF)
 
-# desktop.elf, fileman.elf, dan settings.elf DIKECUALIKAN dari relay ini:
-# ketiganya punya rule file nyata dengan prereq-nya sendiri
-# (DESKTOP_ELF/FM_ELF/ST_ELF). Menggabungkannya ke sini akan menambahkan
+# desktop.elf, fileman.elf, settings.elf, dan taskmgr.elf DIKECUALIKAN dari
+# relay ini: keempatnya punya rule file nyata dengan prereq-nya sendiri
+# (DESKTOP_ELF/FM_ELF/ST_ELF/TM_ELF). Menggabungkannya ke sini akan menambahkan
 # prereq order-only `apps` ke rule itu → `apps` memanggil `$(MAKE) $(FM_ELF)`
 # → loop rekursi RH (fork-bomb `make fileman`).
-# CATATAN: FM_ELF/ST_ELF baru didefinisikan BELAKANGAN di file ini, jadi di
-# sini harus ditulis sebagai path literal — $(FM_ELF)/$(ST_ELF) akan mengembang
-# kosong dan ELF-nya justru ikut kena `| apps` (persis fork-bomb yang dihindari).
-$(filter-out $(DESKTOP_ELF) $(ELF_DIR)/fileman.elf $(ELF_DIR)/settings.elf,$(APP_ELFS)): | apps
+# CATATAN: FM_ELF/ST_ELF/TM_ELF baru didefinisikan BELAKANGAN di file ini, jadi
+# di sini harus ditulis sebagai path literal — $(FM_ELF)/$(ST_ELF)/$(TM_ELF)
+# akan mengembang kosong dan ELF-nya justru ikut kena `| apps` (persis
+# fork-bomb yang dihindari).
+$(filter-out $(DESKTOP_ELF) $(ELF_DIR)/fileman.elf $(ELF_DIR)/settings.elf $(ELF_DIR)/taskmgr.elf $(ELF_DIR)/browser.elf,$(APP_ELFS)): | apps
 
 # --- RUST APPS (Phase 1: no_std userspace Rust) ---
 # Cargo tetap build system Rust (workspace di rust/); hasil akhir di-link dengan
@@ -1706,9 +1845,11 @@ viewer.elf: $(ELF_DIR)/viewer.elf
 clock.elf: $(ELF_DIR)/clock.elf
 calc.elf: $(ELF_DIR)/calc.elf
 taskmgr.elf: $(ELF_DIR)/taskmgr.elf
+browser.elf: $(ELF_DIR)/browser.elf
 notepad.elf: $(ELF_DIR)/notepad.elf
 badptr.elf: $(ELF_DIR)/badptr.elf
 widget_demo.elf: $(ELF_DIR)/widget_demo.elf
+xml_demo.elf: $(ELF_DIR)/xml_demo.elf
 desktop.elf: $(ELF_DIR)/desktop.elf
 terminal.elf: $(ELF_DIR)/terminal.elf
 settings.elf: $(ELF_DIR)/settings.elf
@@ -1829,6 +1970,165 @@ $(ST_ELF): $(ST_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
 		echo "[settings] FAIL: settings.elf menarik runtime exception/thread"; exit 1; \
 	fi
 	@echo "[settings] link OK: $(notdir $@) (C++ SDK + toolkit libui + libtext)"
+
+# ==========================================
+# TASK MANAGER (apps/taskmgr) — aplikasi C++ asli
+# ==========================================
+# Pola build = pola Settings/File Manager (apps/taskmgr/*.cpp lewat SDK C++
+# wrapper): compiler/flags/runtime yang SAMA dengan desktop & settings
+# (-fno-exceptions -fno-rtti -std=c++17, libc++ subset + crt yang menjalankan
+# .init_array), ditambah objek toolkit user-space (libui/libgui/userlib/png/
+# color) yang sudah dibangun apps/Makefile. Tanpa libtext/FT (tidak ada
+# preview font). ELF-nya tetap bernama taskmgr.elf supaya manifest, ikon
+# desktop, dan `start taskmgr` tidak berubah.
+TASKMGR_DIR   = apps/taskmgr
+TM_SRCS       = $(wildcard $(TASKMGR_DIR)/*.cpp)
+TM_OBJDIR     = $(BUILD_DIR)/obj/taskmgr
+TM_OBJS       = $(patsubst $(TASKMGR_DIR)/%.cpp,$(TM_OBJDIR)/%.o,$(TM_SRCS))
+TM_ELF        = $(ELF_DIR)/taskmgr.elf
+TM_SYS_INC    = -iquote include -Ilibs/gui/color/include
+TM_HEADERS    = $(wildcard $(TASKMGR_DIR)/*.hpp)
+
+# Objek toolkit user-space (libui/libgui/userlib/png/color). Daftarnya diambil
+# dari BERKAS yang sudah dibangun apps/Makefile (glob di shell saat link), jadi
+# tidak ada daftar kedua yang bisa basi — pola yang sama dengan ST_TOOLKIT_GLOBS.
+TM_TOOLKIT_GLOBS = $(BUILD_DIR)/obj/user/libs/gui/widget/src/*/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/widget/abi/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/color/src/*.o
+
+.PHONY: taskmgr-app
+taskmgr-app: $(TM_ELF)
+	@echo "[taskmgr] elf : $(TM_ELF)"
+
+$(TM_OBJDIR)/%.o: $(TASKMGR_DIR)/%.cpp $(TM_HEADERS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(TM_SYS_INC)
+
+$(TM_ELF): $(TM_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@test -n "$(TM_SRCS)" || { echo "[taskmgr] FAIL: tidak ada *.cpp di $(TASKMGR_DIR)/"; exit 1; }
+	@$(MAKE) -C apps all
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(TM_OBJS) $(USERAPP_LIB_OBJS) $$(ls $(TM_TOOLKIT_GLOBS)) -o $@ $(TM_SYS_INC)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[taskmgr] FAIL: _start tidak ada di taskmgr.elf"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[taskmgr] FAIL: masih ada simbol undefined di taskmgr.elf"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_NM) --defined-only $@ | grep -qE " (__cxa_throw|__cxa_begin_catch|_Unwind_|__gxx_personality_|pthread_)"; then \
+		echo "[taskmgr] FAIL: taskmgr.elf menarik runtime exception/thread"; exit 1; \
+	fi
+	@echo "[taskmgr] link OK: $(notdir $@) (C++ SDK + toolkit libui)"
+
+# ==========================================
+# BROWSER (apps/browser) — aplikasi C++ asli
+# ==========================================
+# Pola build = pola Settings (C++ SDK wrapper + toolkit + libtext + FT
+# freestanding) PLUS satu TU C (imgdec.c: stb_image dari memori — kode C stb
+# tidak boleh dikompilasi sebagai C++, pola libs/media/png.c). TU C itu
+# dikompilasi dengan LIBC_CC + LIBC_TARGET_FLAGS (flag C SDK kanonis).
+# Engine (apps/browser/engine/*.cpp) ikut wildcard — sumber yang sama dengan
+# host test (test-browser-*, pola netsock: real sources, mock boundary).
+BROWSER_DIR   = apps/browser
+BW_SRCS       = $(wildcard $(BROWSER_DIR)/*.cpp) $(wildcard $(BROWSER_DIR)/engine/*.cpp)
+BW_OBJDIR     = $(BUILD_DIR)/obj/browser
+BW_OBJS       = $(patsubst $(BROWSER_DIR)/%.cpp,$(BW_OBJDIR)/%.o,$(BW_SRCS))
+BW_ELF        = $(ELF_DIR)/browser.elf
+BW_SYS_INC    = -iquote include -Iapps/browser -Ilibs/gui/color/include -Ilibs/text/include
+BW_HEADERS    = $(wildcard $(BROWSER_DIR)/*.hpp) $(wildcard $(BROWSER_DIR)/engine/*.hpp)
+
+BW_TOOLKIT_GLOBS = $(BUILD_DIR)/obj/user/libs/gui/widget/src/*/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/widget/abi/*.o \
+                   $(BUILD_DIR)/obj/user/libs/gui/color/src/*.o
+
+# --- BearSSL untuk browser.elf (TLS 1.2, ECDHE+AES-128-GCM+SHA256) ---
+# Subset klien minimal (bukan full lib): tanpa server/keygen/encode/PEM,
+# tanpa CBC/CCM/3DES/ChaCha/TLS1.0-1.1. Trust anchor prebuilt (`brssl ta`).
+# Flag -D mematikan sumber acak/waktu bawaan (semua dari syscall Kyuzen:
+# sys_entropy/RDRAND + sys_get_time/RTC — lihat tls_kyuzen.c).
+# TU C dikompilasi dgn LIBC_CC + LIBC_TARGET_FLAGS (pola SDK kanonis),
+# BUKAN wrapper C++ (kode C BearSSL tidak boleh masuk sebagai C++).
+BL_OS_DIR   = third_party/bearssl/src
+BL_OS_SRCS  = $(BL_OS_DIR)/ssl/ssl_client.c $(BL_OS_DIR)/ssl/ssl_engine.c \
+              $(BL_OS_DIR)/ssl/ssl_hs_client.c $(BL_OS_DIR)/ssl/ssl_hashes.c \
+              $(BL_OS_DIR)/ssl/prf.c $(BL_OS_DIR)/ssl/prf_sha256.c \
+              $(BL_OS_DIR)/ssl/ssl_rec_gcm.c \
+              $(BL_OS_DIR)/ssl/ssl_engine_default_aesgcm.c \
+              $(BL_OS_DIR)/ssl/ssl_engine_default_ec.c \
+              $(BL_OS_DIR)/ssl/ssl_engine_default_ecdsa.c \
+              $(BL_OS_DIR)/ssl/ssl_engine_default_rsavrfy.c \
+              $(BL_OS_DIR)/x509/x509_minimal.c $(BL_OS_DIR)/x509/x509_decoder.c \
+              $(BL_OS_DIR)/hash/sha2small.c $(BL_OS_DIR)/hash/sha2big.c \
+              $(BL_OS_DIR)/hash/sha1.c \
+              $(BL_OS_DIR)/hash/multihash.c $(BL_OS_DIR)/hash/dig_size.c \
+              $(BL_OS_DIR)/hash/dig_oid.c               $(BL_OS_DIR)/mac/hmac.c \
+              $(BL_OS_DIR)/rand/hmac_drbg.c $(BL_OS_DIR)/rand/sysrng.c \
+              $(BL_OS_DIR)/symcipher/aes_common.c $(BL_OS_DIR)/symcipher/aes_ct.c \
+              $(BL_OS_DIR)/symcipher/aes_ct64.c $(BL_OS_DIR)/symcipher/aes_ct_ctr.c \
+              $(BL_OS_DIR)/symcipher/aes_ct64_ctr.c \
+              $(BL_OS_DIR)/symcipher/aes_ct_enc.c \
+              $(BL_OS_DIR)/symcipher/aes_ct64_enc.c \
+              $(BL_OS_DIR)/hash/ghash_ctmul.c $(BL_OS_DIR)/hash/ghash_ctmul32.c \
+              $(BL_OS_DIR)/hash/ghash_ctmul64.c \
+              $(BL_OS_DIR)/ec/ec_default.c $(BL_OS_DIR)/ec/ec_all_m31.c \
+              $(BL_OS_DIR)/ec/ec_prime_i31.c $(BL_OS_DIR)/ec/ec_p256_m31.c \
+              $(BL_OS_DIR)/ec/ec_secp256r1.c $(BL_OS_DIR)/ec/ec_secp384r1.c \
+              $(BL_OS_DIR)/ec/ec_secp521r1.c $(BL_OS_DIR)/ec/ec_c25519_m31.c \
+              $(BL_OS_DIR)/ec/ec_pubkey.c $(BL_OS_DIR)/ec/ecdsa_atr.c \
+              $(BL_OS_DIR)/ec/ecdsa_default_vrfy_asn1.c \
+              $(BL_OS_DIR)/ec/ecdsa_default_vrfy_raw.c \
+              $(BL_OS_DIR)/ec/ecdsa_i31_bits.c \
+              $(BL_OS_DIR)/ec/ecdsa_i31_vrfy_asn1.c \
+              $(BL_OS_DIR)/ec/ecdsa_i31_vrfy_raw.c \
+              $(BL_OS_DIR)/rsa/rsa_default_pkcs1_vrfy.c \
+              $(BL_OS_DIR)/rsa/rsa_i31_pkcs1_vrfy.c \
+              $(BL_OS_DIR)/rsa/rsa_i62_pkcs1_vrfy.c \
+              $(BL_OS_DIR)/rsa/rsa_i62_pub.c \
+              $(BL_OS_DIR)/rsa/rsa_pkcs1_sig_unpad.c \
+              $(BL_OS_DIR)/rsa/rsa_i31_pub.c \
+              $(wildcard $(BL_OS_DIR)/int/i31_*.c) \
+              $(BL_OS_DIR)/int/i62_modpow2.c $(BL_OS_DIR)/int/i32_div32.c \
+              $(BL_OS_DIR)/codec/ccopy.c $(BL_OS_DIR)/codec/enc32be.c \
+              $(BL_OS_DIR)/codec/enc32le.c $(BL_OS_DIR)/codec/dec32be.c \
+              $(BL_OS_DIR)/codec/dec32le.c $(BL_OS_DIR)/codec/enc64be.c \
+              $(BL_OS_DIR)/codec/dec64be.c \
+              apps/browser/tls/tls_kyuzen.c
+BL_OS_OBJDIR = $(BUILD_DIR)/obj/browser-tls
+BL_OS_OBJS   = $(patsubst %.c,$(BL_OS_OBJDIR)/%.o,$(BL_OS_SRCS))
+BL_OS_FLAGS  = $(LIBC_TARGET_FLAGS) -O2 -std=c11 \
+               -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_TIME=0 \
+               -DBR_USE_URANDOM=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0 \
+               -DBR_AES_X86NI=0 -DBR_SSE2=0 \
+               -Ithird_party/bearssl/inc -Ithird_party/bearssl/src \
+               -isystem $(SDK_INC) -iquote include -Iapps/browser/tls
+
+$(BL_OS_OBJDIR)/%.o: %.c apps/browser/tls/tas_https.inc
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(BL_OS_FLAGS) -c $< -o $@
+
+apps/browser/tls/tas_https.inc: build/host-tls/brssl tests/browser_site/certs/roots_https.pem
+	@mkdir -p $(@D)
+	build/host-tls/brssl ta tests/browser_site/certs/roots_https.pem > $@
+
+.PHONY: browser-app
+browser-app: $(BW_ELF)
+	@echo "[browser] elf : $(BW_ELF)"
+
+$(BW_OBJDIR)/%.o: $(BROWSER_DIR)/%.cpp $(BW_HEADERS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(BW_SYS_INC)
+
+$(BW_ELF): $(BW_OBJS) $(BL_OS_OBJS) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+	@test -n "$(BW_SRCS)" || { echo "[browser] FAIL: tidak ada *.cpp di $(BROWSER_DIR)/"; exit 1; }
+	@$(MAKE) -C apps all
+	@mkdir -p $(dir $@)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(BW_OBJS) $(BL_OS_OBJS) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $$(ls $(BW_TOOLKIT_GLOBS)) -o $@ $(BW_SYS_INC)
+	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[browser] FAIL: _start tidak ada di browser.elf"; exit 1; }
+	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
+		echo "[browser] FAIL: masih ada simbol undefined di browser.elf"; $(LIBC_NM) --undefined-only $@; exit 1; \
+	fi
+	@if $(LIBC_NM) --defined-only $@ | grep -qE " (__cxa_throw|__cxa_begin_catch|_Unwind_|__gxx_personality_|pthread_)"; then \
+		echo "[browser] FAIL: browser.elf menarik runtime exception/thread"; exit 1; \
+	fi
+	@echo "[browser] link OK: $(notdir $@) (C++ SDK + toolkit libui + libtext + FT)"
 
 # Bersihkan hanya file objek/ELF apps (kernel tidak disentuh)
 .PHONY: clean-apps

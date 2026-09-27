@@ -100,12 +100,12 @@ public:
             int ry = y + vis * ROW_H - scroll;
             vis++;
             if (ry + ROW_H <= y || ry >= y + h) continue;
-            if (i == selected) p.rect(x, ry, cw, ROW_H, p.theme.button_bg);
-            else if (i == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.button_hover);
+            if (i == selected) p.rect(x, ry, cw, ROW_H, p.theme.selection);
+            else if (i == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.surface_elevated);
             int ind = x + nodes[i].depth * 12;
             if (has_children(i))
                 p.text(nodes[i].expanded ? "-" : "+", ind, ry + 2, p.theme.accent);
-            p.text(nodes[i].label, ind + 12, ry + 2, p.theme.fg);
+            p.text(nodes[i].label, ind + 12, ry + 2, p.theme.text);
         }
         p.clear_clip();
         draw_bar(p);

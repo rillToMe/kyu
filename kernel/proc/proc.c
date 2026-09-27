@@ -20,6 +20,7 @@
 #include "vfs.h"
 #include "uheap.h"
 #include "smap.h"
+#include "net_socket.h"
 #include <stddef.h>
 
 // scheduler internals (owned by kernel/sched/; declared here instead of
@@ -271,8 +272,11 @@ static void proc_do_exit(int code, uint8_t reason) {
         for (;;) __asm__ volatile("sti; hlt");
     }
 
-    // Outside all locks: vfs/event/kwm have their own locks.
+    // Outside all locks: vfs/event/kwm/net have their own locks.
+    // Order: VFS fds first, then owned network sockets (detach PCBs, free
+    // RX queues, bump generations so slots are reusable immediately).
     vfs_close_all(self);
+    net_process_cleanup(self);
     flush_event_queue(self);
     kwm_destroy_windows_of(self);
 
@@ -422,6 +426,7 @@ int proc_kill(int32_t pid) {
 
         // Outside all locks (same order as the self-exit path).
         vfs_close_all(pid);
+        net_process_cleanup(pid);
         flush_event_queue(pid);
         kwm_destroy_windows_of(pid);
 

@@ -10,6 +10,7 @@
 #include "heap.h"
 #include "shell.h"     // user_shell, g_shell_return_rsp (legacy exec-chain)
 #include "serial.h"    // serial_print/hex (blok debug HEAP_WATCH_DEBUG)
+#include "net_socket.h" // net_task_reown (socket survive exec via reown)
 
 // Tetap lokal (tanpa owner header, dipakai >1 TU — bukan header misc baru):
 // - proc_copy_in_argv (butuh ucopy_ctx_t; satu-satunya pemakai di sini)
@@ -149,6 +150,9 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
                 uheap_reset(self);
                 self->pml4_phys = new_pml4;
                 self->cookie = as_cookie_next();
+                // Socket milik task ini ikut AS baru (seperti fd): refresh
+                // owner_cookie agar tidak orphan.
+                net_task_reown((int)self->id, self->cookie);
             }
 
             // Switch CR3 to the user PML4 BEFORE loading. elf_load_file copies
@@ -223,6 +227,7 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
                 if (self) {
                     self->pml4_phys = new_pml4;
                     self->cookie = as_cookie_next();
+                    net_task_reown((int)self->id, self->cookie);
                 }
 
                 // Switch CR3 to the user PML4 BEFORE loading — elf_load_file
@@ -440,6 +445,7 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
         vmm_switch_pml4(new_as);
         self->pml4_phys = new_as;
         self->cookie = as_cookie_next();
+        net_task_reown((int)self->id, self->cookie);
         self->argc = (int32_t)argc;
         {
             proc_basename(kfname, self->name, sizeof(self->name));

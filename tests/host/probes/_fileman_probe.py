@@ -35,9 +35,11 @@ OUT = os.path.join(P.ROOT, "tests", "host", "probes", "_ui_out")
 # Tema bawaan toolkit (libs/widget/include/core/theme.hpp) — dipakai untuk
 # membuktikan jendela File Manager benar-benar tergambar.
 THEME_BG     = (0x1A, 0x1A, 0x2E)
-# Tombol dialog memakai theme.btnfill (0x3C3C3C), bukan button_bg toolbar —
-# terverifikasi dari screendump: dua blok ~68px di baris dialog.
+# Tombol dialog: tombol PERTAMA = primer (accent; fileman memakai tema default
+# Dark+Neutral → 0x8B8B8B), sisanya btnfill (Phase B; dulu semua 0x3C3C3C —
+# dua blok ~68px di baris dialog). Cari primer dulu, fallback btnfill lama.
 THEME_BTN_DIALOG = (0x3C, 0x3C, 0x3C)
+THEME_BTN_PRIMARY = (0x8B, 0x8B, 0x8B)
 WIN_W_EXPECT = 720
 # Awalan jejak aplikasi (FileManagerApp::trace) — satu tempat saja.
 TRACE = "[filemanager] "
@@ -73,38 +75,46 @@ def window_bbox(ppm, color=THEME_BG, step=2):
             max(xs) - min(xs), max(ys) - min(ys), len(xs))
 
 
-def find_leftmost_button(ppm, y0, y1, color=THEME_BTN_DIALOG, min_run=24):
-    """Pusat tombol paling KIRI pada pita y0..y1 (tombol dialog = index 0)."""
+def find_leftmost_button(ppm, y0, y1, colors=(THEME_BTN_PRIMARY, THEME_BTN_DIALOG),
+                         min_run=24):
+    """Pusat tombol paling KIRI pada pita y0..y1 (tombol dialog = index 0).
+    Cari di semua warna kandidat (primer-aksen dulu, fallback btnfill lama);
+    yang paling kiri menang — tombol primer selalu di kiri (konvensi OK/Batal)."""
     w, h, px = ST.read_ppm(ppm)
     y1 = min(y1, h)
-    runs = []
-    for y in range(y0, y1, 4):
-        run = 0
-        start = 0
-        for x in range(0, w):
-            i = (y * w + x) * 3
-            hit = (px[i], px[i + 1], px[i + 2]) == color
-            if hit:
-                if run == 0:
-                    start = x
-                run += 1
-            else:
-                if run >= min_run:
-                    runs.append((start, x, y))
-                run = 0
-        if run >= min_run:
-            runs.append((start, w, y))
-    if not runs:
-        return None
-    # Klaster per-tombol: ambil run paling KIRI, lalu semua run yang mulainya
-    # dekat (celah antar tombol dialog hanya ~6px → jangan sampai tergabung,
-    # kalau tergabung pusatnya jatuh di celah dan klik tidak mengenai tombol).
-    x_min = min(r[0] for r in runs)
-    btn = [r for r in runs if r[0] <= x_min + 8]
-    x0 = min(r[0] for r in btn)
-    x1 = max(r[1] for r in btn)
-    ys = [r[2] for r in btn]
-    return ((x0 + x1) // 2, (min(ys) + max(ys)) // 2)
+    best = None
+    for color in colors:
+        runs = []
+        for y in range(y0, y1, 4):
+            run = 0
+            start = 0
+            for x in range(0, w):
+                i = (y * w + x) * 3
+                hit = (px[i], px[i + 1], px[i + 2]) == color
+                if hit:
+                    if run == 0:
+                        start = x
+                    run += 1
+                else:
+                    if run >= min_run:
+                        runs.append((start, x, y))
+                    run = 0
+            if run >= min_run:
+                runs.append((start, w, y))
+        if not runs:
+            continue
+        # Klaster per-tombol: ambil run paling KIRI, lalu semua run yang mulainya
+        # dekat (celah antar tombol dialog hanya ~6px → jangan sampai tergabung,
+        # kalau tergabung pusatnya jatuh di celah dan klik tidak mengenai tombol).
+        x_min = min(r[0] for r in runs)
+        btn = [r for r in runs if r[0] <= x_min + 8]
+        x0 = min(r[0] for r in btn)
+        x1 = max(r[1] for r in btn)
+        ys = [r[2] for r in btn]
+        cand = ((x0 + x1) // 2, (min(ys) + max(ys)) // 2)
+        if best is None or cand[0] < best[0]:
+            best = cand
+    return best
 
 
 def create_and_rename(m, name, wait_bar=2.0):

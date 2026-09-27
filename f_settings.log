@@ -1,0 +1,7 @@
+make[1]: Entering directory '/e/Project/02_Software_Engineering/low-level/kyuzen-os/apps'
+
+[USER APPS] Build selesai ΓÇö 19 ELF di ../build/apps/
+  (virtual 0x4000000; OS mengalokasikan physical RAM saat dijalankan)
+make[1]: Leaving directory '/e/Project/02_Software_Engineering/low-level/kyuzen-os/apps'
+[settings] link OK: settings.elf (C++ SDK + toolkit libui + libtext)
+[settings] elf : build/apps/settings.elf

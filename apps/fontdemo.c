@@ -122,7 +122,7 @@ static void draw_line(void *ud, uint32_t *canvas, int cw, int ch, int x,
     if (!g_ok || !ln || ln->slot < 0 || ln->slot >= N_SIZES) return;
     kz_font_t *f = g_fonth[ln->slot];
     if (!f) return;
-    color_t fg = COLOR_RGB(0xE8, 0xE8, 0xEC);
+    color_t fg = COLOR_HEX(0xE8E8EC);
     int baseline = y + (int)g_sizes[ln->slot] + 4;
     kz_text_draw(canvas, (uint32_t)cw, (uint32_t)ch, f, x + 4, baseline, fg,
                  ln->text, 0);

@@ -79,3 +79,30 @@ uint32_t* image_decode(const char* filename, int* out_w, int* out_h) {
 void image_free(uint32_t* buf) {
     png_free(buf);
 }
+
+// Decode dari buffer memori (konten HTTP) — instance stb yang SAMA, tanpa
+// TU kedua. Batas dimensi milik caller (browser: 2048²); di sini hanya
+// menolak dimensi gila sebelum alokasi ARGB (>16MP, pola STBI_MAX_DIMENSIONS
+// hulu tapi tanpa config global).
+uint32_t* image_decode_memory(const uint8_t* data, uint32_t len, int* out_w, int* out_h) {
+    if (!data || len == 0 || !out_w || !out_h) return 0;
+    int iw = 0, ih = 0;
+    uint8_t* px = stbi_load_from_memory(data, (int)len, &iw, &ih, 0, 4);
+    if (!px || iw <= 0 || ih <= 0) return 0;
+    if ((uint32_t)iw * (uint32_t)ih > (uint32_t)(4096 * 4096)) {
+        sys_free(px);
+        return 0;
+    }
+    // Konversi RGBA -> ARGB IN-PLACE (tanpa alokasi kedua: buffer stb milik
+    // sys_alloc, jadi image_free/sys_free tetap valid). Baca-dulu-tulis di
+    // alamat yang sama per piksel = aman maju.
+    uint64_t n = (uint64_t)iw * (uint64_t)ih;
+    uint32_t* u = (uint32_t*)(void*)px;
+    for (uint64_t i = 0; i < n; i++) {
+        uint8_t r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2], a = px[i * 4 + 3];
+        u[i] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+    }
+    *out_w = iw;
+    *out_h = ih;
+    return u;
+}

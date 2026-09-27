@@ -33,10 +33,11 @@ public:
         // atasnya sebagai batas dari area teks.
         p.rect(x, y, w, h, p.theme.chrome);
         p.rect(x, y, w, 1, p.theme.divider);
-        if (left) p.text(left, x + 8, y + (h - 16) / 2, p.theme.button_fg);
+        // Kiri = posisi primer (teks), kanan = info dokumen (sekunder).
+        if (left) p.text(left, x + 8, y + (h - 16) / 2, p.theme.text);
         if (right) {
             int tw = _ui_strlen(right) * 8;
-            p.text(right, x + w - tw - 8, y + (h - 16) / 2, p.theme.button_fg);
+            p.text(right, x + w - tw - 8, y + (h - 16) / 2, p.theme.text_secondary);
         }
     }
 };

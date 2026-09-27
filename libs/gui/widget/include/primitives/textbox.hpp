@@ -16,6 +16,9 @@ public:
     enum { MAX_TEXT = 256 };
     char text[MAX_TEXT];
     int cur;                    // posisi kursor (indeks karakter)
+    bool hover;                 // Phase B: border menegas saat hover
+    // Phase C: error = border danger (+ tint background); validasi milik app.
+    bool error;
     // Seluruh isi "terpilih": tombol pengubah teks berikutnya MENGGANTI isi
     // alih-alih menambah (semantik ganti-nama Explorer). Hanya penanda visual
     // (isi tetap digambar sebagai blok terpilih), bukan state editor: widget ini
@@ -24,7 +27,8 @@ public:
     ui_click_cb enter_cb;
     void* enter_data;
 
-    TextBox(int width) : cur(0), replace_next(false), enter_cb(0), enter_data(0) {
+    TextBox(int width) : cur(0), hover(false), error(false), replace_next(false),
+                         enter_cb(0), enter_data(0) {
         w = width; h = 24;
         text[0] = '\0';
         cursor_kind = UI_CURSOR_IBEAM;
@@ -46,22 +50,41 @@ public:
         mark_dirty();
     }
     void drop_pending() { replace_next = false; }
-    virtual bool focusable() override { return true; }
+    // Phase C: error state (state + rendering saja; validasi milik aplikasi).
+    void set_error(bool on) {
+        if (error == on) return;
+        error = on;
+        mark_dirty();
+    }
+    virtual bool focusable() override { return enabled; }
+    virtual void set_hover(bool on) override { hover = on; mark_dirty(); }
     virtual void draw(Painter& p) override {
-        p.rect(x, y, w, h, p.theme.button_bg);
-        color_t border = has_focus ? p.theme.accent : p.theme.fg;
+        color_t txt = enabled ? p.theme.text : p.theme.text_disabled;
+        // Error: tint danger di background + border danger (unfocused).
+        // Fokus + error coexist: border tetap focus ring, tint tetap terlihat.
+        color_t bg = (enabled && error) ? theme_mix(p.theme.danger, p.theme.surface, 26)
+                                        : p.theme.surface;
+        p.rect(x, y, w, h, bg);
+        // Border 1px: subtle saat normal, menegas saat hover, danger saat
+        // error, focus saat fokus (prioritas tertinggi).
+        color_t border = !enabled      ? p.theme.border_subtle
+                       : has_focus     ? p.theme.focus
+                       : error         ? p.theme.danger
+                       : hover         ? p.theme.border
+                                       : p.theme.border_subtle;
         p.rect(x, y, w, 1, border);
         p.rect(x, y + h - 1, w, 1, border);
         p.rect(x, y, 1, h, border);
         p.rect(x + w - 1, y, 1, h, border);
         if (has_focus && replace_next) {
             int n = 0; while (text[n]) n++;          // blok terpilih = akan diganti
-            p.rect(x + 4, y + 4, n * 8, 16, p.theme.button_hover);
+            p.rect(x + 4, y + 4, n * 8, 16, p.theme.surface_elevated);
         }
-        p.text(text, x + 4, y + 4, p.theme.fg);
-        if (has_focus) p.rect(x + 4 + cur * 8, y + 4, 1, 16, p.theme.accent);
+        p.text(text, x + 4, y + 4, txt);
+        if (has_focus && enabled) p.rect(x + 4 + cur * 8, y + 4, 1, 16, p.theme.focus);
     }
     virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
+        if (!enabled) return;
         mark_dirty();   // teks/kursor/kotak fokus bisa berubah
         // Phase 9: Ctrl+C/X/V = clipboard (salurkan via P1 dasar 'c'/'x'/'v',
         // plus control-code variant 0x03/0x18/0x16 bila driver memetakannya).

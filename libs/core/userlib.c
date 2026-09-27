@@ -292,6 +292,32 @@ __attribute__((weak)) int strcmp(const char* a, const char* b) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 
+// Set string freestanding minimal (lengkap untuk port C pihak ketiga
+// seperti BearSSL: memcpy/memset/strcmp sudah ada).
+__attribute__((weak)) void* memmove(void* dest, const void* src, size_t count) {
+    uint8_t* d = (uint8_t*)dest; const uint8_t* s = (const uint8_t*)src;
+    if (d < s) {
+        for (size_t i = 0; i < count; i++) d[i] = s[i];
+    } else if (d > s) {
+        for (size_t i = count; i > 0; i--) d[i - 1] = s[i - 1];
+    }
+    return dest;
+}
+
+__attribute__((weak)) int memcmp(const void* a, const void* b, size_t count) {
+    const uint8_t* p = (const uint8_t*)a; const uint8_t* q = (const uint8_t*)b;
+    for (size_t i = 0; i < count; i++) {
+        if (p[i] != q[i]) return (int)p[i] - (int)q[i];
+    }
+    return 0;
+}
+
+__attribute__((weak)) size_t strlen(const char* s) {
+    size_t n = 0;
+    while (s[n] != '\0') n++;
+    return n;
+}
+
 void sys_shutdown(void) {
     __asm__ volatile("int $0x80" : : "a"(38));
 }
@@ -471,9 +497,14 @@ int sys_execve(char* path, int argc, char** argv) {
     return (int)ret;
 }
 
-// ===== TCP client sockets (Fase 6) over lwIP =====
+// ===== TCP client sockets over lwIP (lifecycle phase) =====
+// Handles are opaque (generation-tagged, NOT slot indexes 0-7): never
+// forge, decode, or pass them to VFS fd syscalls. All failures negative
+// (KSOCK_* in include/net_socket.h: -1 generic, -2 stale handle, -3 not
+// owner, -4 timeout, -5 conn failed, -6 closed, -7 no resource); legacy
+// `< 0` / `!= 0` checks keep working.
 
-// sys_socket: Syscall 52 — buat TCP socket -> sockfd (>=0) atau -1.
+// sys_socket: Syscall 52 — buat TCP socket -> handle (>=0) atau negatif.
 int sys_socket(void) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(52));
@@ -481,21 +512,22 @@ int sys_socket(void) {
 }
 
 // sys_connect: Syscall 53 — connect(sock, ip_be, port). ip_be = network byte
-// order (mis. dari sys_ip helper). Blocking; 0 sukses, -1 gagal.
+// order (mis. dari sys_ip helper). Blocking ≤5s; 0 sukses, negatif gagal.
 int sys_connect(int sock, uint32_t ip_be, uint16_t port) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(53), "b"((uint64_t)sock), "c"((uint64_t)ip_be), "d"((uint64_t)port));
     return (int)ret;
 }
 
-// sys_send: Syscall 54 — send(sock, buf, len) -> byte terkirim atau -1.
+// sys_send: Syscall 54 — send(sock, buf, len) -> byte terkirim atau negatif.
 int sys_send(int sock, const void* buf, uint32_t len) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(54), "b"((uint64_t)sock), "c"((uint64_t)buf), "d"((uint64_t)len));
     return (int)ret;
 }
 
-// sys_recv: Syscall 55 — recv(sock, buf, len) -> byte, 0 = peer close, -1 err.
+// sys_recv: Syscall 55 — recv(sock, buf, len) -> byte, 0 = peer close,
+// negatif = err/timeout. Blocking ≤10s, kill-interruptible.
 int sys_recv(int sock, void* buf, uint32_t len) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(55), "b"((uint64_t)sock), "c"((uint64_t)buf), "d"((uint64_t)len));
@@ -506,5 +538,21 @@ int sys_recv(int sock, void* buf, uint32_t len) {
 int sys_sock_close(int sock) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(56), "b"((uint64_t)sock));
+    return (int)ret;
+}
+
+// sys_resolve: Syscall 86 — hostname -> IPv4 (network byte order).
+// 0 sukses, negatif = KSOCK_* (net_dns.h). Blocking ≤5s.
+int sys_resolve(const char *host, uint32_t *out_ip_be) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(86), "b"((uint64_t)host), "c"((uint64_t)out_ip_be));
+    return (int)ret;
+}
+
+// sys_entropy: Syscall 87 — isi buffer dengan byte acak RDRAND.
+// Return byte terisi (>=0), ENTROPY_ERR (-1), ENTROPY_ENOHW (-2).
+int sys_entropy(void *out, uint32_t len) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(87), "b"((uint64_t)out), "c"((uint64_t)len));
     return (int)ret;
 }

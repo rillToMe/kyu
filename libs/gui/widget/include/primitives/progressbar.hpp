@@ -21,9 +21,13 @@ public:
         mark_dirty();
     }
     virtual void draw(Painter& p) override {
-        p.rect(x, y, w, h, p.theme.button_bg);
-        int fw = val * w / 100;
-        if (fw > 0) p.rect(x, y, fw, h, p.theme.accent);
+        // Outline 1px agar track terlihat di Light Mode (permukaan putih di
+        // atas background terang); isi aksen. Tanpa teks/animasi (Phase B).
+        p.rect(x, y, w, h, p.theme.border_subtle);
+        if (w <= 2 || h <= 2) return;
+        p.rect(x + 1, y + 1, w - 2, h - 2, p.theme.surface_elevated);
+        int fw = val * (w - 2) / 100;
+        if (fw > 0) p.rect(x + 1, y + 1, fw, h - 2, p.theme.accent);
     }
 };
 
