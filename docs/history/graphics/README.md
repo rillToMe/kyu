@@ -1,3 +1,10 @@
+> **Historical archive.** These documents describe the original graphics
+> subsystem design, which used a pre-GHAL API (`graphics/hal/gpu.c`,
+> `include/graphics/gpu.h`, `gpu_backend_ops_t`). That API no longer exists.
+> For the current implementation see [Graphics](../../graphics/README.md) and
+> [Graphics Backends](../../graphics/backends.md). The reports below are kept
+> for historical context only.
+
 # KyuzenOS Graphics — Documentation
 
 Dokumentasi subsistem **Hardware Accelerated 2D Graphics** KyuzenOS.

@@ -3,7 +3,7 @@
 
   # Kyuzen OS
 
-  **A 64-bit Higher-Half Operating System Built from Scratch - with a real GUI, SMP, and protected user space**
+  **A 64-bit higher-half operating system built from scratch — with a real GUI, SMP, and protected userspace**
 
   ![Arch](https://img.shields.io/badge/arch-x86__64-blue)
   ![Compiler](https://img.shields.io/badge/compiler-clang-orange)
@@ -13,279 +13,180 @@
   ![Lang](https://img.shields.io/badge/lang-C%20%2B%20C%2B%2B%20%2B%20Rust-informational)
   ![Runs on](https://img.shields.io/badge/runs%20on-bare%20metal%20%2F%20QEMU-success)
 
-  <img src="docs/screenshots/desktop.png" alt="Kyuzen OS Desktop - Calculator, File Manager, and terminal running concurrently" width="85%" />
-
-  <!-- <i>Concurrent GUI apps (spawned as independent Ring-3 tasks) over a composited desktop - Calculator &amp; File Manager side by side.</i> -->
+  <img src="docs/screenshots/desktop.png" alt="Kyuzen OS desktop — calculator, file manager, and terminal running concurrently" width="85%" />
 </div>
 
 ---
 
-## Table of Contents
-- [About](#about)
-- [Feature Highlights](#feature-highlights)
-- [Bundled Applications](#bundled-applications)
-- [SDK](#sdk)
-- [Getting Started](#getting-started)
-- [First Boot](#first-boot)
-- [Testing & Debugging](#testing--debugging)
-- [Directory Structure](#directory-structure)
-- [Documentation](#documentation)
-- [Roadmap Status](#roadmap-status)
-- [License](#license)
+KyuzenOS is a monolithic operating system written from scratch in C, C++, and
+Rust — no standard library, no starter code. It boots on bare metal (BIOS and
+UEFI) into a higher-half 64-bit kernel with preemptive multi-core scheduling,
+memory-protected Ring-3 applications, a composited window manager, its own
+filesystem, and a TCP/IP stack.
 
-## About
+Every pixel, window, and keystroke on screen is produced by code in this
+repository.
 
-Kyuzen OS is a monolithic operating system written from scratch in C, C++, and Rust - no standard library, no starter code. It boots on bare metal (BIOS & UEFI) into a higher-half 64-bit kernel with preemptive multi-core scheduling, memory-protected Ring-3 applications, a composited window manager, its own filesystem, and a TCP/IP stack.
+## Capabilities
 
-Everything on screen - every pixel, window, and keystroke - is produced by code in this repository.
-
-## Feature Highlights
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-### Kernel & CPU
-- 64-bit higher-half kernel (`0xFFFFFFFF80000000+`), Limine boot protocol (BIOS + UEFI hybrid ISO)
-- **SMP**: multi-core boot via LAPIC, per-CPU run queues with **work stealing**, priorities + anti-starvation aging
-- **Preemptive scheduler** with full-ISR-frame context switch; per-task kernel stacks (**RSP0 follows task**)
-- Sleep queues, wait queues, mutex / semaphore / condition variable
-
-### Protection & Isolation
-- **Ring-3 user space** with per-process address spaces (PML4 per app)
-- **SMAP / SMEP + WP** enforcement; all user pointers validated & copied through a boundary layer (`copy_to_user` / `copy_from_user`)
-- Per-process user heap; per-address-space cookies
-- `badptr` self-test app that probes the isolation boundaries
-
-</td>
-<td width="50%" valign="top">
-
-### Display & GUI
-- Framebuffer graphics primitives on a **DisplayBuffer / Viewport** abstraction
-- **Compositor**: dirty-region tracking + double buffering (no flicker, cheap repaints)
-- **KWM window manager**: drag, z-order, per-task window ownership
-- **Widget toolkit** (`libs/gui/widget/`): layered architecture - core/primitives/layout/containers/chrome/dialog/window
-- **libdesktop**: high-level C++ desktop SDK (Application, Window Manager, Canvas, Events)
-- Intel integrated GPU driver + VirtIO virtual GPU support
-
-### Input & Devices
-- PS/2 **keyboard**: full key down/up events, modifiers (Shift/Ctrl/Alt/CapsLock), extended `E0` scancodes
-- PS/2 **mouse** with IntelliMouse scroll wheel
-- Interrupt-driven event queue (ISR push → syscall pop)
-- ATA PIO storage, RTC, serial, PCI, PIT/LAPIC timer (60/100/144 Hz refresh)
-
-### Storage & Networking
-- **KyuzenFS V4**: extent-based filesystem with 4KB block cache (LRU), POSIX-ish fd API (`open/read/write/lseek/close`)
-- Path-aware with real folders (`mkdir`, nested paths; folder = flagged directory entry)
-- Host-side format tool: `make mkfs && ./mkfs.kyuzenfs disk.img`
-- **lwIP TCP/IP** on an Intel e1000 NIC: DHCP, DNS, ICMP **ping**, TCP client sockets
-
-</td>
-</tr>
-</table>
-
-## Bundled Applications
-
-| App | Description |
+| Area | What KyuzenOS provides |
 | --- | --- |
-| `shell` | Login shell with 25+ commands (`help`, `ls`, `zen`, `start`, `sched`, `ping`, …) |
-| `desktop` | Desktop environment with app launcher, taskbar, wallpaper, crash notification |
-| `fileman` | File manager for KyuzenFS |
-| `viewer` | Image Viewer: PNG gallery (sidebar), auto-fit to window, zoom + scrollbars on demand (stb_image) |
-| `terminal` | Terminal emulator (TextEdit-based) |
-| `notepad` | Text editor with undo/redo, find/replace, word wrap |
-| `clock` | Real-time clock widget |
-| `calc` | Calculator |
-| `taskmgr` | Task / system monitor |
-| `settings` | System settings |
-| `procinfo` | Process information viewer |
-| `widget_demo` | Widget toolkit showcase |
-| `badptr` | Ring-3 isolation self-test |
+| **Kernel** | Higher-half monolithic kernel at `0xFFFFFFFF80000000`, Limine boot (hybrid BIOS+UEFI ISO), SMP up to 16 CPUs, preemptive scheduler with per-CPU run queues and work stealing |
+| **Memory** | Bitmap physical allocator, 4-level paging, kernel heap, per-process user heap with guard pages |
+| **Processes** | Unified task model: spawn, exec, fork, wait, kill; per-task credentials; zombie reaping |
+| **Protection** | Ring-3 isolation with per-process address spaces, SMAP/SMEP, WP, and a validated boundary-copy layer |
+| **Filesystem** | KyuzenFS V4: extent-based, 4 KB block cache, real directories, POSIX-style fd API |
+| **Networking** | lwIP TCP/IP on an Intel e1000 NIC: DHCP, DNS, ICMP ping, TCP client sockets |
+| **Graphics** | Graphics HAL (GHAL) with software, VirtIO-GPU, and Intel iGPU backends; dirty-region compositor; KWM window manager |
+| **GUI** | Widget toolkit (`libui`), XML declarative UI, `libdesktop` C++ framework, and a desktop environment |
+| **Userspace** | C SDK (LLVM libc 22), C++ SDK (libc++ subset), optional Rust (`no_std` + Slint) |
+| **Apps** | File manager, terminal, notepad, clock, calculator, image viewer, task manager, settings, browser |
 
-App binaries ship as `.elf` files (plus optional `<name>.app` manifests) stored under **`/apps/`** on the KyuzenFS disk. The desktop launcher scans `/apps`, and the ELF loader resolves bare names - `clock`, `start calc` - to `/apps/<name>.elf` automatically. User data (`*.txt`, `*.png`, `users.sys`) stays at the root.
-
-<details>
-<summary><b>Shell quick tour (click to expand)</b></summary>
+## Architecture at a Glance
 
 ```text
-root@kyuzen> help            # list every command
-root@kyuzen> ls              # KyuzenFS listing
-root@kyuzen> zen notes.txt   # text editor
-root@kyuzen> start clock     # spawn a CONCURRENT GUI app (new Ring-3 task)
-root@kyuzen> sched           # scheduler/CPU dump (tasks, per-CPU map)
-root@kyuzen> fetch           # neofetch-style system info
-root@kyuzen> ping 8.8.8.8    # ICMP echo over lwIP
-root@kyuzen> nettest 10.0.2.2 7777   # TCP socket test
-root@kyuzen> refresh 144     # set display refresh rate
+Applications (Ring 3)
+    │  calc · fileman · terminal · notepad · browser · desktop · …
+    ▼
+Frameworks & Libraries
+    │  libdesktop · widget toolkit (libui) · XML UI · C/C++/Rust SDKs
+    ▼
+Syscall boundary  (int 0x80 + boundary copy)
+    │
+Kernel (Ring 0)
+    │  process · scheduler · sync · VMM/PMM/heap · VFS · KWM/compositor
+    ▼
+Drivers
+    │  ATA · PS/2 · PCI · RTC · serial · PIT/LAPIC · e1000 · VirtIO-GPU · Intel iGPU
+    ▼
+Hardware / Firmware  (Limine bootloader handoff)
 ```
 
-Typing any app name (`clock`, `calc`, `fileman`…) execs it in place;
-`start <app>` spawns it **concurrently** - the shell keeps running.
-</details>
+Full details: [Architecture Overview](docs/architecture/overview.md).
 
-## SDK
+## Repository Structure
 
-Kyuzen OS provides a C and C++ SDK for building userspace applications:
+| Directory | Contents |
+| --- | --- |
+| `arch/x86/` | GDT/TSS, IDT, ISR/LAPIC/SMP entry (assembly) |
+| `kernel/` | Kernel core: `mm/`, `sched/`, `proc/`, `sync/`, `fs/`, `net/`, `gfx/`, `syscall/`, `panic/`, `debug/`, `smp/` |
+| `drivers/` | ATA, PS/2, PCI, RTC, serial, timer, e1000 NIC, VirtIO-GPU |
+| `graphics/` | Graphics HAL (GHAL) and backends |
+| `system/` | Kernel-context programs: shell, login, editor, desktop |
+| `apps/` | Ring-3 applications and the application build |
+| `libs/` | Userspace libraries: `core/`, `gui/`, `c/`, `cpp/`, `media/`, `text/` |
+| `rust/` | Rust userspace crates and applications |
+| `tests/` | `host/unit/` (host tests), `host/probes/` (QEMU harness), `target/` (in-OS test ELFs) |
+| `manifests/` | Application manifests (`<name>.app`) |
+| `third_party/` | Vendored lwIP, LLVM libc/libc++, FreeType, BearSSL |
+| `tools/` | Host tools (KyuzenFS formatter, verification scripts) |
+| `docs/` | This documentation |
+| `limine/` | Prebuilt bootloader binaries |
 
-### C SDK (`libs/c/`, staged to `build/sdk/c/`)
-- Full LLVM libc (stdio, stdlib, string, math, …)
-- CRT entry point (`crt.o`) + linker script (`app.ld`)
-- Headers staged to `build/sdk/c/include/`
+## Building
 
-### C++ SDK (`libs/cpp/`, staged to `build/sdk/cpp/`)
-- libc++ subset (string, vector, algorithm, memory, type_traits, …)
-- C++ runtime (`cxxrt.o` - `operator new/delete`, `__cxa_pure_virtual`, guards)
-- `kyuzen-c++` wrapper compiler script
-- **libdesktop** - high-level desktop C++ library:
-  - `Application` - event loop + window lifecycle
-  - `WindowManager` - window creation, z-order, focus
-  - `Canvas` - drawing surface abstraction
-  - `Event` - input/window/system event types
-  - `System` - desktop service queries
+### Requirements
 
-### Rust SDK (`rust/`)
-- `no_std` userspace with custom allocator
-- `kyuzen-sys` - raw syscall bindings
-- `kyuzen-gui` - Slint-based GUI framework
-- Built with `cargo build --release`
-
-Build all: `make apps` (C + C++ user apps + libdesktop + desktop)
-
-## Getting Started
-
-### Prerequisites
-- **Clang/LLVM** (`clang`, `ld.lld`)
+- **Clang/LLVM** (`clang`, `ld.lld`), version 14+
 - **NASM**
 - **GNU Make**
 - **xorriso** (hybrid ISO)
 - **QEMU** (`qemu-system-x86_64`)
-- **CMake** (for LLVM libc build)
-- **Rust toolchain** (for Rust apps, optional)
+- **CMake** and **Python 3** (for the LLVM libc build)
+- **Rust toolchain** (optional, for Rust applications)
 
-### Build & Run
-```bash
-make                # 1. compile kernel → build/bin/myos.bin
-make apps           # 2. compile SDK + user apps → build/apps/*.elf
-make boot_image.iso # 3. package hybrid BIOS+UEFI ISO → build/boot_image.iso
-make run            # 4. boot in QEMU (-cpu max -m 1G -smp 8, virtio-vga)
+Full platform setup (Windows/MSYS2 and Linux) is in
+[Building](docs/development/building.md).
+
+### Build and run
+
+```sh
+make                # 1. compile the kernel → build/bin/myos.bin
+make apps           # 2. build the SDKs and userspace applications
+make boot_image.iso # 3. package the hybrid BIOS+UEFI ISO
+make run            # 4. boot in QEMU (virtio-vga 1920×1080, 8 CPUs)
 ```
 
-<details>
-<summary><b>All build targets (click to expand)</b></summary>
+See [Running](docs/development/running.md) for QEMU options and first-boot
+details.
+
+### Common targets
 
 | Target | Purpose |
 | --- | --- |
-| `make` / `make all` | Compile kernel (`build/bin/myos.bin`) |
-| `make apps` | Compile SDK (C & C++) + libdesktop + user apps + desktop |
-| `make desktop` | Build desktop.elf only |
-| `make rust-apps` | Compile Rust userspace apps |
-| `make boot_image.iso` | Kernel + apps + Rust + Limine → bootable ISO |
-| `make run` | Build & boot QEMU with virtio-vga (1920×1080) |
-| `make run FULLSCREEN=0` | Windowed mode |
-| `make run QEMU_DISPLAY=none FULLSCREEN=0` | Headless (serial.log only) |
-| `make mkfs` | Host-side KyuzenFS V4 format tool |
-| `make sdk-c` | Stage C SDK only |
-| `make sdk-cpp` | Stage C++ SDK + libdesktop only |
-| `make stress` | PMM stress test build + run |
-| `make conc` | Concurrency test build + run (mutex/sem/condvar) |
-| `make heap-stress` | Heap overflow/canary detection build |
-| `make heap-watch` | Heap watch debug build (serial logging) |
-| `make clean` / `make clean-apps` / `make clean-tool` | Remove build output |
-| `make compile_commands` | Regenerate IntelliSense database |
-</details>
+| `make` | Compile the kernel |
+| `make apps` | Build SDKs, libraries, and applications |
+| `make boot_image.iso` | Build the bootable ISO |
+| `make run` | Build and boot in QEMU |
+| `make mkfs` | Build the host-side KyuzenFS formatter |
+| `make test-*` | Run host-side tests (see [Testing](docs/development/testing.md)) |
 
 ## First Boot
 
-On a fresh disk, Kyuzen runs a one-time setup asking you to **create the root password** (stored in `users.sys`). Afterwards you land on the login screen; logging in drops you into the shell.
+On a fresh disk, KyuzenOS runs a one-time setup asking you to **create the root
+password** (stored in `users.sys`). You then land on the login screen; logging
+in drops you into the shell.
 
 Default credentials: **root** / **1**
 
-## Testing & Debugging
+A quick shell tour:
 
-### Kernel tests (run inside QEMU)
-- **`make conc`** - sleep/wait-queue/mutex/semaphore/priority test suite (`-smp 4`)
-- **`make stress`** - physical memory manager stress
-- **`make heap-stress` / `make heap-watch`** - heap canary + watchpoint corruption hunting
-- **`badptr`** user app - attacks the Ring-3 boundary (null/unmapped pointers, invalid syscall args)
+```text
+root@kyuzen> help            # list every command
+root@kyuzen> ls              # KyuzenFS listing
+root@kyuzen> start calc      # spawn a concurrent GUI application
+root@kyuzen> sched           # scheduler / CPU dump
+root@kyuzen> ping 8.8.8.8    # ICMP echo over lwIP
+```
 
-### Host-side tests (run on host, no QEMU)
-- **`make test-kyuzenfs-v4`** - FS engine: format/CRUD/extent/LRU/remount (RAM-mocked ATA)
-- **`make test-kyuzenfs-xcheck`** - disk image from `./mkfs.kyuzenfs` must mount in kernel
-- **`make test-panic`** - BSOD: diagnostics, lockdown, keys R/S, log RAM, crashdump disk, ACPI FADT
-- **`make test-desktop`** - desktop manifest discovery + crash notification lifecycle
-- **`make test-libc-heap`** - heap allocator host tests
-- **`make test-textedit`** - editor widget: undo/redo, selection, find/replace, word wrap arithmetic
-
-### Debug
-- **BOSD** (Blue Screen of Death) exception screen with full register dump, CR2, task & CPU context
-- **Crash report** published as `/crash-report.txt` on next boot (readable from File Manager)
-- **Desktop notification** for fresh crashes (card in top-right corner, opens File Manager)
-- `make run-wd` / `make run-serial` - serial debug output
-
-## Directory Structure
-
-| Directory | Main Function |
-| --- | --- |
-| `arch/x86/` | Architecture code: GDT/TSS, IDT, ISR/LAPIC/SMP entry (ASM) |
-| `kernel/` | Core: syscalls, ELF loader, event queue, display, strings (`kernel.c cpu.c syscall.c kprint.c string.c display.c timer_callbacks.c`) |
-| `kernel/mm/` | Memory management: PMM, VMM/paging, heap, uheap |
-| `kernel/sched/` | Scheduler: run queues, lifecycle, blocking/sleep |
-| `kernel/sync/` | Synchronization: spinlock, mutex/sem/condvar, events, wait queues |
-| `kernel/proc/` | Process model: exit/wait, boundary copy, ELF load |
-| `kernel/debug/` | Diagnostics & crash handling: BSOD persist, crashdump, RAM log |
-| `kernel/smp/` | Multi-core bring-up |
-| `kernel/gfx/` | Compositor, KWM window manager, framebuffer |
-| `kernel/fs/` | KyuzenFS V4: superblock, inode, extents, dirs, vnode, block cache |
-| `kernel/panic/` | BSOD module (orchestrator, draw, hw, explain) |
-| `kernel/net/` | lwIP glue layer |
-| `drivers/` | ATA, keyboard, mouse, PCI, RTC, serial, timer, TTY |
-| `drivers/net/` | e1000 NIC driver + lwIP port |
-| `drivers/graphics/` | Intel integrated GPU, VirtIO virtual GPU |
-| `graphics/` | Display abstraction, backend, memory management |
-| `system/` | Core OS components: kernel shell/login/zen, desktop, shell engine + CLI utils |
-| `apps/` | Ring-3 end-user ELF applications (fileman, clock, calc, terminal, gallery, …) + build (`Makefile`, `app.ld`) |
-| `tests/host/` | Host-side tests (unit + QEMU probes, no QEMU needed for unit) |
-| `tests/target/` | In-OS test ELFs (fork/fd/pipe/kill/wait suites, `test-desktop`) |
-| `libs/core/` | Core user-space libraries (`userlib.c` syscall wrappers, `libgui.c`, `userutil.c`) |
-| `libs/gui/widget/` | Widget toolkit: layered (core → primitives → layout → containers → window) |
-| `libs/gui/libdesktop/` | High-level C++ desktop library (Application, WindowManager, Canvas, Events) |
-| `libs/gui/color/` | Shared color library: RGBA, blending, HSL/HSV, UI utilities |
-| `libs/c/` | C SDK sources (LLVM libc boundary + `libc-port`) — staged to `build/sdk/c/` |
-| `libs/cpp/` | C++ SDK sources (libc++ subset + `kyuzen-c++` wrapper) — staged to `build/sdk/cpp/` |
-| `libs/media/` | Shared image/media library (`png.c` decoder, `media.c` abstraction) |
-| `rust/` | Rust userspace: kyuzen-sys (syscall bindings), kyuzen-gui (Slint) |
-| `third_party/net/lwip/` | lwIP TCP/IP stack (vendored) |
-| `third_party/stdlib/` | LLVM libc + libc++ sources |
-| `tools/` | Host tools (mkfs.kyuzenfs, desktop verification) |
-| `tests/` | `host/unit/` (manifest, widget, heap, desktop), `host/probes/` (QEMU harness), `target/` (in-OS test ELFs) |
-| `docs/` | Design docs, screenshots, troubleshooting |
-| `limine/` | Pre-built bootloader binaries |
-| `build/` | Build output (gitignored): `obj/`, `bin/`, `apps/`, `sdk/`, `boot_image.iso` |
+Typing an application name execs it in place; `start <app>` spawns it
+concurrently. See [Shell & CLI](docs/userspace/shell.md).
 
 ## Documentation
 
-- [`DOCUMENTATION.md`](DOCUMENTATION.md) - main technical reference (subsystems, APIs, syscalls)
-- [`docs/design/`](docs/design/) - design decisions per milestone
+The documentation index is [`docs/README.md`](docs/README.md). Key entry
+points:
 
-## Roadmap Status
+| Topic | Document |
+| --- | --- |
+| System overview and boot | [Architecture](docs/architecture/overview.md) |
+| Kernel subsystems | [Kernel](docs/kernel/memory.md) |
+| Filesystem | [Filesystem](docs/filesystem/README.md) |
+| Networking | [Networking](docs/networking/README.md) |
+| Graphics and windowing | [Graphics](docs/graphics/README.md) |
+| GUI and desktop | [GUI](docs/gui/README.md) |
+| Userspace and applications | [Userspace](docs/userspace/overview.md) |
+| SDKs and libraries | [Libraries](docs/libraries/c-sdk.md) |
+| Building, running, testing, debugging | [Development](docs/development/building.md) |
+| Syscall and constants reference | [Reference](docs/reference/syscalls.md) |
+| Design rationale | [Design Notes](docs/design/README.md) |
+| Project history | [Development History](docs/history/README.md) |
 
-| Phase | Scope | Status |
-| --- | --- | --- |
-| 1–2 | Framebuffer & graphics primitives | ✅ |
-| 3 | Display System (DisplayBuffer, compositor, dirty region, viewport, terminal scrollback) | ✅ |
-| 4 | Input Subsystem (keyboard events + modifiers, mouse + wheel, interrupt-driven queue) | ✅ |
-| 5 | Window Manager + Desktop Environment (composited desktop, app launcher, taskbar) | ✅ |
-| 6 | Widget toolkit (layered architecture: core/primitives/layout/containers/chrome/window) | ✅ |
-| 7 | C/C++ SDK (LLVM libc, libc++, libdesktop) | ✅ |
-| 8 | Host-side KyuzenFS format tool + FS tests | ✅ |
-| FS 1–4 | KyuzenFS V4 (extent-based, 4KB block cache, path-aware) | ✅ |
-| Rust | Rust userspace SDK + Slint GUI apps | 🚧 |
+## Contributing
+
+Contributions are welcome. Start with the
+[Contributing Guide](docs/contributing/README.md), then read the binding
+development rules in the `.rules/` directory.
+
+The core rules: never prioritize speed over quality, prefer readability, reuse
+existing systems, make minimal changes, and update the documentation.
+
+## Project Status
+
+KyuzenOS is under active development. Documentation labels each subsystem
+honestly as `Currently supported`, `Not currently implemented`, `Experimental`,
+or `Planned`. Where documentation and code disagree, the code is the source of
+truth.
+
+Known incomplete areas include TCP server sockets and UDP at the socket API
+level, IPv6, signals/process groups, filesystem journaling, and copy-on-write
+`fork`. See each subsystem document for its limitations.
 
 ## License
 
-Distributed under the **MIT License** - free to use, modify, and redistribute. See [`LICENSE`](LICENSE).
+Distributed under the **MIT License** — free to use, modify, and redistribute.
+See [`LICENSE`](LICENSE).
 
-<br/>
 <div align="center">
-  <i>Built with a modern Clang toolchain (<code>-mno-red-zone</code>, <code>-mcmodel=kernel</code>, <code>-ffreestanding</code>) for stable kernel-level performance.</i>
+  <i>Built with a modern Clang toolchain (<code>-mno-red-zone</code>, <code>-mcmodel=kernel</code>, <code>-ffreestanding</code>).</i>
 </div>

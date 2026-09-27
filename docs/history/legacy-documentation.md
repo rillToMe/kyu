@@ -31,11 +31,11 @@ File terkait:
 
 | File | Fungsi |
 |------|--------|
-| [`drivers/net/e1000/e1000.c`](drivers/net/e1000/e1000.c) | Driver Intel e1000, DMA descriptor ring, TX/RX poll |
-| [`drivers/net/port/kyuzen_netif.c`](drivers/net/port/kyuzen_netif.c) | Glue layer e1000 ↔ lwIP |
-| [`kernel/net/net_init.c`](kernel/net/net_init.c) | Init lwIP, netif, DHCP/static fallback, DNS |
-| [`kernel/net/net_ping.c`](kernel/net/net_ping.c) | ICMP Echo Request/Reply implementation |
-| [`system/shell.c`](system/shell.c) | Command shell `ping [host]` |
+| [`drivers/net/e1000/e1000.c`](../../drivers/net/e1000/e1000.c) | Driver Intel e1000, DMA descriptor ring, TX/RX poll |
+| [`drivers/net/port/kyuzen_netif.c`](../../drivers/net/port/kyuzen_netif.c) | Glue layer e1000 ↔ lwIP |
+| [`kernel/net/net_init.c`](../../kernel/net/net_init.c) | Init lwIP, netif, DHCP/static fallback, DNS |
+| [`kernel/net/net_ping.c`](../../kernel/net/net_ping.c) | ICMP Echo Request/Reply implementation |
+| [`system/shell.c`](../../system/shell.c) | Command shell `ping [host]` |
 
 ### Runtime Refresh Rate
 
@@ -60,10 +60,10 @@ File terkait:
 
 | File | Fungsi |
 |------|--------|
-| [`include/timer.h`](include/timer.h) | Default 60Hz, API `timer_set_refresh_rate()` dan `timer_get_refresh_rate()` |
-| [`drivers/timer.c`](drivers/timer.c) | Program PIT runtime, accumulator waktu ms, CPU usage tracker |
-| [`kernel/timer_callbacks.c`](kernel/timer_callbacks.c) | Callback visual flush, cursor, network poll |
-| [`system/shell.c`](system/shell.c) | Command shell `refresh [60|100|144]` |
+| [`include/timer.h`](../../include/timer.h) | Default 60Hz, API `timer_set_refresh_rate()` dan `timer_get_refresh_rate()` |
+| [`drivers/timer.c`](../../drivers/timer.c) | Program PIT runtime, accumulator waktu ms, CPU usage tracker |
+| [`kernel/timer_callbacks.c`](../../kernel/timer_callbacks.c) | Callback visual flush, cursor, network poll |
+| [`system/shell.c`](../../system/shell.c) | Command shell `refresh [60|100|144]` |
 
 ---
 
@@ -939,16 +939,16 @@ design was needed.
 
 | File | Fungsi |
 |------|--------|
-| [`include/task.h`](include/task.h) | Public API, `registers_t`, `task_t`, konstanta |
-| [`include/cred.h`](include/cred.h) | `cred_t`, inherit + root-only transition policy |
-| [`kernel/sched/lifecycle.c`](kernel/sched/lifecycle.c) | `create_task`, cred init/inherit/accessors |
-| [`kernel/sched/core.c`](kernel/sched/core.c) | `schedule_on_cpu`, `smp_current_task_id` |
-| [`include/timer.h`](include/timer.h) | Timer API, default refresh rate, preset runtime |
-| [`kernel/proc/proc.c`](kernel/proc/proc.c) | Implementasi `create_task`, `schedule`, `yield` |
-| [`drivers/timer.c`](drivers/timer.c) | `timer_handler`, PIT runtime refresh, scheduler quantum |
-| [`kernel/timer_callbacks.c`](kernel/timer_callbacks.c) | Timer subscribers: visual, cursor, screen flush, network poll |
-| [`arch/x86/timer_isr.asm`](arch/x86/timer_isr.asm) | ISR stub — inti dari context switch |
-| [`arch/x86/isr_macro.inc`](arch/x86/isr_macro.inc) | `PUSHA64`/`POPA64` — layout stack frame |
+| [`include/task.h`](../../include/task.h) | Public API, `registers_t`, `task_t`, konstanta |
+| [`include/cred.h`](../../include/cred.h) | `cred_t`, inherit + root-only transition policy |
+| [`kernel/sched/lifecycle.c`](../../kernel/sched/lifecycle.c) | `create_task`, cred init/inherit/accessors |
+| [`kernel/sched/core.c`](../../kernel/sched/core.c) | `schedule_on_cpu`, `smp_current_task_id` |
+| [`include/timer.h`](../../include/timer.h) | Timer API, default refresh rate, preset runtime |
+| [`kernel/proc/proc.c`](../../kernel/proc/proc.c) | Implementasi `create_task`, `schedule`, `yield` |
+| [`drivers/timer.c`](../../drivers/timer.c) | `timer_handler`, PIT runtime refresh, scheduler quantum |
+| [`kernel/timer_callbacks.c`](../../kernel/timer_callbacks.c) | Timer subscribers: visual, cursor, screen flush, network poll |
+| [`arch/x86/timer_isr.asm`](../../arch/x86/timer_isr.asm) | ISR stub — inti dari context switch |
+| [`arch/x86/isr_macro.inc`](../../arch/x86/isr_macro.inc) | `PUSHA64`/`POPA64` — layout stack frame |
 
 ---
 

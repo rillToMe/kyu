@@ -1,6 +1,6 @@
 # GPU Architecture — KyuzenOS 2D Hardware Acceleration
 
-**READ /roadmap/Progress/2d_accelleration.md**
+**See [2D acceleration milestone](../../../history/milestones/2d_accelleration.md).**
 ## 1. Subsystem Boundaries
 
 ```

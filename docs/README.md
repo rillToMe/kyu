@@ -1,54 +1,116 @@
-# Kyuzen OS — Documentation
+# KyuzenOS Documentation
 
-Dokumentasi Kyuzen OS diorganisir per topik (meniru gaya `Documentation/` di
-Linux), menggantikan satu file raksasa secara bertahap.
+This directory contains the technical documentation for KyuzenOS, a 64-bit
+higher-half operating system written from scratch in C, C++, and Rust.
 
-> Dokumen lama: [`../DOCUMENTATION.md`](../DOCUMENTATION.md) masih memuat
-> dokumentasi Task & Multitasking — akan dimigrasikan ke folder ini.
+The documentation is organized by **system and subsystem**, not by development
+phase. Every document describes the current implementation; where a feature is
+incomplete or unsupported, that is stated explicitly. When documentation and
+code disagree, the code is authoritative — please report the discrepancy.
 
-## Daftar Isi
-
-| Folder | Isi |
-|--------|-----|
-| [`design/`](design/) | Dokumen desain/arsitektur: keputusan, invarian, constraint ABI, dan verifikasinya |
-| [`troubleshooting/`](troubleshooting/) | Post-mortem insiden/bug: gejala, investigasi, root cause, fix, dan teknik debugging yang bisa dipakai ulang |
-
-### design/
-
-| Dokumen | Ringkasan |
-|---------|-----------|
-| [`ring3-tahap1-cpl3.md`](design/ring3-tahap1-cpl3.md) | Ring 3 Tahap 1 — ELF apps jalan di CPL 3 via TSS per-CPU + syscall stack permanen; syscall tetap `int 0x80` |
-| [`ring3-tahap2-boundary-copy.md`](design/ring3-tahap2-boundary-copy.md) | Ring 3 Tahap 2 — boundary copy: pointer user divalidasi + di-copy in/out via `kernel/proc/usercopy.c`; kontrak per-syscall (copy/shared/bypass); fix UAF `sys_load_elf` |
-| [`sched-module-split.md`](design/sched-module-split.md) | Pemecahan `kernel/sched/` (907 baris) jadi modul `kernel/sched/` (core, runqueue, lifecycle, block, debug) — tanpa perubahan perilaku, `task.h` tidak berubah |
-| [`fs-phase1-3-directories.md`](design/fs-phase1-3-directories.md) | KyuzenFS 3 fase: folder sebagai entry biasa + path absolut, syscall path (`sys_get_file_list`/`sys_mkdir`), migrasi app ke `/apps/` |
-| [`color-library.md`](design/color-library.md) | Library warna modular `libs/gui/color/`: `color_t` RGBA, blending integer, HSL/HSV, palet + utility UI; zero-alloc, kernel & user-space, verifikasi sweep 256³ warna |
-| [`gui-phase11-image-viewer.md`](design/gui-phase11-image-viewer.md) | Image Viewer: sidebar + auto-fit (tanpa geser manual) + statusbar; API libui baru `ui_image_set_fit`/`ui_image_natural_size`/`ui_scrollview_set_pan`/`ui_listview_set_selected` |
-| [`widget-split.md`](design/widget-split.md) | Pemecahan toolkit widget `apps/libui.cpp` (3.798 baris) jadi `libs/gui/widget/` per-layer (`core`/`primitives`/`editor`/`layout`/`containers`/`chrome`/`dialog`/`window`/`services` + `abi`) — tanpa perubahan perilaku; aturan dependency antar layer, peta file lama→baru, wiring build, dan hasil verifikasi (ABI publik 115/115 identik) |
-
-### troubleshooting/
-
-| Dokumen | Ringkasan |
-|---------|-----------|
-| [`2026-07-26-heap-corruption-bosd.md`](troubleshooting/2026-07-26-heap-corruption-bosd.md) | BOSD "heap_block_t magic mismatch" saat buka PNG — ternyata bukan corruptor, melainkan halaman heap terpetakan ke ROM BIOS karena free list PMM tercemar mapping Limine |
-
-### graphics/ — Hardware Accelerated 2D Graphics
-
-Subsistem 2D Graphics berada di [`design/graphics/`](design/graphics/),
-mendokumentasikan HAL GPU, surface, dan panduan backend:
-
-| Dokumen | Ringkasan |
-|---------|-----------|
-| [`design/graphics/ARCHITECTURE.md`](design/graphics/ARCHITECTURE.md) | Arsitektur layer, source tree, HAL, surface, double buffering, konvensi |
-| [`design/graphics/API.md`](design/graphics/API.md) | Referensi lengkap API HAL / surface / surface manager / renderer + contoh |
-| [`design/graphics/BACKEND_GUIDE.md`](design/graphics/BACKEND_GUIDE.md) | Panduan menambah backend GPU baru (VirtIO, SVGA, Bochs, Intel, AMD, NVIDIA) |
+> **New here?** Start with the [project README](../README.md) for an overview,
+> then read [Architecture Overview](architecture/overview.md).
 
 ---
 
-## Konvensi
+## Documentation Map
 
-- Satu topik = satu folder; satu insiden/topik = satu file `.md`.
-- Nama file post-mortem: `YYYY-MM-DD-<judul-singkat>.md`.
-- Tulis dalam Bahasa Indonesia; biarkan identifier, path, command, dan log
-  apa adanya (tidak diterjemahkan).
-- Sertakan bukti mentah (potongan log, alamat, disassembly) — bukan hanya
-  kesimpulan — supaya pembaca bisa memverifikasi ulang.
+### Architecture
+
+The big picture: how the pieces fit together.
+
+| Document | Description |
+| --- | --- |
+| [Overview](architecture/overview.md) | System layers, boot chain, address-space model, design principles |
+| [Boot Process](architecture/boot.md) | Limine handoff, early initialization order, module installation |
+
+### Kernel
+
+| Document | Description |
+| --- | --- |
+| [Memory Management](kernel/memory.md) | Physical allocator (PMM), virtual paging (VMM), kernel heap |
+| [Scheduler](kernel/scheduler.md) | Per-CPU run queues, priorities, work stealing, context switching |
+| [Process Model](kernel/processes.md) | Task lifecycle, fork/exec/spawn, wait, kill, credentials |
+| [Synchronization](kernel/synchronization.md) | Spinlocks, mutex/semaphore/condvar, wait queues, blocking model |
+| [Syscalls](kernel/syscalls.md) | The `int 0x80` ABI, argument passing, dispatch, boundary copy |
+| [Interrupts & Timers](kernel/interrupts.md) | IDT, ISRs, PIT/LAPIC, SMP bring-up |
+| [Panic & Crash Handling](kernel/panic.md) | BSOD, crash dump, recovery path |
+
+### Userspace
+
+| Document | Description |
+| --- | --- |
+| [Userspace Model](userspace/overview.md) | Ring-3 isolation, per-process address spaces, SMAP/SMEP |
+| [Applications](userspace/applications.md) | Bundled apps, manifests, how to add a new application |
+| [Shell & CLI](userspace/shell.md) | Command shell, builtins, redirection, pipelines |
+
+### Subsystems
+
+| Document | Description |
+| --- | --- |
+| [Filesystem](filesystem/README.md) | KyuzenFS V4 on-disk format, block cache, VFS layer, file descriptors |
+| [Networking](networking/README.md) | lwIP integration, e1000 driver, socket layer, DNS |
+| [Graphics](graphics/README.md) | Graphics HAL, compositor, dirty regions, backends (software, VirtIO, Intel) |
+| [GUI](gui/README.md) | Widget toolkit, XML UI, libdesktop framework, desktop environment |
+| [Browser](browser/README.md) | HTML/CSS engine, HTTP, TLS |
+
+### Libraries & Toolchain
+
+| Document | Description |
+| --- | --- |
+| [C SDK](libraries/c-sdk.md) | LLVM libc 22 integration, heap, port layer, limitations |
+| [C++ SDK](libraries/cpp-sdk.md) | libc++ subset, C++ runtime, the `kyuzen-c++` wrapper |
+| [Rust Support](libraries/rust.md) | `no_std` userspace, syscall bindings, Slint integration |
+| [Shared Libraries](libraries/shared.md) | Color library, media/PNG decoder, text/FreeType rendering |
+
+### Development
+
+| Document | Description |
+| --- | --- |
+| [Building](development/building.md) | Toolchain setup, build targets, platform notes |
+| [Running](development/running.md) | QEMU configuration, first boot, credentials |
+| [Testing](development/testing.md) | Host tests, QEMU probes, in-OS test suites |
+| [Debugging](development/debugging.md) | Serial logging, BSOD, crash reports, watchpoints |
+
+### Contributing
+
+| Document | Description |
+| --- | --- |
+| [Contributing Guide](contributing/README.md) | Workflow, conventions, review checklist |
+
+### Reference
+
+| Document | Description |
+| --- | --- |
+| [Syscall Table](reference/syscalls.md) | Complete syscall number/argument/return reference |
+| [Memory Map](reference/memory-map.md) | Physical and virtual address layout, limits |
+| [Constants & Limits](reference/constants.md) | Compile-time limits across all subsystems |
+
+### Design Notes
+
+Stable design rationale that does not fit a single subsystem:
+
+| Document | Description |
+| --- | --- |
+| [Design Decisions](design/README.md) | Index of architecture decision records |
+
+### History
+
+| Document | Description |
+| --- | --- |
+| [Development History](history/README.md) | Project milestones and completed work phases |
+| [Bug Post-Mortems](troubleshooting/) | In-depth incident investigations |
+
+---
+
+## Documentation Conventions
+
+- **Language**: English. Identifiers, paths, commands, and log output are kept
+  verbatim.
+- **Status labels**: `Currently supported`, `Not currently implemented`,
+  `Experimental`, and `Planned` are used only where the repository supports
+  them.
+- **Source references**: Documents cite concrete files and constants. If a
+  citation is wrong, the code wins.
+- **One topic, one document**: Related material is consolidated rather than
+  split across many small files.

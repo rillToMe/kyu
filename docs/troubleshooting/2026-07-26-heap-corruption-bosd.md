@@ -4,7 +4,7 @@
 > **Branch**: `feature/64bit-migration`
 > **Commit fix**: `7f89077` — *FIX: Pseudo heap corruption - heap page mapped to BIOS ROM*
 > **Status**: **TERPECAHKAN** — terverifikasi di QEMU (`-smp 4` + NIC e1000)
-> **Artefak debugging**: folder [`Resolve/26-07-26/`](Resolve/(2026-07-26) - heap-corruption/) (log serial, skrip, disassembly)
+> **Artefak debugging**: folder [`Resolve/26-07-26/`](Resolve/%282026-07-26%29%20-%20heap-corruption/) (log serial, skrip, disassembly)
 
 ---
 
@@ -178,9 +178,9 @@ seluruh "politik" crash tampak konsisten padahal bukan disebabkan penulis aktif.
 
 | File | Perubahan |
 |------|-----------|
-| [`kernel/syscall.c`](../../kernel/syscall.c) | Hapus cabang `else { vmm_unmap_user_space(); }` di syscall 33 & 34. `pml4_phys == 0` berarti task memakai boot/kernel AS — tidak ada yang boleh di-unmap |
-| [`kernel/paging.c`](../../kernel/paging.c), [`include/paging.h`](../../include/paging.h) | Hapus fungsi landmine `vmm_unmap_user_space` (tidak ada caller sah) |
-| [`kernel/pmm.c`](../../kernel/pmm.c) | Defense in depth: `pmm_free_page` **menolak** free halaman < `0x4800000` (72 MB — zona reserved permanen: kernel, Limine, BIOS/ROM, framebuffer) dengan warning `[PMM] free low-reserved (BUG, ditolak)` |
+| [`kernel/syscall.c`](../../kernel/syscall/syscall.c) | Hapus cabang `else { vmm_unmap_user_space(); }` di syscall 33 & 34. `pml4_phys == 0` berarti task memakai boot/kernel AS — tidak ada yang boleh di-unmap |
+| [`kernel/paging.c`](../../kernel/mm/paging.c), [`include/paging.h`](../../include/paging.h) | Hapus fungsi landmine `vmm_unmap_user_space` (tidak ada caller sah) |
+| [`kernel/pmm.c`](../../kernel/mm/pmm.c) | Defense in depth: `pmm_free_page` **menolak** free halaman < `0x4800000` (72 MB — zona reserved permanen: kernel, Limine, BIOS/ROM, framebuffer) dengan warning `[PMM] free low-reserved (BUG, ditolak)` |
 
 Catatan: `vmm_destroy_task_as(self->pml4_phys)` untuk app AS tetap sah — user
 range app AS hanya berisi halaman PMM yang legit.
@@ -200,7 +200,7 @@ meliputi jalur exec/exit berulang dan 6 alokasi PNG (`0x2CA30`):
 
 ## 8. Teknik debugging yang bisa dipakai ulang
 
-Semua artefak ada di [`Resolve/26-07-26/`](Resolve/(2026-07-26) - heap-corruption/). Untuk masalah serupa
+Semua artefak ada di [`Resolve/26-07-26/`](Resolve/%282026-07-26%29%20-%20heap-corruption/). Untuk masalah serupa
 ("memori berubah sendiri"):
 
 1. **Build instrumentasi**: `make heap-watch` (atau `make boot_image.iso
@@ -252,5 +252,5 @@ Ditemukan selama investigasi; masih terbuka, dicatat agar tidak hilang:
 | Log post-fix (bersih) | `Resolve/26-07-26/heap-watch-v5.log` |
 | Disassembly & simbol (`kmalloc` store→load) | `Resolve/26-07-26/myos-disasm.txt`, `Resolve/26-07-26/nm-symbols.txt` |
 | Skrip resolve return-address → simbol | `Resolve/26-07-26/resolve-ra.ps1` |
-| Instrumentasi watchpoint | [`kernel/heap_watch.c`](../../kernel/heap_watch.c), [`include/heap_watch.h`](../../include/heap_watch.h) |
+| Instrumentasi watchpoint | [`kernel/heap_watch.c`](../../kernel/mm/heap_watch.c), [`include/heap_watch.h`](../../include/heap_watch.h) |
 | Ringkasan investigasi awal (handoff lama) | `Resolve/26-07-26/problem.txt` |
