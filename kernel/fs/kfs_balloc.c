@@ -47,6 +47,12 @@ int32_t ino_alloc_nolock(void) {
 // ulang tidak pernah membaca metadata basi.
 void ino_free_nolock(uint32_t ino) {
     if (ino == 0 || ino > sb_cache.total_inodes) return;
+    // FS-8: idempotent — jangan menaikkan free_inodes kalau bit-nya memang
+    // sudah bebas (double-free lewat jalur inode mati, atau error path yang
+    // membebaskan dua kali). Pola sama dengan blk_free_run_nolock(), yang
+    // memang sudah dijaga. Tanpa guard ini free_inodes bisa melebihi
+    // total_inodes dan alokasi berikutnya mengembalikan inode "hantu".
+    if (!bm_test(ibm_mem, ino)) return;
     ino_entry_t *e = ino_cache_find(ino);
     if (e) {
         e->dead = 1;
