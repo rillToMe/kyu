@@ -668,6 +668,11 @@ void kwm_destroy_all_windows(void) {
         }
     }
     focused_win_id = -1;
+    // Bug GFX-8: semua slot dibebaskan tapi next_z_index dibiarkan pada nilai
+    // lama → window berikutnya mengalokasi z yang jauh di atas, memperlebar
+    // scan compositor (O(next_z_index)) sampai normalisasi kebetulan jalan.
+    // Reset ke kondisi "belum ada window" — sama dengan nilai awal global.
+    next_z_index = 1;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     for (int i = 0; i < nb; i++)
         screen_mark_dirty(bounds[i].x, bounds[i].y, bounds[i].width, bounds[i].height);
