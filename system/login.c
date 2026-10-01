@@ -19,31 +19,48 @@ void str_concat(char* dest, const char* src) {
 // Fungsi Parser untuk membaca /etc/shadow versi Kyuzen
 int parse_auth(char* input_user, char* input_pass, uint32_t* out_uid) {
     if (!sys_file_exists("users.sys")) return 0;
-    
+
     uint32_t fsize = sys_file_size("users.sys");
     char buffer[1024];
+    // UP-2: fsize berasal dari file dan bisa >= sizeof(buffer). Tanpa clamp,
+    // buffer[fsize] menulis lewat stack frame (users.sys >=1024 byte). Batasi
+    // ke kapasitas buffer dan selalu sisakan satu byte untuk terminator.
+    if (fsize > sizeof(buffer) - 1) fsize = sizeof(buffer) - 1;
     sys_read_file_to_buffer("users.sys", buffer, sizeof(buffer));
     buffer[fsize] = '\0'; // Kunci string agar tidak ada memori sampah
 
     int i = 0;
     while (buffer[i] != '\0') {
+        // UP-3: f_user/f_pass/f_uid diisi dari file tanpa batas. Field yang
+        // panjang (file rusak/dibuat host) menulis lewat buffer stack. Loop di
+        // bawah sekarang berhenti di kapasitas-1 dan selalu NUL-terminate;
+        // sisa field dibuang agar parsing tetap sinkron dengan ':' / '\n'.
         char f_user[32], f_pass[32], f_uid[16];
         int j = 0;
-        
+
         // Ambil Username
-        while(buffer[i] != ':' && buffer[i] != '\0') f_user[j++] = buffer[i++];
+        while(buffer[i] != ':' && buffer[i] != '\0') {
+            if (j < (int)sizeof(f_user) - 1) f_user[j++] = buffer[i];
+            i++;
+        }
         f_user[j] = '\0';
         if(buffer[i] == ':') i++;
 
         // Ambil Password
         j = 0;
-        while(buffer[i] != ':' && buffer[i] != '\0') f_pass[j++] = buffer[i++];
+        while(buffer[i] != ':' && buffer[i] != '\0') {
+            if (j < (int)sizeof(f_pass) - 1) f_pass[j++] = buffer[i];
+            i++;
+        }
         f_pass[j] = '\0';
         if(buffer[i] == ':') i++;
 
         // Ambil UID
         j = 0;
-        while(buffer[i] != '\n' && buffer[i] != '\0') f_uid[j++] = buffer[i++];
+        while(buffer[i] != '\n' && buffer[i] != '\0') {
+            if (j < (int)sizeof(f_uid) - 1) f_uid[j++] = buffer[i];
+            i++;
+        }
         f_uid[j] = '\0';
         if(buffer[i] == '\n') i++;
 
