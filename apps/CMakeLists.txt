@@ -372,24 +372,67 @@ list(APPEND KYUZEN_APP_TARGETS kyuzen-taskmgr)
 # memory)". That file does not exist in the tree — stb_image is compiled inside
 # libs/media/png.c, which the browser already links via kyuzen-png. The comment
 # is stale; no separate C TU is needed here.
-file(GLOB _browser_cpp CONFIGURE_DEPENDS
-    "${_apps_dir}/browser/*.cpp"
-    "${_apps_dir}/browser/engine/*.cpp"
+# ---------------------------------------------------------------------------
+# Browser source order.
+#
+# The old recipe used TWO separate wildcards:
+#     $(wildcard $(BROWSER_DIR)/*.cpp) $(wildcard $(BROWSER_DIR)/engine/*.cpp)
+# Each wildcard is sorted independently and the results are CONCATENATED, so the
+# order is:
+#     browser_app, font, main, page, transport, transport_tls,
+#     css, html, http, layout, lexbor_html_adapter, url
+# NOT one globally sorted list. Object order determines symbol addresses.
+#
+# The list is written out EXPLICITLY rather than globbed: CMake sorts the
+# sources of a target by absolute path, which would interleave the engine/
+# directory with the root files and change every symbol address.
+# ---------------------------------------------------------------------------
+set(_browser_cpp
+    "${_apps_dir}/browser/browser_app.cpp"
+    "${_apps_dir}/browser/font.cpp"
+    "${_apps_dir}/browser/main.cpp"
+    "${_apps_dir}/browser/page.cpp"
+    "${_apps_dir}/browser/transport.cpp"
+    "${_apps_dir}/browser/transport_tls.cpp"
+    "${_apps_dir}/browser/engine/css.cpp"
+    "${_apps_dir}/browser/engine/html.cpp"
+    "${_apps_dir}/browser/engine/http.cpp"
+    "${_apps_dir}/browser/engine/layout.cpp"
+    "${_apps_dir}/browser/engine/lexbor_html_adapter.cpp"
+    "${_apps_dir}/browser/engine/url.cpp"
 )
 
 kyuzen_add_sdk_app(kyuzen-browser
     SOURCES ${_browser_cpp}
     LIBS
-        $<TARGET_OBJECTS:kyuzen-bearssl-os>
-        kyuzen-userlib kyuzen-libgui kyuzen-widget kyuzen-png kyuzen-color-utils
-        kyuzen-text-manager kyuzen-text-raster kyuzen-freetype
+        kyuzen-bearssl-os
+        kyuzen-userlib
+        kyuzen-libgui
+        kyuzen-netutil
+        kyuzen-png
+        kyuzen-text-manager
+        kyuzen-text-raster
+        kyuzen-freetype
         kyuzen-lexbor
+        kyuzen-color-utils
+        kyuzen-widget-abi
+        kyuzen-widget-src
     INCLUDES
         "${KYUZEN_ROOT}/apps/browser"
         "${KYUZEN_ROOT}/libs/text/include"
         "${KYUZEN_ROOT}/third_party/lexbor/kyuzen/include"
         "${KYUZEN_ROOT}/third_party/lexbor/source"
 )
+# The BearSSL OS objects and the generated trust anchors must exist before the
+# browser links. tls_kyuzen.c #includes tas_https.inc, so the anchors are also
+# needed before the browser's own sources compile.
+#
+# The dependency is declared on BOTH targets: the objects library needs the
+# anchors to compile, and the executable needs the objects to link (they reach
+# the link line through $<TARGET_OBJECTS:...> inside target_link_options, which
+# CMake does not treat as a dependency).
+add_dependencies(kyuzen-browser-objects kyuzen-bearssl-tas)
+add_dependencies(kyuzen-browser kyuzen-bearssl-os kyuzen-bearssl-tas)
 set_target_properties(kyuzen-browser PROPERTIES OUTPUT_NAME "browser")
 target_compile_options(kyuzen-browser PRIVATE
     -iquote "${KYUZEN_ROOT}/include"

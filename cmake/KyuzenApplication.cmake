@@ -301,26 +301,22 @@ function(kyuzen_add_sdk_app name)
     set_target_properties(${name} PROPERTIES LINKER_LANGUAGE C)
 
     # -----------------------------------------------------------------------
-    # LINK ORDER
+    # LINK ORDER — via a generated response file.
     #
     # The old link line interleaves archives between object groups:
-    #     app objects, libdesktop.a, userlib.o, libgui.o, ..., FT archive
-    # and archive position matters — a .a only resolves symbols referenced by
-    # things already on the command line.
+    #     settings objects, userlib.o, ..., kzraster_ft.o, libfreetype.a,
+    #     color_utils.o, widget abi, widget layers
+    # and archive position is load-bearing: a .a only resolves symbols
+    # referenced by things ALREADY on the command line.
     #
-    # CMake's LINK_LIBRARIES puts objects first and archives after, so the
-    # interleaving would be lost. Putting the whole ordered sequence into
-    # LINK_FLAGS preserves it, but on Windows the command line then exceeds
-    # the 8191-character limit (the desktop/settings link lines are ~8 KB).
+    # CMake's LINK_LIBRARIES emits every object before every archive, so the
+    # interleaving is lost and the FT archive ends up after libc.a — too late
+    # to resolve the kzraster_ft.o references.
     #
-    # CMake writes LINK_LIBRARIES into a response file, which has no such
-    # limit — so the ordered sequence goes there. CMake keeps the ORDER of
-    # LINK_LIBRARIES; it only groups objects before libraries within the
-    # generated command. Since every item here is either an object or an
-    # archive and the relative order among them is what the linker needs, the
-    # sequence is preserved by declaring archives with their full path
-    # ($<TARGET_FILE:...>) rather than as library targets — CMake treats those
-    # as plain link items and does not re-sort them.
+    # LINK_FLAGS preserves the order but the command line then exceeds the
+    # Windows 8191-character limit. So the ordered list is written to a
+    # response file at configure time and handed to the linker as @file; CMake
+    # substitutes the generator expressions when it writes the build rules.
     # -----------------------------------------------------------------------
     set(_link_items "")
     foreach(_lib IN LISTS ARG_LIBS)
@@ -328,6 +324,12 @@ function(kyuzen_add_sdk_app name)
             get_target_property(_type ${_lib} TYPE)
             if(_type STREQUAL "OBJECT_LIBRARY")
                 list(APPEND _link_items "$<TARGET_OBJECTS:${_lib}>")
+            elseif(_type STREQUAL "INTERFACE_LIBRARY")
+                get_target_property(_deps ${_lib} INTERFACE_LINK_LIBRARIES)
+                if(_deps)
+                    kyuzen_expand_objects(_sub ${_deps})
+                    list(APPEND _link_items ${_sub})
+                endif()
             elseif(_type STREQUAL "STATIC_LIBRARY")
                 list(APPEND _link_items "$<TARGET_FILE:${_lib}>")
                 add_dependencies(${name} ${_lib})
@@ -339,9 +341,8 @@ function(kyuzen_add_sdk_app name)
         endif()
     endforeach()
 
-    # Canonical C++ SDK tail, reproduced from libs/cpp/bin/kyuzen-c++:
-    #     ... -> libcxxrt.a -> cxxrt.o -> crt.o -> libc.a
-    target_link_libraries(${name} PRIVATE
+    # Full ordered link line, in the exact sequence the old recipe used.
+    set(_full_link_sequence
         $<TARGET_OBJECTS:${name}-objects>
         ${_link_items}
         "${KYUZEN_LIBCXXRT_ARCHIVE}"
@@ -350,11 +351,22 @@ function(kyuzen_add_sdk_app name)
         "${KYUZEN_SDK_C_LIB}"
     )
 
+    # One item per line, so the file needs no shell quoting rules.
+    set(_rsp_file "${CMAKE_BINARY_DIR}/obj/${name}.link.rsp")
+    file(GENERATE
+        OUTPUT "${_rsp_file}"
+        CONTENT "$<JOIN:${_full_link_sequence},\n>\n"
+    )
+
     target_link_options(${name} PRIVATE
         -m elf_x86_64
         -nostdlib
         -T ${KYUZEN_SDK_CPP_LD}
+        "@${_rsp_file}"
     )
+
+    # Build-ordering only: the objects are emitted from the response file.
+    add_dependencies(${name} ${name}-objects)
 
     # The SDK artifacts must exist before the link.
     add_dependencies(${name} kyuzen-sdk-cpp)
