@@ -18,6 +18,13 @@
 #include "spinlock.h"
 #include <stddef.h>
 
+// Zona kernel rendah yang TIDAK PERNAH dialokasikan PMM: kernel image, Limine
+// boot pages, BIOS/ROM, dan framebuffer. Satu definisi untuk tiga pemakai di
+// file ini (skip saat alokasi bitmap, re-lock saat init, dan guard di
+// pmm_free_page) — sebelumnya konstanta 0x4800000 di-hardcode tiga kali dan
+// bisa drift. Naikkan bila footprint kernel/framebuffer/module melewatinya.
+#define PMM_KERNEL_ZONE_END  0x4800000ULL   // 72 MB
+
 // ============================================================
 // State
 // ============================================================
@@ -122,7 +129,7 @@ void pmm_init_dynamic(void* memmap_entries, uint64_t entry_count) {
             base = (base + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
 
         // Skip first 72MB (kernel zone)
-        if (base < 0x4800000ULL) base = 0x4800000ULL;
+        if (base < PMM_KERNEL_ZONE_END) base = PMM_KERNEL_ZONE_END;
         if (base >= end) continue;
 
         if ((end - base) >= alloc_bytes) {
@@ -168,7 +175,7 @@ void pmm_init_dynamic(void* memmap_entries, uint64_t entry_count) {
     }
 
     // Step C: Re-lock first 72MB (kernel, Limine, framebuffer)
-    uint64_t kernel_lock_pages = 0x4800000ULL / PAGE_SIZE;
+    uint64_t kernel_lock_pages = PMM_KERNEL_ZONE_END / PAGE_SIZE;
     for (uint64_t i = 0; i < kernel_lock_pages && i < bitmap_pages; i++)
         bitmap_set(i);
 
@@ -273,7 +280,7 @@ void pmm_free_page(phys_addr_t addr) {
     // Zona < 72MB (kernel, Limine, BIOS/ROM, framebuffer) tidak pernah
     // dialokasikan PMM — free di zona ini SELALU bug pemanggil. Menolaknya
     // menjaga free list tidak tercemar halaman reserved/ROM (akar BOSD heap).
-    if (addr < 0x4800000ULL) {
+    if (addr < PMM_KERNEL_ZONE_END) {
         pmm_warn("[PMM] free low-reserved (BUG, ditolak): ", addr);
         return;
     }
