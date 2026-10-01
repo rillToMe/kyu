@@ -12,7 +12,10 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(ROOT))
 PORT = 8772
-EXE = os.path.join(REPO, "tests", "host", "unit", "tls_test")
+# The test binary lives next to its source for the Make build. The CMake build
+# puts it under build/host/bin, so an explicit override is honoured when set.
+EXE = os.environ.get("KYUZEN_TLS_TEST") or os.path.join(
+    REPO, "tests", "host", "unit", "tls_test")
 if os.name == "nt" and not os.path.exists(EXE):
     EXE += ".exe"
 
