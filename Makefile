@@ -749,6 +749,23 @@ LIBC_CFG_DIR   = $(LIBC_SRC)/libc/config/baremetal/x86_64
 LIBC_CC        = clang
 LIBC_CXX       = clang++
 LIBC_LD        = ld.lld
+
+# --- Path SDK C (harus didefinisikan SEBELUM pemakaian pertama) -------------
+# PENTING: variabel make diekspansi saat baris dibaca. Definisi ini dulu ada di
+# bawah (dekat rule $(SDK_STAGE)), padahal $(SDK_STAGE) sudah dipakai sebagai
+# prerequisite di rule LIBC_CXXRT_OBJ/LIBCXXRT_* (baris ~1008-1200). Akibatnya
+# prerequisite itu mengembang jadi string KOSONG, SDK tidak pernah dibangun
+# lebih dulu, dan `make run`/`make boot_image.iso` setelah `make clean` gagal
+# dengan "unknown type name 'ldiv_t'" / "use of undeclared identifier 'malloc'"
+# (compiler tidak menemukan header SDK yang belum di-stage).
+SDK_SRC_DIR   = libs/c
+SDK_DIR       = $(BUILD_DIR)/sdk/c
+SDK_INC       = $(SDK_DIR)/include
+SDK_LIB       = $(SDK_DIR)/lib/libc.a
+SDK_CRT       = $(SDK_DIR)/crt/crt.o
+SDK_LD        = $(SDK_DIR)/linker/app.ld
+SDK_LD_SRC    = $(SDK_SRC_DIR)/linker/app.ld
+SDK_STAGE     = $(SDK_DIR)/.staged
 LIBC_NM        = llvm-nm
 LIBC_OBJDUMP   = llvm-objdump
 LIBC_JOBS     ?= 8
@@ -1650,16 +1667,10 @@ desktop-qemu-test:
 #   make sdk-c-smoke       → bangun app uji murni lewat SDK (tanpa third_party)
 #   make sdk-c-smoke-qemu  → jalankan app uji di QEMU (harap [phase3] PASS)
 #
-SDK_SRC_DIR   = libs/c
-SDK_DIR       = $(BUILD_DIR)/sdk/c
-SDK_INC       = $(SDK_DIR)/include
-SDK_LIB       = $(SDK_DIR)/lib/libc.a
-SDK_CRT       = $(SDK_DIR)/crt/crt.o
-SDK_LD        = $(SDK_DIR)/linker/app.ld
-SDK_LD_SRC    = $(SDK_SRC_DIR)/linker/app.ld
-SDK_STAGE     = $(SDK_DIR)/.staged
+# Path SDK C (SDK_DIR/SDK_INC/SDK_LIB/SDK_CRT/SDK_LD/SDK_LD_SRC/SDK_STAGE)
+# sudah didefinisikan di blok LIBC_* di atas - lihat catatan di sana.
 # Flag kanonis app SDK: sama persis dengan flag pembangun libc.a
-# (freestanding, tanpa SSE — kernel tidak mengaktifkan CR4.OSFXSR)
+# (freestanding, tanpa SSE - kernel tidak mengaktifkan CR4.OSFXSR)
 # + -O2 mengikuti konvensi library apps (bukan -O0).
 SDK_CFLAGS    = $(LIBC_TARGET_FLAGS) -O2
 SDK_SMOKE_SRC = tools/libc-phase3/sdk_smoke.c
@@ -2061,7 +2072,7 @@ $(FM_OBJDIR)/%.o: $(FILEMANAGER_DIR)/%.cpp $(FM_HEADERS) $(SDK_CPP_STAGE) | $(SD
 	@mkdir -p $(dir $@)
 	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(FM_SYS_INC)
 
-$(FM_ELF): $(FM_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+$(FM_ELF): $(FM_OBJS) $(SDK_CPP_STAGE) $(FT_KYUZEN_A) | $(SDK_CPP_WRAPPER)
 	@test -n "$(FM_SRCS)" || { echo "[filemanager] FAIL: tidak ada *.cpp di $(FILEMANAGER_DIR)/"; exit 1; }
 	@$(MAKE) -C apps all
 	@mkdir -p $(dir $@)
@@ -2109,7 +2120,7 @@ $(ST_OBJDIR)/%.o: $(SETTINGS_DIR)/%.cpp $(ST_HEADERS) $(SDK_CPP_STAGE) | $(SDK_C
 	@mkdir -p $(dir $@)
 	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(ST_SYS_INC)
 
-$(ST_ELF): $(ST_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+$(ST_ELF): $(ST_OBJS) $(SDK_CPP_STAGE) $(FT_KYUZEN_A) | $(SDK_CPP_WRAPPER)
 	@test -n "$(ST_SRCS)" || { echo "[settings] FAIL: tidak ada *.cpp di $(SETTINGS_DIR)/"; exit 1; }
 	@$(MAKE) -C apps all
 	@mkdir -p $(dir $@)
@@ -2156,7 +2167,7 @@ $(TM_OBJDIR)/%.o: $(TASKMGR_DIR)/%.cpp $(TM_HEADERS) $(SDK_CPP_STAGE) | $(SDK_CP
 	@mkdir -p $(dir $@)
 	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(TM_SYS_INC)
 
-$(TM_ELF): $(TM_OBJS) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+$(TM_ELF): $(TM_OBJS) $(SDK_CPP_STAGE) $(FT_KYUZEN_A) | $(SDK_CPP_WRAPPER)
 	@test -n "$(TM_SRCS)" || { echo "[taskmgr] FAIL: tidak ada *.cpp di $(TASKMGR_DIR)/"; exit 1; }
 	@$(MAKE) -C apps all
 	@mkdir -p $(dir $@)
