@@ -81,12 +81,15 @@ list(APPEND KYUZEN_APP_TARGETS kyuzen-viewer)
 # the C SDK. So it uses the SDK's CRT and libc.a while keeping ENTRY(main) and
 # the toolkit link set.
 #
-# Archive order matters: libc.a goes LAST because a static archive only
-# resolves symbols referenced by things already on the command line.
+# Compiled -O2 (the old rule used CFLAGS_LIB, not CFLAGS_APP) against the SDK
+# headers. Archive order matters: libc.a goes LAST because a static archive
+# only resolves symbols referenced by things already on the command line.
 # ---------------------------------------------------------------------------
 if(KYUZEN_BUILD_LIBC_SDK)
     kyuzen_add_plain_app(kyuzen-clock
         SOURCES "${_apps_dir}/clock.c"
+        FLAGS   kyuzen-flags-applib
+        LINKER_SCRIPT "${KYUZEN_SDK_C_LD}"
         LIBS
             ${_gui_libs}
             "${KYUZEN_SDK_C_CRT}"
@@ -94,7 +97,7 @@ if(KYUZEN_BUILD_LIBC_SDK)
     )
     # The app source compiles against the SDK headers, not third_party.
     add_dependencies(kyuzen-clock kyuzen-sdk-c)
-    target_include_directories(kyuzen-clock SYSTEM PRIVATE "${KYUZEN_SDK_C_INC}")
+    target_include_directories(kyuzen-clock-objects SYSTEM PRIVATE "${KYUZEN_SDK_C_INC}")
     list(APPEND KYUZEN_APP_TARGETS kyuzen-clock)
 endif()
 
@@ -113,21 +116,39 @@ set(_fontdemo_fonts
     NotoSansMono-Bold
 )
 
+# ---------------------------------------------------------------------------
+# Font blobs: TTF -> object via `ld -r --format=binary`.
+#
+# SYMBOL NAMES DERIVE FROM THE INPUT PATH. The old recipe ran from apps/ and
+# passed `../assets/fonts/<Name>.ttf`, producing symbols like
+#     _binary____assets_fonts_DejaVuSans_ttf_start
+# (note the four underscores: two from the `..` prefix, two from the leading
+# slash). fontdemo.c references those exact names, so the relative path and
+# working directory must match — an absolute path yields a completely
+# different symbol.
+# ---------------------------------------------------------------------------
 set(_font_blob_objs "")
 foreach(_font IN LISTS _fontdemo_fonts)
-    set(_ttf "${KYUZEN_ROOT}/assets/fonts/${_font}.ttf")
+    set(_ttf_rel "../assets/fonts/${_font}.ttf")
     set(_obj "${CMAKE_BINARY_DIR}/obj/user/apps/fonts/${_font}.o")
 
     add_custom_command(
         OUTPUT "${_obj}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/obj/user/apps/fonts"
-        COMMAND ${KYUZEN_LD_LLD} -m elf_x86_64 -r --format=binary -o "${_obj}" "${_ttf}"
-        DEPENDS "${_ttf}"
+        COMMAND ${KYUZEN_LD_LLD} -m elf_x86_64 -r --format=binary -o "${_obj}" "${_ttf_rel}"
+        DEPENDS "${KYUZEN_ROOT}/assets/fonts/${_font}.ttf"
+        WORKING_DIRECTORY "${_apps_dir}"
         COMMENT "Embedding font blob: ${_font}.ttf"
         VERBATIM
     )
     list(APPEND _font_blob_objs "${_obj}")
 endforeach()
+
+# The blobs are raw objects attached via target_link_libraries, so nothing in
+# the graph would otherwise depend on the custom commands above and Ninja
+# reports "missing and no known rule to make it". This target provides the
+# producer edge.
+add_custom_target(kyuzen-font-blobs DEPENDS ${_font_blob_objs})
 
 kyuzen_add_plain_app(kyuzen-fontdemo
     SOURCES "${_apps_dir}/fontdemo.c"
@@ -139,6 +160,7 @@ kyuzen_add_plain_app(kyuzen-fontdemo
         ${_font_blob_objs}
     INCLUDES "${KYUZEN_ROOT}/libs/text/include"
 )
+add_dependencies(kyuzen-fontdemo kyuzen-font-blobs)
 list(APPEND KYUZEN_APP_TARGETS kyuzen-fontdemo)
 
 # ===========================================================================
@@ -157,22 +179,38 @@ list(APPEND KYUZEN_APP_TARGETS kyuzen-terminal)
 # -std=c++17) and linked with apps/app.ld — ENTRY(main), no .init_array walk.
 # Therefore they must NOT use global constructors; objects are created inside
 # main(). libs/media is added on top of the GUI libs.
+#
+# The app's sources and the toolkit objects both go through
+# kyuzen_expand_objects so INTERFACE wrappers (kyuzen-widget) resolve to their
+# underlying OBJECT libraries, and the whole ordered sequence lands in
+# target_link_options where CMake preserves it.
 # ===========================================================================
 function(_kyuzen_add_cpp_toolkit_app name)
     cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
 
-    add_executable(kyuzen-${name} ${ARG_SOURCES})
-    target_link_libraries(kyuzen-${name} PRIVATE
-        kyuzen-flags-widget
-        ${_gui_libs}
-        kyuzen-media
-    )
-    target_link_options(kyuzen-${name} PRIVATE
-        -m elf_x86_64 -nostdlib -T ${KYUZEN_ROOT}/apps/app.ld
-    )
-    target_include_directories(kyuzen-${name} PRIVATE
+    add_library(${name}-objects OBJECT ${ARG_SOURCES})
+    target_link_libraries(${name}-objects PRIVATE kyuzen-flags-widget)
+    target_include_directories(${name}-objects PRIVATE
         "${KYUZEN_ROOT}/libs/gui/widget/include"
     )
+
+    kyuzen_expand_objects(_lib_items ${_gui_libs} kyuzen-media)
+
+    kyuzen_placeholder_object(_placeholder)
+    add_executable(kyuzen-${name} "${_placeholder}")
+    set_source_files_properties("${_placeholder}" PROPERTIES
+        EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    set_target_properties(kyuzen-${name} PROPERTIES LINKER_LANGUAGE C)
+
+    target_link_options(kyuzen-${name} PRIVATE
+        -m elf_x86_64
+        -nostdlib
+        -T ${KYUZEN_ROOT}/apps/app.ld
+        $<TARGET_OBJECTS:${name}-objects>
+        ${_lib_items}
+    )
+    add_dependencies(kyuzen-${name} ${name}-objects)
+
     kyuzen_output_basename(kyuzen-${name} _out_name)
     set_target_properties(kyuzen-${name} PROPERTIES
         OUTPUT_NAME "${_out_name}"
@@ -258,43 +296,72 @@ kyuzen_add_sdk_app(kyuzen-desktop
 )
 # Output must be exactly desktop.elf regardless of which implementation fills it.
 set_target_properties(kyuzen-desktop PROPERTIES OUTPUT_NAME "desktop")
-target_compile_options(kyuzen-desktop PRIVATE -iquote "${KYUZEN_ROOT}/include")
 list(APPEND KYUZEN_APP_TARGETS kyuzen-desktop)
 
 # --- fileman -----------------------------------------------------------------
+# Link order from the old recipe. The recipe is
+#     $(FM_OBJS) $(USERAPP_LIB_OBJS) $$(ls $(FM_TOOLKIT_GLOBS))
+# and `ls` SORTS its arguments, so the glob list is expanded alphabetically
+# rather than in the order the patterns are written:
+#     color/src/color_utils.o, widget/abi/libui_abi.o,
+#     widget/src/chrome/*.o ... widget/src/xml/*.o, media.o
+# Reproducing that sorted order is what places the colour objects at the same
+# addresses as the Make build.
 file(GLOB _fileman_sources CONFIGURE_DEPENDS "${_apps_dir}/filemanager/*.cpp")
 kyuzen_add_sdk_app(kyuzen-fileman
     SOURCES ${_fileman_sources}
     LIBS
-        kyuzen-userlib kyuzen-libgui kyuzen-widget kyuzen-png kyuzen-media kyuzen-color
+        kyuzen-userlib
+        kyuzen-libgui
+        kyuzen-netutil
+        kyuzen-png
+        kyuzen-color-utils
+        kyuzen-widget-abi
+        kyuzen-widget-src
+        kyuzen-media
     INCLUDES
         "${KYUZEN_ROOT}/libs/gui/widget/include"
 )
 set_target_properties(kyuzen-fileman PROPERTIES OUTPUT_NAME "fileman")
-target_compile_options(kyuzen-fileman PRIVATE -iquote "${KYUZEN_ROOT}/include")
 list(APPEND KYUZEN_APP_TARGETS kyuzen-fileman)
 
 # --- settings ----------------------------------------------------------------
+# Order: ST_OBJS, USERAPP_LIB_OBJS, TEXT_USER_OBJS, FT archive, then the same
+# `ls`-sorted toolkit globs (colour first, then widget).
 file(GLOB _settings_sources CONFIGURE_DEPENDS "${_apps_dir}/settings/*.cpp")
 kyuzen_add_sdk_app(kyuzen-settings
     SOURCES ${_settings_sources}
     LIBS
-        kyuzen-userlib kyuzen-libgui kyuzen-widget kyuzen-png kyuzen-color
-        kyuzen-text-manager kyuzen-text-raster kyuzen-freetype
+        kyuzen-userlib
+        kyuzen-libgui
+        kyuzen-netutil
+        kyuzen-png
+        kyuzen-text-manager
+        kyuzen-text-raster
+        kyuzen-freetype
+        kyuzen-color-utils
+        kyuzen-widget-abi
+        kyuzen-widget-src
     INCLUDES "${KYUZEN_ROOT}/libs/text/include"
 )
 set_target_properties(kyuzen-settings PROPERTIES OUTPUT_NAME "settings")
-target_compile_options(kyuzen-settings PRIVATE -iquote "${KYUZEN_ROOT}/include")
 list(APPEND KYUZEN_APP_TARGETS kyuzen-settings)
 
 # --- taskmgr -----------------------------------------------------------------
+# Order: TM_OBJS, USERAPP_LIB_OBJS, then the `ls`-sorted toolkit globs.
 file(GLOB _taskmgr_sources CONFIGURE_DEPENDS "${_apps_dir}/taskmgr/*.cpp")
 kyuzen_add_sdk_app(kyuzen-taskmgr
     SOURCES ${_taskmgr_sources}
-    LIBS kyuzen-userlib kyuzen-libgui kyuzen-widget kyuzen-png kyuzen-color
+    LIBS
+        kyuzen-userlib
+        kyuzen-libgui
+        kyuzen-netutil
+        kyuzen-png
+        kyuzen-color-utils
+        kyuzen-widget-abi
+        kyuzen-widget-src
 )
 set_target_properties(kyuzen-taskmgr PROPERTIES OUTPUT_NAME "taskmgr")
-target_compile_options(kyuzen-taskmgr PRIVATE -iquote "${KYUZEN_ROOT}/include")
 list(APPEND KYUZEN_APP_TARGETS kyuzen-taskmgr)
 
 # --- browser -----------------------------------------------------------------
@@ -314,7 +381,7 @@ kyuzen_add_sdk_app(kyuzen-browser
     SOURCES ${_browser_cpp}
     LIBS
         $<TARGET_OBJECTS:kyuzen-bearssl-os>
-        kyuzen-userlib kyuzen-libgui kyuzen-widget kyuzen-png kyuzen-color
+        kyuzen-userlib kyuzen-libgui kyuzen-widget kyuzen-png kyuzen-color-utils
         kyuzen-text-manager kyuzen-text-raster kyuzen-freetype
         kyuzen-lexbor
     INCLUDES
@@ -338,29 +405,14 @@ endif() # KYUZEN_BUILD_LIBC_SDK
 # These are the guards the old Makefile ran on desktop/fileman/settings/taskmgr/
 # browser: entry point, zero undefined symbols, no exception/thread runtime, no
 # SSE or x87 instructions.
+#
+# The SDK artifacts (libcxxrt.a, cxxrt.o, crt.o, libc.a) and the staging
+# dependency are wired up by kyuzen_add_sdk_app itself.
 # ===========================================================================
 if(KYUZEN_BUILD_LIBC_SDK)
     foreach(_t kyuzen-desktop kyuzen-fileman kyuzen-settings kyuzen-taskmgr kyuzen-browser)
         if(TARGET ${_t})
             kyuzen_verify_user_elf(${_t})
-        endif()
-    endforeach()
-endif()
-
-# ===========================================================================
-# All SDK apps consume the staged C++ SDK: the header closure, libcxxrt.a,
-# cxxrt.o, the CRT, libc.a and the linker script. Declaring the dependency
-# once here means a stale SDK can never be linked by accident.
-# ===========================================================================
-if(KYUZEN_BUILD_LIBC_SDK)
-    foreach(_t kyuzen-desktop kyuzen-fileman kyuzen-settings kyuzen-taskmgr kyuzen-browser)
-        if(TARGET ${_t})
-            add_dependencies(${_t} kyuzen-sdk-cpp)
-            target_link_libraries(${_t} PRIVATE
-                "${KYUZEN_SDK_CPP_CXXRT}"
-                "${KYUZEN_SDK_C_CRT}"
-                "${KYUZEN_SDK_C_LIB}"
-            )
         endif()
     endforeach()
 endif()

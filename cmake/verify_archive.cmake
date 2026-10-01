@@ -30,12 +30,15 @@ if(EXPECTED_MEMBERS)
         message(FATAL_ERROR "verify_archive: llvm-ar failed on ${ARCHIVE}: ${ar_err}")
     endif()
 
+    string(STRIP "${members}" members)
     string(REGEX REPLACE "\r?\n" ";" member_list "${members}")
+    # Trailing separators produce empty elements; drop them before counting.
+    list(REMOVE_ITEM member_list "")
     list(LENGTH member_list member_count)
     if(NOT member_count EQUAL EXPECTED_MEMBERS)
         message(FATAL_ERROR
             "verify_archive: ${ARCHIVE} has ${member_count} members, "
-            "expected ${EXPECTED_MEMBERS}")
+            "expected ${EXPECTED_MEMBERS} (members: ${member_list})")
     endif()
 endif()
 

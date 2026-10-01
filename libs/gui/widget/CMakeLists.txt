@@ -1,7 +1,7 @@
 # ============================================================================
 # libs/gui/widget/CMakeLists.txt — libui widget toolkit (37 C++ sources).
 #
-# Built as an OBJECT library (not a static archive) because the old
+# Built as OBJECT libraries (not a static archive) because the old
 # apps/Makefile linked these objects directly into every GUI app rather than
 # through an archive. Object libraries also preserve the "no global
 # constructors" property: apps/app.ld uses ENTRY(main) and never walks
@@ -9,22 +9,55 @@
 #
 # operator new/delete and __cxa_pure_virtual are stubbed ONCE in
 # src/runtime/runtime.cpp. Do not define them anywhere else (ODR).
-# ============================================================================
+#
+# ---------------------------------------------------------------------------
+# TWO TARGETS, TWO ORDERINGS — this is not redundancy.
+#
+# The old build linked the toolkit in two DIFFERENT orders depending on the
+# app group, and object order determines symbol addresses:
+#
+#   GUI apps (apps/Makefile, GUI_LIBS/TERMINAL_LIBS):
+#       WIDGET_OBJS = $(wildcard src/*/*.cpp) abi/libui_abi.cpp
+#     -> src/** sorted, THEN abi
+#
+#   SDK apps (root Makefile, `$$(ls ...)` toolkit globs):
+#       ls sorts its arguments, so color/src/*.o and widget/abi/*.o come
+#       before widget/src/*.o
+#     -> color_utils.o, abi/libui_abi.o, src/** sorted
+#
+# So the two halves are separate OBJECT libraries and each consumer lists them
+# in the order its own recipe used. kyuzen-widget is the convenience INTERFACE
+# for the GUI-app ordering.
+# ---------------------------------------------------------------------------
 
 set(_widget_dir "${KYUZEN_ROOT}/libs/gui/widget")
 
-# All toolkit layers + the C ABI shim. CONFIGURE_DEPENDS so a new layer
-# directory is picked up on reconfigure (the old Makefile used
-# $(wildcard $(WIDGET_DIR)/src/*/*.cpp)).
-file(GLOB _widget_sources CONFIGURE_DEPENDS
+# --- layer sources (sorted) -------------------------------------------------
+# CONFIGURE_DEPENDS so a new layer directory is picked up on reconfigure (the
+# old Makefile used $(wildcard $(WIDGET_DIR)/src/*/*.cpp)).
+file(GLOB _widget_layer_sources CONFIGURE_DEPENDS
     "${_widget_dir}/src/*/*.cpp"
 )
-list(APPEND _widget_sources "${_widget_dir}/abi/libui_abi.cpp")
+list(SORT _widget_layer_sources)
 
-add_library(kyuzen-widget OBJECT ${_widget_sources})
-target_link_libraries(kyuzen-widget PRIVATE kyuzen-flags-widget)
-target_include_directories(kyuzen-widget PUBLIC
-    ${_widget_dir}/include
-    ${KYUZEN_ROOT}/include
-    ${KYUZEN_ROOT}/libs/gui/color/include
+add_library(kyuzen-widget-src OBJECT ${_widget_layer_sources})
+target_link_libraries(kyuzen-widget-src PRIVATE kyuzen-flags-widget)
+
+# --- C ABI shim -------------------------------------------------------------
+add_library(kyuzen-widget-abi OBJECT "${_widget_dir}/abi/libui_abi.cpp")
+target_link_libraries(kyuzen-widget-abi PRIVATE kyuzen-flags-widget)
+
+foreach(_t kyuzen-widget-src kyuzen-widget-abi)
+    target_include_directories(${_t} PUBLIC
+        ${_widget_dir}/include
+        ${KYUZEN_ROOT}/include
+        ${KYUZEN_ROOT}/libs/gui/color/include
+    )
+endforeach()
+
+# --- GUI-app ordering: src first, then abi ----------------------------------
+add_library(kyuzen-widget INTERFACE)
+target_link_libraries(kyuzen-widget INTERFACE
+    kyuzen-widget-src
+    kyuzen-widget-abi
 )

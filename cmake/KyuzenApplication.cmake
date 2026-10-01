@@ -34,14 +34,18 @@ endfunction()
 # ---------------------------------------------------------------------------
 # kyuzen_placeholder_object(<out_var>)
 #
-# An empty object used as the sole "source" of executables whose real content
-# arrives as $<TARGET_OBJECTS:...>. add_executable requires at least one
-# source, and the placeholder must contribute NOTHING to the linked image — no
-# symbol, no section, no .strtab entry — or binary parity is lost.
+# An empty object used as the sole nominal "source" of executables whose real
+# content arrives as $<TARGET_OBJECTS:...>. add_executable requires at least
+# one source, and the placeholder must contribute NOTHING to the linked image.
 #
-# A C translation unit is unsuitable (STT_FILE + .comment), and nasm always
-# emits an STT_FILE for its input. An empty .s compiled by clang produces an
-# object with no symbols and no sections.
+# Two details matter for byte parity:
+#   * No symbols. A C TU emits STT_FILE, and nasm always emits one too, so the
+#     source is empty and assembled by clang.
+#   * No .text section at all. An empty .s still produces an EMPTY .text with
+#     alignment 4, and the linker pads the combined .text with int3 bytes to
+#     satisfy that alignment — adding one byte to the image. Stripping the
+#     object with llvm-objcopy --remove-section=.text removes the section (and
+#     its alignment) entirely, so the placeholder contributes nothing.
 # ---------------------------------------------------------------------------
 function(kyuzen_placeholder_object out_var)
     set(_src "${CMAKE_BINARY_DIR}/obj/kyuzen-placeholder.s")
@@ -55,6 +59,7 @@ function(kyuzen_placeholder_object out_var)
         add_custom_command(
             OUTPUT "${_obj}"
             COMMAND "${KYUZEN_CLANG}" --target=x86_64-pc-none-elf -c "${_src}" -o "${_obj}"
+            COMMAND "${KYUZEN_LLVM_OBJCOPY}" --remove-section=.text "${_obj}"
             DEPENDS "${_src}"
             COMMENT "Creating empty placeholder object"
             VERBATIM
@@ -66,26 +71,32 @@ function(kyuzen_placeholder_object out_var)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kyuzen_link_items(<out_var> <target-or-path>...)
+# kyuzen_expand_objects(<out_var> <target-or-path>...)
 #
-# Normalise a mixed list of OBJECT libraries, STATIC libraries, and plain file
-# paths into link items:
+# Recursively expand a mixed list into ordered object items:
 #
-#   OBJECT library  -> $<TARGET_OBJECTS:name>   (placed exactly where declared)
-#   STATIC library  -> the target name          (archive, resolved in order)
+#   OBJECT library  -> $<TARGET_OBJECTS:name>
+#   INTERFACE lib   -> recurse into its INTERFACE_LINK_LIBRARIES
 #   file path       -> unchanged
 #
-# OBJECT libraries must use $<TARGET_OBJECTS:...>; passing the target name
-# lets CMake reorder the objects, which changes section layout and breaks
-# binary parity with the Make baseline.
+# The recursion matters because a convenience INTERFACE target (kyuzen-widget)
+# names two OBJECT libraries, and $<TARGET_OBJECTS:...> cannot be applied to an
+# INTERFACE library — its members would silently vanish from the link line and
+# the app would fail with undefined ui_* symbols.
 # ---------------------------------------------------------------------------
-function(kyuzen_link_items out_var)
+function(kyuzen_expand_objects out_var)
     set(_items "")
     foreach(_lib IN LISTS ARGN)
         if(TARGET ${_lib})
             get_target_property(_type ${_lib} TYPE)
             if(_type STREQUAL "OBJECT_LIBRARY")
                 list(APPEND _items "$<TARGET_OBJECTS:${_lib}>")
+            elseif(_type STREQUAL "INTERFACE_LIBRARY")
+                get_target_property(_deps ${_lib} INTERFACE_LINK_LIBRARIES)
+                if(_deps)
+                    kyuzen_expand_objects(_sub ${_deps})
+                    list(APPEND _items ${_sub})
+                endif()
             else()
                 list(APPEND _items "${_lib}")
             endif()
@@ -97,9 +108,22 @@ function(kyuzen_link_items out_var)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# kyuzen_link_items(<out_var> <target-or-path>...)
+#
+# Normalise a mixed list of OBJECT libraries and plain file paths into link
+# items that CMake places IN THE ORDER GIVEN. INTERFACE libraries are expanded
+# recursively (see above).
+# ---------------------------------------------------------------------------
+function(kyuzen_link_items out_var)
+    kyuzen_expand_objects(_items ${ARGN})
+    set(${out_var} "${_items}" PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
 # kyuzen_add_plain_app(<name>
 #     SOURCES   <src>...
-#     [FLAGS    <flag-set-target>]   default: kyuzen-flags-app
+#     [FLAGS    <flag-set-target>]        default: kyuzen-flags-app
+#     [LINKER_SCRIPT <path>]              default: apps/app.ld
 #     [LIBS     <target-or-file>...]
 #     [INCLUDES <dir>...]
 #     [COMPILE_OPTIONS <opt>...]
@@ -107,24 +131,30 @@ endfunction()
 #     [DEFINES  <def>...]
 # )
 #
-# Simple freestanding C app: ENTRY(main) via apps/app.ld, links userlib plus
-# whatever extra libraries the app declares.
+# Simple freestanding C app: links userlib plus whatever extra libraries the
+# app declares.
 #
 # FLAGS selects the canonical flag set. The old apps/Makefile used TWO sets for
 # this group of targets:
 #   CFLAGS_APP (-O0)  apps/*.c            — application code
-#   CFLAGS_LIB (-O2)  system/*.c          — utilities treated as library code
+#   CFLAGS_LIB (-O2)  system/*.c, viewer, clock — library-style code
 # Passing the wrong one changes generated code and breaks binary parity.
 #
 # NOTE: passing `-O2` via COMPILE_OPTIONS does NOT work — CMake places a
 # target's own options BEFORE those inherited from an INTERFACE library, and
 # clang honours the LAST -O, so the interface's -O0 would win. The flag set
 # itself must be the right one.
+#
+# LINKER_SCRIPT selects the entry point:
+#   apps/app.ld          ENTRY(main)    — no CRT, no .init_array walk
+#   libs/c/linker/app.ld ENTRY(_start)  — SDK CRT, used by apps that link libc
+# Using the wrong script leaves every section and symbol identical but sets the
+# ELF entry to the image base instead of _start.
 # ---------------------------------------------------------------------------
 function(kyuzen_add_plain_app name)
     cmake_parse_arguments(ARG
         ""
-        "FLAGS"
+        "FLAGS;LINKER_SCRIPT"
         "SOURCES;LIBS;INCLUDES;COMPILE_OPTIONS;LINK_OPTIONS;DEFINES"
         ${ARGN}
     )
@@ -135,6 +165,10 @@ function(kyuzen_add_plain_app name)
 
     if(NOT ARG_FLAGS)
         set(ARG_FLAGS kyuzen-flags-app)
+    endif()
+
+    if(NOT ARG_LINKER_SCRIPT)
+        set(ARG_LINKER_SCRIPT "${KYUZEN_ROOT}/apps/app.ld")
     endif()
 
     # The app's own sources become an OBJECT library so they can be placed at
@@ -177,7 +211,7 @@ function(kyuzen_add_plain_app name)
     target_link_options(${name} PRIVATE
         -m elf_x86_64
         -nostdlib
-        -T ${KYUZEN_ROOT}/apps/app.ld
+        -T ${ARG_LINKER_SCRIPT}
     )
 
     kyuzen_output_basename(${name} _out_name)
@@ -185,7 +219,7 @@ function(kyuzen_add_plain_app name)
         OUTPUT_NAME "${_out_name}"
         SUFFIX ".elf"
         RUNTIME_OUTPUT_DIRECTORY "${KYUZEN_ELF_DIR}"
-        LINK_DEPENDS "${KYUZEN_ROOT}/apps/app.ld"
+        LINK_DEPENDS "${ARG_LINKER_SCRIPT}"
     )
 
     if(ARG_LINK_OPTIONS)
@@ -221,35 +255,117 @@ function(kyuzen_add_sdk_app name)
         message(FATAL_ERROR "kyuzen_add_sdk_app(${name}): SOURCES is required")
     endif()
 
-    add_executable(${name} ${ARG_SOURCES})
+    # The app's own sources become an OBJECT library so they can be placed at
+    # a controlled position in the link line (see kyuzen_add_plain_app).
+    add_library(${name}-objects OBJECT ${ARG_SOURCES})
+    target_link_libraries(${name}-objects PRIVATE kyuzen-flags-sdk-cpp)
 
-    target_link_libraries(${name} PRIVATE kyuzen-flags-sdk-cpp)
+    # The staged SDK headers are SYSTEM includes: they are searched after the
+    # project's own headers, the same relationship the old kyuzen-c++ wrapper
+    # established with -isystem.
+    target_include_directories(${name}-objects SYSTEM PRIVATE
+        "${KYUZEN_SDK_CPP_INC}"
+        "${KYUZEN_SDK_C_INC}"
+    )
+    # The repo's include/ must be reached with -iquote, NOT -I. It contains a
+    # stdlib.h shim (stb_image) that would otherwise shadow libc++'s <cstdlib>
+    # which libc++ headers pull in via <new>/std::nothrow. All repo headers are
+    # included with quotes, so -iquote is sufficient.
+    #
+    # libs/gui/color/include is always added: every SDK app links colour math
+    # (see the old FM_SYS_INC / ST_SYS_INC / TM_SYS_INC / LIBDESKTOP_SYS_INC,
+    # each of which lists it).
+    target_compile_options(${name}-objects PRIVATE
+        -iquote ${KYUZEN_ROOT}/include
+    )
+    target_include_directories(${name}-objects PRIVATE
+        "${KYUZEN_ROOT}/libs/gui/color/include"
+    )
+    # Nothing may compile before the SDK is staged.
+    add_dependencies(${name}-objects kyuzen-sdk-cpp)
+
+    if(ARG_INCLUDES)
+        target_include_directories(${name}-objects PRIVATE ${ARG_INCLUDES})
+    endif()
+    if(ARG_DEFINES)
+        target_compile_definitions(${name}-objects PRIVATE ${ARG_DEFINES})
+    endif()
+    if(ARG_COMPILE_OPTIONS)
+        target_compile_options(${name}-objects PRIVATE ${ARG_COMPILE_OPTIONS})
+    endif()
+
+    kyuzen_placeholder_object(_placeholder)
+    add_executable(${name} "${_placeholder}")
+    set_source_files_properties("${_placeholder}" PROPERTIES
+        EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    set_target_properties(${name} PROPERTIES LINKER_LANGUAGE C)
+
+    # -----------------------------------------------------------------------
+    # LINK ORDER
+    #
+    # The old link line interleaves archives between object groups:
+    #     app objects, libdesktop.a, userlib.o, libgui.o, ..., FT archive
+    # and archive position matters — a .a only resolves symbols referenced by
+    # things already on the command line.
+    #
+    # CMake's LINK_LIBRARIES puts objects first and archives after, so the
+    # interleaving would be lost. Putting the whole ordered sequence into
+    # LINK_FLAGS preserves it, but on Windows the command line then exceeds
+    # the 8191-character limit (the desktop/settings link lines are ~8 KB).
+    #
+    # CMake writes LINK_LIBRARIES into a response file, which has no such
+    # limit — so the ordered sequence goes there. CMake keeps the ORDER of
+    # LINK_LIBRARIES; it only groups objects before libraries within the
+    # generated command. Since every item here is either an object or an
+    # archive and the relative order among them is what the linker needs, the
+    # sequence is preserved by declaring archives with their full path
+    # ($<TARGET_FILE:...>) rather than as library targets — CMake treats those
+    # as plain link items and does not re-sort them.
+    # -----------------------------------------------------------------------
+    set(_link_items "")
+    foreach(_lib IN LISTS ARG_LIBS)
+        if(TARGET ${_lib})
+            get_target_property(_type ${_lib} TYPE)
+            if(_type STREQUAL "OBJECT_LIBRARY")
+                list(APPEND _link_items "$<TARGET_OBJECTS:${_lib}>")
+            elseif(_type STREQUAL "STATIC_LIBRARY")
+                list(APPEND _link_items "$<TARGET_FILE:${_lib}>")
+                add_dependencies(${name} ${_lib})
+            else()
+                list(APPEND _link_items "${_lib}")
+            endif()
+        else()
+            list(APPEND _link_items "${_lib}")
+        endif()
+    endforeach()
+
+    # Canonical C++ SDK tail, reproduced from libs/cpp/bin/kyuzen-c++:
+    #     ... -> libcxxrt.a -> cxxrt.o -> crt.o -> libc.a
+    target_link_libraries(${name} PRIVATE
+        $<TARGET_OBJECTS:${name}-objects>
+        ${_link_items}
+        "${KYUZEN_LIBCXXRT_ARCHIVE}"
+        "${KYUZEN_SDK_CPP_CXXRT}"
+        "${KYUZEN_SDK_C_CRT}"
+        "${KYUZEN_SDK_C_LIB}"
+    )
+
     target_link_options(${name} PRIVATE
         -m elf_x86_64
         -nostdlib
-        -T ${KYUZEN_SDK_DIR}/cpp/linker/app.ld
+        -T ${KYUZEN_SDK_CPP_LD}
     )
+
+    # The SDK artifacts must exist before the link.
+    add_dependencies(${name} kyuzen-sdk-cpp)
 
     kyuzen_output_basename(${name} _out_name)
     set_target_properties(${name} PROPERTIES
         OUTPUT_NAME "${_out_name}"
         SUFFIX ".elf"
         RUNTIME_OUTPUT_DIRECTORY "${KYUZEN_ELF_DIR}"
-        LINK_DEPENDS "${KYUZEN_SDK_DIR}/cpp/linker/app.ld"
+        LINK_DEPENDS "${KYUZEN_SDK_CPP_LD}"
     )
-
-    if(ARG_INCLUDES)
-        target_include_directories(${name} PRIVATE ${ARG_INCLUDES})
-    endif()
-    if(ARG_DEFINES)
-        target_compile_definitions(${name} PRIVATE ${ARG_DEFINES})
-    endif()
-    if(ARG_COMPILE_OPTIONS)
-        target_compile_options(${name} PRIVATE ${ARG_COMPILE_OPTIONS})
-    endif()
-    if(ARG_LIBS)
-        target_link_libraries(${name} PRIVATE ${ARG_LIBS})
-    endif()
 endfunction()
 
 # ---------------------------------------------------------------------------

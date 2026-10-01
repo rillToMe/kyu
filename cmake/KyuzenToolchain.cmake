@@ -64,6 +64,7 @@ endif()
 find_program(KYUZEN_LLVM_NM       NAMES llvm-nm       REQUIRED)
 find_program(KYUZEN_LLVM_OBJDUMP  NAMES llvm-objdump  REQUIRED)
 find_program(KYUZEN_LLVM_AR       NAMES llvm-ar       REQUIRED)
+find_program(KYUZEN_LLVM_OBJCOPY  NAMES llvm-objcopy  REQUIRED)
 
 set(CMAKE_C_COMPILER   "${KYUZEN_CLANG}")
 set(CMAKE_CXX_COMPILER "${KYUZEN_CLANGXX}")

@@ -81,7 +81,6 @@ static volatile struct limine_mp_request mp_request = {
 
 __attribute__((used, section(".requests_end_marker")))
 static volatile uint64_t __limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
-// ============================================================
 
 // HHDM offset: dipakai oleh paging.c untuk convert phys → virt
 uint64_t hhdm_offset = 0;
@@ -107,9 +106,7 @@ static void serial_num(uint64_t num) {
     char b[24]; boot_u64_str(num, b); serial_print(b);
 }
 
-// ============================================================
 // FASE 1 — Layar, GDT/IDT, memori awal, proteksi CPU
-// ============================================================
 
 // Tangkap framebuffer Limine + validasi format (bukan asumsi XRGB8888).
 static void boot_phase_display(void) {
@@ -184,9 +181,7 @@ static void boot_phase_cpu_hardening(void) {
     kprint("\n");
 }
 
-// ============================================================
 // FASE 2 — Interrupt controller, PCI, timer
-// ============================================================
 
 static void boot_phase_interrupts(void) {
     pic_remap();
@@ -198,9 +193,7 @@ static void boot_phase_interrupts(void) {
     init_timer(TIMER_HZ);      // Inisialisasi PIT pada frekuensi dari timer.h
 }
 
-// ============================================================
 // FASE 3 — Graphics HAL, scheduler awal, input
-// ============================================================
 
 // Graphics HAL diinisialisasi SEBELUM timer_callbacks_init, supaya
 // compositor_flush (cb_flush) langsung punya backend + main surface.
@@ -264,9 +257,7 @@ static void boot_phase_banner(void) {
         serial_print("[PANIC_LOG] tidak ada crash pada boot sebelumnya\n");
 }
 
-// ============================================================
 // FASE 4 — Filesystem, crashdump, ACPI, VFS
-// ============================================================
 
 static void boot_phase_filesystem(void) {
 #ifdef HEAP_WATCH_DEBUG
@@ -311,9 +302,7 @@ static void boot_phase_filesystem(void) {
     boot_state("  OK  ", "VFS", 0);
 }
 
-// ============================================================
 // FASE 5 — SMP
-// ============================================================
 
 static void boot_phase_smp(void) {
     // LAPIC BSP sudah aktif sejak lapic_init_bsp(); SMP membawa AP online.
@@ -325,9 +314,7 @@ static void boot_phase_smp(void) {
     boot_state_num("  OK  ", "SMP", smp_online_cpu_count(), " CPUs");
 }
 
-// ============================================================
 // FASE 6 — Auto-install modul dari Limine
-// ============================================================
 
 // Console: satu baris ringkas. Detail per-modul + pesan kfs → serial.
 static void boot_phase_modules(void) {
@@ -424,9 +411,7 @@ static void boot_phase_modules(void) {
     }
 }
 
-// ============================================================
 // FASE 7 — Network
-// ============================================================
 
 static void boot_phase_network(void) {
     // Aktifkan interrupts SEBELUM masuk ke user code
@@ -482,9 +467,7 @@ static void boot_phase_network(void) {
     boot_state("  OK  ", "Socket layer", 0);
 }
 
-// ============================================================
 // FASE 8 — Serah terima boot → init (PID 1)
-// ============================================================
 
 // Muat /apps/init.elf dan jalankan sebagai task ring-3 pertama.
 //
@@ -549,9 +532,7 @@ static void boot_handoff_to_init(void) {
     kprint("\nKyuzenOS ready.\n\n");
 }
 
-// ============================================================
 // ENTRY POINT
-// ============================================================
 void kernel_main(void) {
     // 0. AMBIL HHDM OFFSET — WAJIB SEBELUM APA PUN (dipakai oleh paging.c)
     if (hhdm_request.response != NULL) {
