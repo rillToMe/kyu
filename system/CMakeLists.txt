@@ -26,12 +26,15 @@ target_include_directories(kyuzen-shellcore PUBLIC ${KYUZEN_ROOT}/include)
 # ---------------------------------------------------------------------------
 # Plain utilities: userlib only.
 #
-# Note the -O0 app-source optimization level from the old apps/Makefile
-# (CFLAGS_APP), applied through kyuzen_add_plain_app's default flag set.
+# FLAGS kyuzen-flags-applib (-O2): system/*.c is compiled -O2 in the old
+# apps/Makefile — $(OBJ_DIR)/system/%.o uses CFLAGS_LIB, not CFLAGS_APP. The
+# utilities are treated as library code, not as app code. Using the app set
+# here would change the generated code and break binary parity.
 # ---------------------------------------------------------------------------
 foreach(_app echo cat zen)
     kyuzen_add_plain_app(kyuzen-${_app}
         SOURCES "${_sys_dir}/${_app}.c"
+        FLAGS   kyuzen-flags-applib
         LIBS    kyuzen-userlib
     )
 endforeach()
@@ -44,6 +47,7 @@ endforeach()
 # ---------------------------------------------------------------------------
 kyuzen_add_plain_app(kyuzen-init
     SOURCES "${_sys_dir}/init.c"
+    FLAGS   kyuzen-flags-applib
     LIBS    kyuzen-userlib
 )
 
@@ -58,6 +62,7 @@ kyuzen_add_plain_app(kyuzen-init
 # ---------------------------------------------------------------------------
 kyuzen_add_plain_app(kyuzen-login
     SOURCES "${_sys_dir}/login.c"
+    FLAGS   kyuzen-flags-applib
     LIBS    kyuzen-userlib kyuzen-userutil
 )
 
@@ -69,6 +74,7 @@ kyuzen_add_plain_app(kyuzen-login
 # ---------------------------------------------------------------------------
 kyuzen_add_plain_app(kyuzen-shell
     SOURCES "${_sys_dir}/shell.c"
+    FLAGS   kyuzen-flags-applib
     LIBS    kyuzen-userlib kyuzen-userutil kyuzen-netutil kyuzen-shellcore
 )
 

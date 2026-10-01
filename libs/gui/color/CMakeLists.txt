@@ -17,8 +17,29 @@ set(_color_sources
 )
 
 # ---------------------------------------------------------------------------
-# User-space copy (what apps/Makefile's COLOR_SRCS produced).
+# User-space copy.
+#
+# SPLIT INTO TWO TARGETS ON PURPOSE. The old apps/Makefile compiled all three
+# colour sources (COLOR_OBJS) but only ever LINKED one of them into apps:
+#
+#     LIBUI_COLOR_OBJS = $(OBJ_DIR)/libs/gui/color/src/color_utils.o
+#     GUI_LIBS = ... $(PNG_OBJ) $(LIBUI_COLOR_OBJS)
+#
+# so color_blend.c and color_space.c were built and then not linked. The app
+# link line therefore ends with `... png.o color_utils.o`, and reproducing it
+# exactly is what keeps the ELFs byte-identical.
+#
+#   kyuzen-color-utils   the one object user-space apps actually link
+#   kyuzen-color         all three (kept for completeness / future use)
 # ---------------------------------------------------------------------------
+set(_color_utils_src "${CMAKE_CURRENT_SOURCE_DIR}/src/color_utils.c")
+
+add_library(kyuzen-color-utils OBJECT "${_color_utils_src}")
+target_link_libraries(kyuzen-color-utils PRIVATE kyuzen-flags-applib)
+target_include_directories(kyuzen-color-utils PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 add_library(kyuzen-color OBJECT ${_color_sources})
 target_link_libraries(kyuzen-color PRIVATE kyuzen-flags-applib)
 target_include_directories(kyuzen-color PUBLIC

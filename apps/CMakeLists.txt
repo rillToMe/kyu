@@ -22,6 +22,15 @@ set(_tests_dir "${KYUZEN_ROOT}/tests/target")
 
 # ===========================================================================
 # Shared link inputs (mirroring GUI_LIBS / TERMINAL_LIBS / MEDIA_LIBS).
+#
+# ORDER IS EXACT — it is the order the old link lines used:
+#   GUI_LIBS      = USERLIB NETUTIL LIBGUI WIDGET PNG COLOR_UTILS
+#   TERMINAL_LIBS = USERLIB USERUTIL NETUTIL SHELLCORE LIBGUI WIDGET PNG COLOR_UTILS
+#   MEDIA_LIBS    = GUI_LIBS + MEDIA
+#
+# NOTE: only color_utils.o is linked, not the whole libs/gui/color set — the
+# old build compiled all three colour sources but linked one. See
+# libs/gui/color/CMakeLists.txt.
 # ===========================================================================
 set(_gui_libs
     kyuzen-userlib
@@ -29,7 +38,7 @@ set(_gui_libs
     kyuzen-libgui
     kyuzen-widget
     kyuzen-png
-    kyuzen-color
+    kyuzen-color-utils
 )
 
 set(_terminal_libs
@@ -40,16 +49,16 @@ set(_terminal_libs
     kyuzen-libgui
     kyuzen-widget
     kyuzen-png
-    kyuzen-color
+    kyuzen-color-utils
 )
 
 # ===========================================================================
 # A. GUI apps — plain C, toolkit-linked.
 # ===========================================================================
-# Most GUI apps are compiled -O0 (CFLAGS_APP). Two exceptions existed:
+# Most GUI apps are compiled -O0 (CFLAGS_APP). Two exceptions:
 #   viewer  -O2  (it decodes images; deliberately optimised)
 #   clock        (uses the C SDK — built separately below)
-foreach(_app viewer calc notepad widget_demo xml_demo)
+foreach(_app calc notepad widget_demo xml_demo)
     kyuzen_add_plain_app(kyuzen-${_app}
         SOURCES "${_apps_dir}/${_app}.c"
         LIBS    ${_gui_libs}
@@ -57,8 +66,15 @@ foreach(_app viewer calc notepad widget_demo xml_demo)
     list(APPEND KYUZEN_APP_TARGETS kyuzen-${_app})
 endforeach()
 
-# viewer is -O2: override the -O0 from the app flag set.
-target_compile_options(kyuzen-viewer PRIVATE -O2)
+# viewer is the one GUI app compiled with CFLAGS_LIB (-O2) because it decodes
+# images. Using the app flag set (-O0) here changes the generated code and
+# breaks binary parity.
+kyuzen_add_plain_app(kyuzen-viewer
+    SOURCES "${_apps_dir}/viewer.c"
+    FLAGS   kyuzen-flags-applib
+    LIBS    ${_gui_libs}
+)
+list(APPEND KYUZEN_APP_TARGETS kyuzen-viewer)
 
 # ---------------------------------------------------------------------------
 # clock — HYBRID: entry is main (apps/app.ld) but it calls snprintf/strlen from
@@ -157,8 +173,9 @@ function(_kyuzen_add_cpp_toolkit_app name)
     target_include_directories(kyuzen-${name} PRIVATE
         "${KYUZEN_ROOT}/libs/gui/widget/include"
     )
+    kyuzen_output_basename(kyuzen-${name} _out_name)
     set_target_properties(kyuzen-${name} PROPERTIES
-        OUTPUT_NAME "${name}"
+        OUTPUT_NAME "${_out_name}"
         SUFFIX ".elf"
         RUNTIME_OUTPUT_DIRECTORY "${KYUZEN_ELF_DIR}"
         LINK_DEPENDS "${KYUZEN_ROOT}/apps/app.ld"

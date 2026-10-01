@@ -303,39 +303,17 @@ set_source_files_properties(${_asm_objects} PROPERTIES
 # ---------------------------------------------------------------------------
 # The kernel executable.
 #
-# add_executable needs at least one source; the real content arrives as
-# $<TARGET_OBJECTS:...> below.
-#
-# The placeholder must contribute NOTHING to the linked image — not even an
-# STT_FILE symbol. nasm always emits one for its input, containing the path as
-# written, so the placeholder is produced by ld.lld from an EMPTY input
-# instead: `ld.lld -r` on an empty object yields an object with no symbols and
-# no sections. That is what keeps byte parity with the Make baseline.
+# Uses the same placeholder-object technique as the app helper: an empty
+# translation unit as the nominal source, with all real content supplied as
+# $<TARGET_OBJECTS:...> so the link order is exactly ALL_OBJS order.
 # ---------------------------------------------------------------------------
-set(_kernel_dummy_src "${CMAKE_BINARY_DIR}/obj/kernel-dummy.s")
-set(_kernel_dummy_obj "${CMAKE_BINARY_DIR}/obj/kernel-dummy.o")
+kyuzen_placeholder_object(_kernel_placeholder)
 
-if(NOT EXISTS "${_kernel_dummy_src}")
-    file(WRITE "${_kernel_dummy_src}" "")
-endif()
-
-add_custom_command(
-    OUTPUT "${_kernel_dummy_obj}"
-    COMMAND "${KYUZEN_CLANG}"
-            --target=x86_64-pc-none-elf
-            -c "${_kernel_dummy_src}"
-            -o "${_kernel_dummy_obj}"
-    DEPENDS "${_kernel_dummy_src}"
-    COMMENT "Creating kernel placeholder object"
-    VERBATIM
-)
-
-add_executable(kyuzen-kernel "${_kernel_dummy_obj}")
-set_source_files_properties("${_kernel_dummy_obj}" PROPERTIES
+add_executable(kyuzen-kernel "${_kernel_placeholder}")
+set_source_files_properties("${_kernel_placeholder}" PROPERTIES
     EXTERNAL_OBJECT TRUE
     GENERATED TRUE
 )
-# The only source is a pre-built object, so CMake cannot infer a language.
 set_target_properties(kyuzen-kernel PROPERTIES LINKER_LANGUAGE C)
 
 # Make sure the assembly objects exist before the link.
