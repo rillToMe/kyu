@@ -44,6 +44,10 @@ tests/host/probes/__pycache__/
 build/
 bin/
 out/
+# CMake build trees (the Make build uses build/; these are for parallel
+# comparison runs during the Make -> CMake migration)
+build-cmake/
+build-*/
 /graphify-out
 .codegraph
 

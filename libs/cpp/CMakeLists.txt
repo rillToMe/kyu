@@ -72,51 +72,68 @@ add_custom_command(
             -std=c++17 -fno-exceptions -fno-rtti -nostdinc++ -O2 -fno-builtin
             -D_LIBCPP_BUILDING_LIBRARY
             -D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2
-            -isystem "${_cpp_dir}/include"
-            -isystem "${_libcxx_inc}"
-            -isystem "${KYUZEN_SDK_C_INC}"
-            -c "${_cxxrt_src}"
+            # Relative paths, as in the old recipe — see the note in the
+            # libcxxrt loop below.
+            -isystem libs/cpp/include
+            -isystem third_party/stdlib/llvm-project/libcxx/include
+            -isystem build/sdk/c/include
+            -c libs/c/libc-port/src/kyuzen_cxx_runtime.cpp
             -o "${_sdk_cpp_cxxrt}"
     DEPENDS
         "${_cxxrt_src}"
         ${_sdk_cpp_site_files}
         "${KYUZEN_SDK_C_STAGE}"
+    WORKING_DIRECTORY "${KYUZEN_ROOT}"
     COMMENT "Compiling C++ runtime (cxxrt.o)"
     VERBATIM
 )
 
-# ===========================================================================
-# libc++ subset -> libcxxrt.a
+# Three parallel lists: source, archive member name, C++ standard.
 #
-# Compiled from the pinned LLVM tree (not from the SDK): these are library
-# internals. -std=c++20 is used for the archive only — algorithm.cpp needs
-# ranges::less, and upstream compiles the library once at its newest standard
-# for all app standards. App ABI is unaffected.
-# ===========================================================================
-set(_libcxxrt_srcs
+# The member names are pinned to the short forms the old build produced
+# (shims.o, string_inst.o, sort_inst.o) because the archive's member list is
+# part of the artifact and must stay byte-identical.
+#
+# Standards: the upstream TUs are compiled at the archive standard (C++20);
+# the string/sort slices are compiled at the app standard (C++17) so their
+# instantiations match the extern-template declarations on the app side.
+set(_libcxxrt_src_list
     "${_libcxx}/src/stdexcept.cpp"
     "${_libcxx}/src/verbose_abort.cpp"
     "${KYUZEN_ROOT}/libs/c/libc-port/src/kyuzen_libcxx_shims.cpp"
     "${KYUZEN_ROOT}/libs/c/libc-port/src/kyuzen_libcxx_string_inst.cpp"
     "${KYUZEN_ROOT}/libs/c/libc-port/src/kyuzen_libcxx_sort_inst.cpp"
 )
+set(_libcxxrt_name_list
+    stdexcept
+    verbose_abort
+    shims
+    string_inst
+    sort_inst
+)
+set(_libcxxrt_std_list
+    c++20
+    c++20
+    c++20
+    c++17
+    c++20
+)
 
 set(_libcxxrt_prologue "${KYUZEN_ROOT}/libs/c/libc-port/src/kyuzen_libcxx_prologue.h")
 
 set(_libcxxrt_objs "")
-foreach(_src IN LISTS _libcxxrt_srcs)
-    get_filename_component(_name "${_src}" NAME_WE)
+list(LENGTH _libcxxrt_src_list _libcxxrt_count)
+
+foreach(_i RANGE 0 ${_libcxxrt_count})
+    if(_i GREATER_EQUAL _libcxxrt_count)
+        break()
+    endif()
+    list(GET _libcxxrt_src_list  ${_i} _src)
+    list(GET _libcxxrt_name_list ${_i} _name)
+    list(GET _libcxxrt_std_list  ${_i} _std_ver)
+
     set(_obj "${KYUZEN_LIBC_DIR}/libcxxrt/${_name}.o")
     list(APPEND _libcxxrt_objs "${_obj}")
-
-    # string_inst / sort_inst are compiled at the app standard (C++17) so the
-    # instantiations match the extern-template declarations on the app side;
-    # the upstream TUs use the archive standard (C++20).
-    if(_name MATCHES "string_inst")
-        set(_std "-std=c++17")
-    else()
-        set(_std "-std=c++20")
-    endif()
 
     add_custom_command(
         OUTPUT "${_obj}"
@@ -124,20 +141,25 @@ foreach(_src IN LISTS _libcxxrt_srcs)
         COMMAND ${KYUZEN_CLANGXX}
                 --target=x86_64-pc-none-elf
                 -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float
-                ${_std} -fno-exceptions -fno-rtti -nostdinc++ -O2 -fno-builtin
+                -std=${_std_ver} -fno-exceptions -fno-rtti -nostdinc++ -O2 -fno-builtin
                 -D_LIBCPP_BUILDING_LIBRARY
                 -D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2
-                -isystem "${_cpp_dir}/include"
-                -isystem "${_libcxx_inc}"
-                -isystem "${KYUZEN_SDK_C_INC}"
-                -include "${_libcxxrt_prologue}"
-                -c "${_src}"
+                # Relative include paths: LLVM's headers use __FILE__-derived
+                # assertions, so absolute paths change the emitted object.
+                # Also, `-include <abs-windows-path>` is rejected outright
+                # (clang reads `E:` as a drive prefix in a header name).
+                -isystem libs/cpp/include
+                -isystem third_party/stdlib/llvm-project/libcxx/include
+                -isystem build/sdk/c/include
+                -include libs/c/libc-port/src/kyuzen_libcxx_prologue.h
+                -c ${_src}
                 -o "${_obj}"
         DEPENDS
             "${_src}"
             ${_sdk_cpp_site_files}
             "${_libcxxrt_prologue}"
             "${KYUZEN_SDK_C_STAGE}"
+        WORKING_DIRECTORY "${KYUZEN_ROOT}"
         COMMENT "Compiling libc++ runtime: ${_name}.cpp"
         VERBATIM
     )
@@ -175,14 +197,21 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${_cpp_dir}/bin/kyuzen-c++" "${_sdk_cpp_wrapper}"
     # Compute and copy the libc++ header closure.
+    #
+    # The flag list is passed as a single SEMICOLON-separated argument so the
+    # script receives it intact. Individual -D... entries must NOT appear as
+    # bare command-line arguments here: `cmake -P` would parse them as cache
+    # definitions of its own.
     COMMAND ${CMAKE_COMMAND}
             -DSRC=${_libcxx_inc}
             -DDST=${_sdk_cpp_inc}
             -DKYUZEN_CLANGXX=${KYUZEN_CLANGXX}
-            -DKYUZEN_CXXFLAGS=--target=x86_64-pc-none-elf;-ffreestanding;-nostdlib;-mno-red-zone;-mno-sse;-mno-sse2;-mno-mmx;-msoft-float;-std=c++17;-fno-exceptions;-fno-rtti;-nostdinc++;-O2;-fno-builtin;-D_LIBCPP_BUILDING_LIBRARY;-D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2
+            "-DKYUZEN_CXXFLAGS=--target=x86_64-pc-none-elf;-ffreestanding;-nostdlib;-mno-red-zone;-mno-sse;-mno-sse2;-mno-mmx;-msoft-float;-std=c++17;-fno-exceptions;-fno-rtti;-O2;-fno-builtin;-D_LIBCPP_BUILDING_LIBRARY;-D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2"
+            -DLIBCXX_INC=${_libcxx_inc}
+            -DWORK_DIR=${CMAKE_BINARY_DIR}/libcxx-header-probe
             -DSITE_INC=${_cpp_dir}/include
             -DCSDK_INC=${KYUZEN_SDK_C_INC}
-            -DHEADERS=${_libcxx_public_headers}
+            "-DHEADERS=${_libcxx_public_headers}"
             -P ${KYUZEN_ROOT}/cmake/stage_libcxx_headers.cmake
     # Sanity guards.
     COMMAND ${CMAKE_COMMAND}

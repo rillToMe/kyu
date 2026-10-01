@@ -91,6 +91,12 @@ add_custom_command(
 # Compiled against libc's INTERNAL headers with libc's own namespace so it can
 # replace the built-in freelist_heap. Its backing memory comes from syscall #9
 # (uheap), not from linker symbols _end/__llvm_libc_heap_limit.
+#
+# WHY RELATIVE INCLUDE PATHS: the old recipe ran from the repo root and passed
+# `-Ithird_party/stdlib/llvm-project/libc`. LLVM libc's headers use
+# `__FILE__`-derived assertions, so an absolute -I produces a different object
+# (+1664 bytes here). WORKING_DIRECTORY=root plus relative paths reproduces the
+# original invocation exactly.
 # ===========================================================================
 set(_port_obj "${_libc_out}/port/kyuzen_libc_port.o")
 
@@ -103,20 +109,21 @@ add_custom_command(
             -std=gnu++17 -fno-exceptions -fno-rtti -O2 -fno-builtin
             -fno-unwind-tables -fno-asynchronous-unwind-tables
             -fvisibility-inlines-hidden
+            -Ithird_party/stdlib/llvm-project/libc
+            -Ibuild/libc/cmake/libc
+            -isystem build/libc/cmake/libc/include
             -DLIBC_NAMESPACE=${KYUZEN_LIBC_NAMESPACE}
             -DLIBC_FULL_BUILD
             -DLIBC_TARGET_OS_IS_BAREMETAL
             -DLIBC_ERRNO_MODE=LIBC_ERRNO_MODE_EXTERNAL
             -DLIBC_THREAD_MODE=LIBC_THREAD_MODE_SINGLE
             -DLIBC_COPT_PUBLIC_PACKAGING
-            -I"${_libc_src}/libc"
-            -I"${_libc_cmake}/libc"
-            -isystem "${_libc_inc}"
-            -c "${KYUZEN_ROOT}/libs/c/libc-port/src/kyuzen_libc_port.cpp"
+            -c libs/c/libc-port/src/kyuzen_libc_port.cpp
             -o "${_port_obj}"
     DEPENDS
         "${KYUZEN_ROOT}/libs/c/libc-port/src/kyuzen_libc_port.cpp"
         "${_libc_archive}"
+    WORKING_DIRECTORY "${KYUZEN_ROOT}"
     COMMENT "Compiling Kyuzen libc port layer (CRT)"
     VERBATIM
 )
@@ -133,21 +140,21 @@ add_custom_command(
     OUTPUT "${_sdk_stage}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_inc}"
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${_sdk_inc}/llvm-libc-types"
-            "${_sdk_inc}/llvm-libc-macros/baremetal"
+            "${_sdk_inc}"
             "${_sdk_dir}/lib"
             "${_sdk_dir}/crt"
             "${_sdk_dir}/linker"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${_libc_inc}/llvm-libc-types"  "${_sdk_inc}/llvm-libc-types"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${_libc_inc}/llvm-libc-macros" "${_sdk_inc}/llvm-libc-macros"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_libc_archive}" "${_sdk_lib}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_port_obj}"     "${_sdk_crt}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_sdk_ld_src}"   "${_sdk_ld}"
-    # Public top-level headers (excluding the two subdirectories).
+    # Headers: ONLY *.h files, and only from the three public locations.
+    # A directory copy would also drag in the build-system files that live in
+    # the generated include tree (CMakeFiles/, Makefile, cmake_install.cmake) —
+    # the old Makefile avoided this with explicit `cp <dir>/*.h` globs.
     COMMAND ${CMAKE_COMMAND}
             -DSRC=${_libc_inc}
             -DDST=${_sdk_inc}
             -P ${KYUZEN_ROOT}/cmake/stage_libc_headers.cmake
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_libc_archive}" "${_sdk_lib}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_port_obj}"     "${_sdk_crt}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_sdk_ld_src}"   "${_sdk_ld}"
     # Sanity guards: a stale archive missing these symbols is a real failure
     # mode, not a hypothetical one.
     COMMAND ${CMAKE_COMMAND}

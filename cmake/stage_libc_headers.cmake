@@ -27,6 +27,30 @@ endif()
 
 file(MAKE_DIRECTORY "${DST}")
 
+# ---------------------------------------------------------------------------
+# Compare-then-copy helper.
+#
+# `file(COPY_FILE ... ONLY_IF_DIFFERENT)` fails with "Invalid argument" when
+# the destination already holds an identical file (re-running the stage over a
+# previous partial result). Explicit hashing is predictable and keeps the
+# stage idempotent without touching timestamps.
+# ---------------------------------------------------------------------------
+function(_kyuzen_copy_if_changed src dst)
+    set(_needs_copy TRUE)
+    if(EXISTS "${dst}")
+        file(SHA256 "${src}" _src_hash)
+        file(SHA256 "${dst}" _dst_hash)
+        if(_src_hash STREQUAL _dst_hash)
+            set(_needs_copy FALSE)
+        endif()
+    endif()
+    if(_needs_copy)
+        get_filename_component(_dst_dir "${dst}" DIRECTORY)
+        file(MAKE_DIRECTORY "${_dst_dir}")
+        file(COPY_FILE "${src}" "${dst}")
+    endif()
+endfunction()
+
 # --- top-level public headers ----------------------------------------------
 file(GLOB _top_headers RELATIVE "${SRC}" "${SRC}/*.h")
 list(LENGTH _top_headers _top_count)
@@ -34,29 +58,26 @@ if(_top_count EQUAL 0)
     message(FATAL_ERROR "stage_libc_headers: no top-level *.h found in ${SRC}")
 endif()
 foreach(_h IN LISTS _top_headers)
-    file(COPY_FILE "${SRC}/${_h}" "${DST}/${_h}" ONLY_IF_DIFFERENT)
+    _kyuzen_copy_if_changed("${SRC}/${_h}" "${DST}/${_h}")
 endforeach()
 
 # --- llvm-libc-types/ and llvm-libc-macros/ (flat) --------------------------
 foreach(_sub llvm-libc-types llvm-libc-macros)
     if(IS_DIRECTORY "${SRC}/${_sub}")
-        file(MAKE_DIRECTORY "${DST}/${_sub}")
         file(GLOB _headers RELATIVE "${SRC}/${_sub}" "${SRC}/${_sub}/*.h")
         foreach(_h IN LISTS _headers)
-            file(COPY_FILE "${SRC}/${_sub}/${_h}" "${DST}/${_sub}/${_h}" ONLY_IF_DIFFERENT)
+            _kyuzen_copy_if_changed("${SRC}/${_sub}/${_h}" "${DST}/${_sub}/${_h}")
         endforeach()
     endif()
 endforeach()
 
 # --- llvm-libc-macros/baremetal/ -------------------------------------------
 if(IS_DIRECTORY "${SRC}/llvm-libc-macros/baremetal")
-    file(MAKE_DIRECTORY "${DST}/llvm-libc-macros/baremetal")
     file(GLOB _bm_headers RELATIVE "${SRC}/llvm-libc-macros/baremetal"
         "${SRC}/llvm-libc-macros/baremetal/*.h")
     foreach(_h IN LISTS _bm_headers)
-        file(COPY_FILE
+        _kyuzen_copy_if_changed(
             "${SRC}/llvm-libc-macros/baremetal/${_h}"
-            "${DST}/llvm-libc-macros/baremetal/${_h}"
-            ONLY_IF_DIFFERENT)
+            "${DST}/llvm-libc-macros/baremetal/${_h}")
     endforeach()
 endif()

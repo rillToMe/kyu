@@ -24,8 +24,21 @@ if(NOT IS_DIRECTORY "${SRC}")
     message(FATAL_ERROR "stage_libcxx_headers: libc++ include dir not found: ${SRC}")
 endif()
 
+# Scratch space for the probe TUs. Must NOT be inside DST — see below.
+if(NOT WORK_DIR)
+    set(WORK_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+file(MAKE_DIRECTORY "${WORK_DIR}")
+
 # Build the common compile-flag list once.
+#
+# LIBCXX_INC is added explicitly: the probe TUs `#include <array>` etc., and
+# the SDK flag set does not necessarily put the libc++ include root on the
+# search path (it may carry -nostdinc++ to stay hermetic from the host).
 set(_flags ${KYUZEN_CXXFLAGS})
+if(LIBCXX_INC)
+    list(APPEND _flags -isystem "${LIBCXX_INC}")
+endif()
 if(SITE_INC)
     list(APPEND _flags -isystem "${SITE_INC}")
 endif()
@@ -34,7 +47,15 @@ if(CSDK_INC)
 endif()
 
 set(_copied 0)
-set(_probe_dir "${DST}/.kyuzen-probe")
+# The destination root must exist before any file is copied into it: the
+# staging recipe removes the directory first, and copy_file does not create
+# parent directories.
+file(MAKE_DIRECTORY "${DST}")
+
+# Probe TUs live OUTSIDE the destination tree. If they were placed under DST,
+# the dependency scan would find them as part of the closure and try to copy
+# each probe into itself.
+set(_probe_dir "${WORK_DIR}/libcxx-header-probe")
 file(MAKE_DIRECTORY "${_probe_dir}")
 
 foreach(_hdr IN LISTS HEADERS)
@@ -56,7 +77,15 @@ foreach(_hdr IN LISTS HEADERS)
     endif()
 
     # Split the make-style output into file paths.
+    #
+    # `clang -M` emits "target: dep1 dep2 ...\n", so the LAST dependency keeps
+    # the trailing newline. A path with a newline in it makes file(COPY_FILE)
+    # fail with a bare "Invalid argument" — and only for whichever file
+    # happens to sort last, which is why this looked arbitrary.
     string(REGEX REPLACE "[ \t]*\\\\\r?\n[ \t]*" " " _deps "${_deps}")
+    string(REPLACE "\r" "" _deps "${_deps}")
+    string(REPLACE "\n" "" _deps "${_deps}")
+    string(STRIP "${_deps}" _deps)
     string(REPLACE " " ";" _dep_list "${_deps}")
 
     foreach(_dep IN LISTS _dep_list)
@@ -68,7 +97,25 @@ foreach(_hdr IN LISTS HEADERS)
             if(_rel_dir)
                 file(MAKE_DIRECTORY "${DST}/${_rel_dir}")
             endif()
-            file(COPY_FILE "${_dep}" "${DST}/${_rel}" ONLY_IF_DIFFERENT)
+
+            # Compare-then-copy rather than COPY_FILE ... ONLY_IF_DIFFERENT:
+            # that option fails with "Invalid argument" when the destination
+            # already holds an identical file (e.g. re-running the stage over a
+            # previous partial result). Explicit hashing is predictable and
+            # keeps the stage idempotent without touching timestamps.
+            set(_dst_file "${DST}/${_rel}")
+            set(_needs_copy TRUE)
+            if(EXISTS "${_dst_file}")
+                file(SHA256 "${_dep}" _dep_hash)
+                file(SHA256 "${_dst_file}" _dst_hash)
+                if(_dep_hash STREQUAL _dst_hash)
+                    set(_needs_copy FALSE)
+                endif()
+            endif()
+            if(_needs_copy)
+                file(COPY_FILE "${_dep}" "${_dst_file}")
+            endif()
+
             math(EXPR _copied "${_copied} + 1")
         endif()
     endforeach()
