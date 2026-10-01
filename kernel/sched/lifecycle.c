@@ -18,9 +18,8 @@
 #include "vfs.h"
 #include "sched_internal.h"
 #include <stddef.h>
+#include "kprint.h"
 
-extern void kprint(const char* str);
-extern void kprint_num(uint64_t num);
 extern void kernel_panic(const char* title, const char* desc, uint64_t code);
 extern void tss_set_rsp0(uint32_t cpu, uint64_t rsp0);
 

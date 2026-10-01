@@ -202,10 +202,6 @@ void ghal_cursor_move(int x, int y);
 // 0 sukses, <0 bila backend tidak menyediakan (software).
 int  ghal_gpu_stats(ghal_gpu_stats_t* out);
 
-// Dump statistik ke TTY (shell command `gpu`, awal §9.8). Aman dipanggil
-// kapan pun setelah ghal_init.
-void ghal_stats_dump(void);
-
 // Diagnostics: pesan error statis dari operasi terakhir yang gagal.
 const char* ghal_last_error(void);
 

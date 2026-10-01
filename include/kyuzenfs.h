@@ -3,7 +3,7 @@
 
 // =====================================================================
 // Shim API — kontrak publik KyuzenFS yang dipakai caller lama (syscall.c,
-// elf.c, kernel.c mod-install, apps/kernel_userlib.c).
+// elf.c, kernel.c mod-install).
 //
 // Sejak V4, implementasinya ada di kernel/fs/kyuzenfs_v4.c (extent-based,
 // block-cached, vnode). Format on-disk V4 ada di include/kyuzenfs_v4.h;

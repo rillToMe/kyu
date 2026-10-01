@@ -8,7 +8,7 @@
 #include "uheap.h"
 #include "kwm.h"
 #include "heap.h"
-#include "shell.h"     // user_shell, g_shell_return_rsp (legacy exec-chain)
+#include "kprint.h"    // kprint (diagnostik sys_exit dari task kernel = bug)
 #include "serial.h"    // serial_print/hex (blok debug HEAP_WATCH_DEBUG)
 #include "net_socket.h" // net_task_reown (socket survive exec via reown)
 
@@ -244,11 +244,14 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
         uint64_t entry = elf_load_file(kfname, &new_stack_top, new_pml4);
 
         // 3. Set RIP & RSP untuk IRETQ
-        if (entry != 0) {
+        if (entry != 0 && new_stack_top != 0) {
             r->rip = entry;
-            // New app runs on its own 256KB stack (deep decode chains overflow
-            // the shared shell stack). Fallback to shell RSP if alloc failed.
-            r->rsp = (new_stack_top != 0) ? new_stack_top : g_shell_return_rsp;
+            // App berjalan di stack user-nya sendiri. Dulu ada fallback ke
+            // g_shell_return_rsp (stack shell di kernel) — sudah dihapus:
+            // RSP kernel di frame iretq ke CPL 3 bukan alamat user yang sah,
+            // dan stack kernel tidak boleh dipakai kode ring-3. Kalau alokasi
+            // stack gagal, exec GAGAL (jangan lanjutkan dengan state separuh).
+            r->rsp = new_stack_top;
             // FIX_005 Tahap 1: masuk CPL 3 — iretq memuat segmen user.
             // Kernel tetap bisa dijangkau via int 0x80 (gate DPL=3 + TSS.RSP0).
             r->cs = 0x1B;  // user code (GDT[3] | RPL3)
@@ -272,61 +275,25 @@ int sys_proc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st) 
     else if (syscall_num == 34) { // sys_exit(code) — P0 Phase 2: RBX = exit status
         // Exit status vs syscall failure are DISTINCT: a syscall returning -1
         // never implies process exit -1. Only this path records exit_code.
-        // TASK_KIND_SPAWNED (sys_spawn child): terminate via proc_exit —
-        // zombie iff a live parent can waitpid, else DEAD immediately.
-        // TASK_KIND_KERNEL (exec-chain shell): legacy longjmp back to the
-        // shell loop (task reused, no zombie). Code ignored on that path.
-        int code = (int32_t)r->rbx;   // old void callers now pass 0 explicitly
-        {
-            task_t *self = syscall_current_task();
-            if (self && self->kind == TASK_KIND_SPAWNED) {
-                proc_exit(code);  // noreturn
-            }
+        //
+        // Sejak migrasi Ring-3 (docs/design/ring3-init-migration.md) SEMUA task
+        // user adalah TASK_KIND_SPAWNED: login/shell/zen/init adalah ELF yang
+        // di-spawn, bukan kode kernel. Jalur exec-chain lama (longjmp ke
+        // user_shell di higher-half) sudah dihapus — dulu itu satu-satunya
+        // pemakai TASK_KIND_KERNEL di jalur exit.
+        //
+        // Kalau task ini ternyata masih TASK_KIND_KERNEL, itu bug pemanggil:
+        // kode kernel tidak boleh memanggil syscall 34. Laporkan dan keluar
+        // daripada diam-diam kembali ke instruksi setelah int 0x80 (yang akan
+        // membuat task kernel berjalan dengan frame iretq yang sudah dimodifikasi).
+        int code = (int32_t)r->rbx;
+        task_t *self = syscall_current_task();
+        if (self && self->kind == TASK_KIND_SPAWNED) {
+            proc_exit(code);  // noreturn
         }
 
-        // Kernel exec-chain path: destroy this task's windows only (FIX_004).
-        // (Spawned path already did this inside proc_exit.)
-        {
-            kwm_destroy_windows_of(smp_current_task_id());
-        }
-
-        // Destroy address space and switch back to kernel PML4
-        {
-            task_t *self = syscall_current_task();
-
-            // Tahap 3: buang metadata heap user — frame region & stack app
-            // ikut bebas saat AS dihancurkan di bawah.
-            uheap_reset(self);
-
-            if (self && self->pml4_phys != 0) {
-                vmm_destroy_task_as(self->pml4_phys);
-                self->pml4_phys = 0;
-            }
-            // pml4_phys == 0: task memakai boot/kernel AS. User range PML4 boot
-            // milik Limine — membebaskannya mencemari free list PMM dengan
-            // halaman reserved/ROM <72MB (akar BOSD heap corruption).
-        }
-
-        // Longjmp kembali ke shell: reset RSP dan jump ke user_shell()
-        // Ini BYPASS iretq sepenuhnya — langsung ke shell command loop.
-        // Aman karena int 0x80 = software interrupt (tidak perlu EOI).
-        uint64_t safe_rsp = g_shell_return_rsp;
-        if (safe_rsp == 0) {
-            // Fallback: jika belum pernah launch app dari shell, halt
-            for(;;) __asm__ volatile("hlt");
-        }
-        // Reset stack dan jump langsung ke shell loop.
-        // Tidak pakai CALL (yang push return addr dan grow stack).
-        // Pakai JMP → shell berjalan di stack level yang sama.
-        __asm__ volatile(
-            "mov %0, %%rsp\n"
-            "xor %%rbp, %%rbp\n"
-            "sti\n"                // Re-enable interrupts! (int 0x80 disabled mereka)
-            "jmp *%1\n"
-            : : "r"(safe_rsp), "r"((uint64_t)user_shell)
-            : "memory"
-        );
-        __builtin_unreachable();
+        kprint("[sys_exit] BUG: task kernel memanggil syscall 34\n");
+        for (;;) __asm__ volatile("hlt");
     }
     else if (syscall_num == 57) { // sys_spawn — Phase 5A: ELF sebagai task ring-3 BARU
         // Copy-in path SEBELUM apa pun (pola boundary Tahap 2).

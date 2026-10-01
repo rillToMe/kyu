@@ -1,16 +1,26 @@
+// system/login.c — login CLI + peluncur shell.
+//
+// Dibangun sebagai ELF user-space (Ring 3), sumber di system/ karena historis
+// dulu bagian kernel image. Sama seperti system/cat.c, echo.c, zen.c, init.c:
+// seluruh isinya lewat API userlib (include/userlib.h), jadi tidak butuh
+// simbol kernel sama sekali.
+//
+// Perubahan dari versi Ring 0:
+//   - user_login() → main() (ENTRY main di apps/app.ld)
+//   - timer_sleep_ms(ms) → sys_sleep(ms) (syscall 46)
+//   - user_shell() (panggilan fungsi langsung) → sys_spawn("/apps/shell.elf"),
+//     lalu sys_waitpid supaya login menunggu shell selesai (logout) dan
+//     menampilkan layar login lagi. Dulu user_shell() adalah loop di kernel
+//     yang tidak pernah kembali.
 #include "userlib.h"
-#include "timer.h"   // timer_sleep_ms() — sleep berbasis ms, hardware-agnostic
-
-
-extern void user_shell();
 
 // Fungsi bantuan manipulasi string
-int str_match(const char* s1, const char* s2) {
+static int str_match(const char* s1, const char* s2) {
     while (*s1 != '\0' && *s1 == *s2) { s1++; s2++; }
     return (*s1 == *s2);
 }
 
-void str_concat(char* dest, const char* src) {
+static void str_concat(char* dest, const char* src) {
     while (*dest) dest++;
     while (*src) *dest++ = *src++;
     *dest = '\0';
@@ -116,12 +126,13 @@ void first_time_setup() {
     
     print("\n\n[OK] File users.sys dibuat! Akun root dikonfigurasi.\n");
     print("  Sistem siap digunakan. Memuat halaman login...\n");
-    timer_sleep_ms(2000); // Jeda 2 detik
+    sys_sleep(2000); // Jeda 2 detik
 
 
 }
 
-void user_login() {
+void main(int argc, char** argv) {
+    (void)argc; (void)argv;
     // 1. Cek apakah ini instalasi baru?
     if (!sys_file_exists("users.sys")) {
         first_time_setup();
@@ -163,20 +174,59 @@ void user_login() {
 
         uint32_t active_uid = 0;
         if (parse_auth(username, password, &active_uid)) {
-            sys_set_uid(active_uid);
-            timer_sleep_ms(1000); // Jeda 1 detik sebelum masuk shell
+            sys_sleep(1000); // Jeda 1 detik sebelum masuk shell
 
-            // Phase 10: spawn desktop shell (task sendiri, jalan konkuren).
-            // Gagal (file tak ada) → fallback natural ke shell CLI.
-            char dpath[32];
-            build_app_path(dpath, sizeof(dpath), "desktop.elf");
-            sys_spawn(dpath);
+            // Desktop shell (GUI) di-spawn DI SINI — setelah autentikasi sukses.
+            // Dulu init.elf yang men-spawn-nya bersamaan dengan login, dan
+            // hasilnya race layar: prompt login TTY ditimpa GUI sebelum user
+            // sempat mengetik (sistem tampak freeze). Sekarang desktop hanya
+            // jalan untuk sesi terautentikasi, dan tidak ada dua penulis layar
+            // yang berebut di saat yang sama.
+            {
+                char dpath[32];
+                build_app_path(dpath, sizeof(dpath), "desktop.elf");
+                if (sys_file_exists(dpath)) {
+                    if (sys_spawn(dpath) < 0)
+                        print("[login] peringatan: desktop.elf gagal spawn\n");
+                }
+            }
+
+            // Shell CLI sebagai proses terpisah (ELF ring-3). Dulu user_shell()
+            // adalah loop di dalam kernel yang tidak pernah kembali; sekarang
+            // login menunggu shell selesai (logout) lalu menampilkan layar
+            // login lagi.
+            //
+            // PENTING — urutan uid: shell di-spawn SEBELUM sys_set_uid(), lalu
+            // uid target diteruskan sebagai argv[1] dan shell sendiri yang
+            // menurunkannya. Kalau login menurunkan uid lebih dulu, shell
+            // mewarisi uid non-root lewat cred_inherit() dan perintah root-only
+            // (format/shutdown/reboot, sys_fs.c & sys_system.c) akan ditolak
+            // selamanya — `sudo` hanya flag UX di shell, batas aslinya di kernel.
+            char spath[32];
+            build_app_path(spath, sizeof(spath), "shell.elf");
+            char uidarg[16];
+            {   // uint32 -> desimal tanpa stdio (freestanding)
+                uint32_t v = active_uid; int n = 0;
+                char tmp[12];
+                if (v == 0) tmp[n++] = '0';
+                else { while (v) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; } }
+                int k = 0; while (n) uidarg[k++] = tmp[--n];
+                uidarg[k] = '\0';
+            }
 
             clear_screen();
-            user_shell();
+            char* cargv[1] = { uidarg };
+            int sh_pid = sys_spawn_argv(spath, 1, cargv);
+            if (sh_pid < 0) {
+                print("Gagal menjalankan shell.elf (jalankan `make apps`)\n");
+                sys_sleep(3000);
+            } else {
+                int status = 0;
+                sys_waitpid(sh_pid, &status, 0);   // tunggu sampai `logout`
+            }
         } else {
             print("[DENIED] Akses Ditolak: Username atau Password salah!\n");
-            timer_sleep_ms(2000); // Jeda 2 detik, tampilkan pesan error
+            sys_sleep(2000); // Jeda 2 detik, tampilkan pesan error
 
 
         }

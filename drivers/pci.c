@@ -1,10 +1,9 @@
 #include "pci.h"
 #include "io.h"
 #include "acpi.h"   // acpi_poweroff_raw()/acpi_reset_raw() (FADT asli)
+#include "kprint.h"
 
 // Pinjam fungsi kprint dari kernel untuk nge-log ke layar
-extern void kprint(const char* str);
-extern void print_hex(uint32_t num); 
 
 // Fungsi inti untuk membaca register hardware PCI
 uint32_t pci_read_word(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {

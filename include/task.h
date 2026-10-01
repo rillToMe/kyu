@@ -90,9 +90,15 @@ typedef struct task {
                              // SLEEPING/RUNNING target observes, then proc_exit_kill)
 } task_t;
 
-// task_t.kind — Phase 5A: pembeda semantik sys_exit (34).
-#define TASK_KIND_KERNEL  0   // task kernel / exec-chain shell: exit → longjmp ke user_shell
-#define TASK_KIND_SPAWNED 1   // app ring-3 hasil sys_spawn: exit → terminate task
+// task_t.kind — pembeda semantik sys_exit (34).
+// TASK_KIND_KERNEL: task kernel murni (task 0/idle, task internal). TIDAK boleh
+//   memanggil syscall 34 — kode kernel tidak punya frame iretq user untuk
+//   dikembalikan, dan jalur longjmp exec-chain sudah dihapus (dulu itu
+//   pemakainya; lihat docs/design/ring3-init-migration.md).
+// TASK_KIND_SPAWNED: task user ring-3 (semua ELF termasuk init/login/shell).
+//   sys_exit → proc_exit, jadi zombie sampai parent waitpid.
+#define TASK_KIND_KERNEL  0
+#define TASK_KIND_SPAWNED 1
 
 // Priority levels: higher value = scheduled first. Aging boosts long-waiting
 // READY tasks so low-priority work cannot starve indefinitely.

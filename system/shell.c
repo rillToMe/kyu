@@ -1,22 +1,20 @@
+// system/shell.c — frontend shell konsol (TTY).
+//
+// Dibangun sebagai ELF user-space (Ring 3), sumber di system/ karena historis
+// dulu bagian kernel image. Sama seperti cat.c/echo.c/zen.c/login.c/init.c:
+// seluruh isinya lewat API userlib (include/userlib.h) — nol simbol kernel.
+//
+// Perubahan dari versi Ring 0:
+//   - user_shell() → main() (ENTRY main di apps/app.ld)
+//   - extern fs_node_t tty_node + read_fs (simbol kernel) → sys_read_keyboard
+//     (syscall 3) yang memang non-blocking: return 0 bila tak ada input
+//   - g_shell_return_rsp dihapus: tidak ada lagi longjmp dari sys_exit karena
+//     app sekarang task ring-3 sungguhan (lihat sys_proc.c sys_exit)
 #include "shell.h"
 #include "userlib.h"
-#include "zen.h"
-#include "timer.h"   // timer_get_refresh_rate / timer_set_refresh_rate / sleep
-#include "task.h"
-#include "fs.h"      // P0 Phase 6A: fs_node_t/read_fs untuk poll non-blocking
 
 #include <stddef.h>
 #include <stdint.h>
-
-extern fs_node_t tty_node;
-extern uint32_t read_fs(fs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buffer);
-
-// Phase 2C §9.6 — statistik GPU (graphics/ghal.c)
-extern void ghal_stats_dump(void);
-
-// RSP shell disimpan sebelum sys_exec — dipakai syscall.c (sys_exit app) untuk
-// longjmp kembali ke user_shell. 0 = tidak ada sesi exec aktif.
-uint64_t g_shell_return_rsp = 0;
 
 // ============================================================
 // Console shell frontend.
@@ -25,40 +23,12 @@ uint64_t g_shell_return_rsp = 0;
 // adduser/format/install_app/nettest. File ini hanya:
 //   - output → TTY (print/clear_screen)
 //   - loop keyboard + prompt + input tertunda (password)
-//   - mendaftarkan perintah yang MUTLAK perlu Ring 0 / TUI kernel
-//     (logout, zen, refresh, gpu, sleep)
+//   - mendaftarkan perintah yang MUTLAK perlu TUI konsol (logout, zen, sleep)
+//
+// Aturan: file ini hanya boleh memakai include/userlib.h. Jangan panggil simbol
+// kernel langsung (kfs_*, timer_*, ghal_*) — itu yang dulu mengunci frontend ini
+// ke Ring 0.
 // ============================================================
-
-// TCP socket wrappers (syscall 52-56). Weak: kernel shell links these; ELF apps
-// use the strong versions in libs/core/userlib.c — dipakai engine `nettest`.
-__attribute__((weak))
-int sys_socket(void) {
-    int64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(52ULL));
-    return (int)ret;
-}
-__attribute__((weak))
-int sys_connect(int s, uint32_t ip_be, uint16_t port) {
-    int64_t ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(53ULL), "b"((uint64_t)s), "c"((uint64_t)ip_be), "d"((uint64_t)port));
-    return (int)ret;
-}
-__attribute__((weak))
-int sys_send(int s, const void *buf, uint32_t len) {
-    int64_t ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(54ULL), "b"((uint64_t)s), "c"((uint64_t)buf), "d"((uint64_t)len));
-    return (int)ret;
-}
-__attribute__((weak))
-int sys_recv(int s, void *buf, uint32_t len) {
-    int64_t ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(55ULL), "b"((uint64_t)s), "c"((uint64_t)buf), "d"((uint64_t)len));
-    return (int)ret;
-}
-__attribute__((weak))
-int sys_sock_close(int s) {
-    int64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(56ULL), "b"((uint64_t)s));
-    return (int)ret;
-}
 
 // ---------- output adapter: shell → TTY ----------
 static void tty_out(void* ctx, const char* text) { (void)ctx; print((char*)text); }
@@ -67,12 +37,16 @@ static void tty_clear(void* ctx) { (void)ctx; clear_screen(); }
 // P0 Phase 6A poll: non-blocking TTY drain untuk join foreground.
 // 0x03 (Ctrl-C masakan driver) dikonsumsi -> 1; ketikan susulan lain
 // dibuang (terdokumentasi: tanpa type-ahead selama pipeline jalan).
-// read_fs langsung (bukan read_keyboard — itu blocking hlt-loop).
+//
+// sys_read_keyboard (syscall 3) SUDAH non-blocking: kernel memanggil
+// read_fs(&tty_node, ...) dan mengembalikan 0 bila buffer kosong. Dulu di sini
+// dipakai read_fs langsung karena shell hidup di Ring 0; sekarang shell adalah
+// ELF ring-3, jadi jalurnya lewat syscall.
 static int console_poll_input(void* ctx) {
     (void)ctx;
     for (;;) {
         char c = 0;
-        if (read_fs(&tty_node, 0, 1, (uint8_t*)&c) == 0) return 0;
+        if (read_keyboard(&c, 1) == 0) return 0;
         if (c == 0x03) return 1;
     }
 }
@@ -91,25 +65,35 @@ static int parse_uint(const char* str, uint32_t* out) {
     return 1;
 }
 
-// ---------- perintah eksklusif console (Ring 0 / TUI kernel) ----------
+// ---------- perintah eksklusif console (TUI kernel) ----------
 static int cmd_zen(shell_t* sh, int argc, char** argv) {
     if (argc < 2) { shell_writeln(sh, "Penggunaan: zen [nama_file]"); return SHELL_ERR; }
-    zen_main(argv[1]);
-    clear_screen();
+    // zen kini ELF ring-3 (system/zen.c di-`filter-out` dari kernel image).
+    // Di-spawn sebagai task baru supaya shell tetap hidup saat editor terbuka —
+    // dulu zen_main() dipanggil langsung sehingga editor memblokir shell.
+    char app[40];
+    build_app_path(app, sizeof(app), "zen.elf");
+    if (!sys_file_exists(app)) {
+        shell_writeln(sh, "zen: /apps/zen.elf tidak ada (jalankan `make apps`)");
+        return SHELL_ERR;
+    }
+    int tid = sys_spawn_argv(app, argc - 1, &argv[1]);
+    if (tid < 0) { shell_writeln(sh, "zen: gagal spawn"); return SHELL_ERR; }
     return SHELL_OK;
 }
 
 static int cmd_refresh(shell_t* sh, int argc, char** argv) {
     if (argc < 2) {
         shell_write(sh, "Refresh rate saat ini: ");
-        shell_writenum(sh, timer_get_refresh_rate());
+        shell_writenum(sh, sys_get_refresh_rate());
         shell_writeln(sh, "Hz");
         shell_writeln(sh, "Pilihan: 60, 100, 144");
         return SHELL_OK;
     }
     uint32_t hz = 0;
     if (!parse_uint(argv[1], &hz)) { shell_writeln(sh, "Penggunaan: refresh [60|100|144]"); return SHELL_ERR; }
-    if (timer_set_refresh_rate(hz) == 0) {
+    // Portable: Ring 3 = syscall 88 (root-only di kernel), Ring 0 = driver timer.
+    if (sys_set_refresh_rate(hz) == 0) {
         shell_write(sh, "Refresh rate diubah ke "); shell_writenum(sh, hz); shell_writeln(sh, "Hz");
     } else {
         shell_writeln(sh, "Refresh rate tidak didukung. Pilihan: 60, 100, 144");
@@ -118,8 +102,24 @@ static int cmd_refresh(shell_t* sh, int argc, char** argv) {
 }
 
 static int cmd_gpu(shell_t* sh, int argc, char** argv) {
-    (void)sh; (void)argc; (void)argv;
-    ghal_stats_dump();
+    (void)argc; (void)argv;
+    // Portable: lewat API userlib (syscall 65). Sebelumnya memanggil
+    // ghal_stats_dump() yang hanya ada di sisi kernel, sehingga perintah ini
+    // terkunci ke Ring 0.
+    gpu_stats_t st;
+    if (sys_gpu_stats(&st) != 0) {
+        shell_writeln(sh, "[gpu] statistik tidak tersedia (backend tanpa stats)");
+        return SHELL_OK;
+    }
+    shell_write(sh, "[gpu] present=");    shell_writenum(sh, (uint32_t)st.present_count);
+    shell_write(sh, "  cmd=");            shell_writenum(sh, (uint32_t)st.cmd_count);
+    shell_write(sh, "  bytes=");          shell_writenum(sh, (uint32_t)st.cmd_bytes);
+    shell_writeln(sh, "");
+    shell_write(sh, "[gpu] notify=");     shell_writenum(sh, (uint32_t)st.notify_count);
+    shell_write(sh, "  wait_calls=");     shell_writenum(sh, (uint32_t)st.wait_calls);
+    shell_write(sh, "  wait_ticks=");     shell_writenum(sh, (uint32_t)st.wait_ticks);
+    shell_write(sh, "  err=");            shell_writenum(sh, (uint32_t)st.err_count);
+    shell_writeln(sh, "");
     return SHELL_OK;
 }
 
@@ -127,7 +127,7 @@ static int cmd_sleep(shell_t* sh, int argc, char** argv) {
     (void)argc; (void)argv;
     shell_writeln(sh, "Sistem memasuki mode Sleep...");
     shell_writeln(sh, "Mata CPU ditutup. Tekan tombol apapun untuk membangunkan.");
-    timer_sleep_ms(2000);
+    sys_sleep(2000);   // Portable: Ring 3 = syscall 46, Ring 0 = timer_sleep_ms
     clear_screen();
     char dummy[2];
     while (read_keyboard(dummy, 1) == 0) sys_yield();
@@ -159,11 +159,20 @@ static int try_implicit_exec(shell_t* sh, const char* line) {
     char app[40]; build_app_path(app, sizeof(app), elf);
     if (!sys_file_exists(app)) return 0;
 
-    __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
+    // Spawn sebagai task ring-3 baru, bukan sys_exec (replace image).
+    // sys_exec akan menggantikan shell itu sendiri — kalau app crash, shell
+    // ikut hilang dan user kehilangan prompt. Dengan spawn, shell tetap hidup
+    // dan `logout` tetap bisa dijalankan setelah app selesai.
     clear_screen();
-    sys_exec(app);
-    // sys_exec tidak kembali saat sukses; sampai sini = gagal memuat.
-    shell_error(sh, "Gagal memuat: "); shell_writeln(sh, elf);
+    int pid = sys_spawn(app);
+    if (pid < 0) {
+        shell_error(sh, "Gagal menjalankan: "); shell_writeln(sh, elf);
+        return 1;
+    }
+    // Tunggu app selesai (perilaku lama: prompt kembali setelah app keluar).
+    int status = 0;
+    sys_waitpid(pid, &status, 0);
+    clear_screen();
     return 1;
 }
 
@@ -185,7 +194,19 @@ static void read_line(char* out, int cap, int mask) {
     }
 }
 
-void user_shell(void) {
+void main(int argc, char** argv) {
+    // argv[1] = uid target (dari login.elf). Shell di-spawn SEBELUM login
+    // menurunkan uid supaya mewarisi root; penurunan dilakukan di sini setelah
+    // proses hidup. Kalau login menurunkan uid lebih dulu, shell mewarisi uid
+    // non-root dan perintah root-only (format/shutdown/reboot) ditolak
+    // selamanya — `sudo` hanya flag UX, batas aslinya di kernel.
+    if (argc >= 2 && argv[1] && argv[1][0]) {
+        uint32_t want = 0;
+        for (int i = 0; argv[1][i] >= '0' && argv[1][i] <= '9'; i++)
+            want = want * 10u + (uint32_t)(argv[1][i] - '0');
+        if (want != 0) sys_set_uid(want);   // root-only; gagal = tetap root
+    }
+
     char cmd_buffer[256];
     int cmd_index = 0;
     char key_buffer[2];
@@ -195,7 +216,7 @@ void user_shell(void) {
     io.poll_input = console_poll_input;
     shell_t* sh = shell_init(&io);
 
-    // Perintah yang mutlak butuh Ring 0 / TUI kernel.
+    // Perintah frontend konsol (perintah generik ada di shell_core.c).
     shell_register_command(sh, "zen",     cmd_zen,     "Buka teks editor");
     shell_register_command(sh, "refresh", cmd_refresh, "Atur refresh rate");
     shell_register_command(sh, "gpu",     cmd_gpu,     "Statistik GPU");
@@ -231,7 +252,13 @@ void user_shell(void) {
                             read_line(in, sizeof(in), shell_pending_mask(sh));
                             st = shell_supply_input(sh, in);
                         }
-                        if (st == SHELL_STATUS_EXIT) break;
+                        if (st == SHELL_STATUS_EXIT) {
+                            // `logout`/`exit`: keluar dari loop. login.elf
+                            // menunggu kami lewat waitpid, lalu menampilkan
+                            // layar login lagi.
+                            clear_screen();
+                            sys_exit();
+                        }
                     }
                 }
                 cmd_index = 0;

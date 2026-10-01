@@ -32,6 +32,7 @@
 #include "e1000.h"
 #include <stdint.h>
 #include <stddef.h>
+#include "kprint.h"
 
 /* =========================================================================
  * KERNEL DEPENDENCIES
@@ -47,8 +48,6 @@ extern uint64_t hhdm_offset;
 extern uint64_t pmm_alloc_page(void);  /* returns phys_addr_t (uint64_t) */
 
 /* Dari kernel/kernel.c — kernel log output */
-extern void kprint(const char *str);
-extern void kprint_num(uint64_t num);
 
 /* Dari drivers/pci.c — membaca PCI config space */
 extern uint32_t pci_read_word(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);

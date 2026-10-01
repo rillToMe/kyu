@@ -1,3 +1,13 @@
+// kernel/kernel.c — entry point kernel dan urutan boot.
+//
+// Struktur file ini:
+//   1. Limine requests (section .requests — bootloader memindainya)
+//   2. kernel_main(): urutan tahap boot, satu baris per fase
+//   3. boot_phase_*(): isi tiap tahap
+//   4. boot_handoff_to_init(): titik serah boot → init (lihat catatan K-1)
+//
+// Presentasi status boot ada di kernel/boot_console.c; konsol di kernel/kprint.c.
+
 #include <stdint.h>
 #include <stddef.h>
 #include "timer.h"
@@ -23,6 +33,11 @@
 #include "gfx.h"
 #include "ghal.h"
 #include "kyuzen_version.h"   // KYUZEN_VERSION kanonis (dipakai banner boot)
+#include "kprint.h"
+#include "boot_console.h"
+#include "serial.h"
+#include "elf.h"             // elf_load_file (memuat init.elf)
+#include "proc.h"            // as_cookie_next
 
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
 __attribute__((used, section(".requests_start_marker")))
@@ -71,153 +86,79 @@ static volatile uint64_t __limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 // HHDM offset: dipakai oleh paging.c untuk convert phys → virt
 uint64_t hhdm_offset = 0;
 
-
 extern void init_gdt();
 extern void init_idt();
 extern void pic_remap();
 extern void init_keyboard();
-extern void switch_to_user_mode(void (*user_func)());
-extern void user_login();
 extern void init_mouse();
 extern int  kfs_delete_file(char* filename);   // Fase 4: 0 sukses / kode error
+extern int  net_boot_summary(uint32_t* ip);    // kernel/net/net_init.c
 
-// kprint & kprint_num kini di kernel/kprint.c (dipisah dari FS sejak V4)
-extern void kprint(const char* str);
-extern void kprint_num(uint64_t num);
+// Hasil ghal_init() — dilaporkan di boot console, dibaca fase berikutnya.
+static int ghal_ok = 0;
 
-// ============================================================
-// BOOT CONSOLE — presentasi ringkas, diagnostik verbose ke serial.
-// (KYUZEN_VERSION dari kyuzen_version.h — single source of truth.)
-// ============================================================
-
-extern void serial_print(const char* s);
-extern int  kprint_quiet;                    // kernel/kyuzenfs.c
-extern int  net_boot_summary(uint32_t* ip);  // kernel/net_init.c
-
-static void boot_u64_str(uint64_t num, char* out);   // definisi di bawah
-
-// Warna marker status (hanya marker yang diwarnai; teks tetap netral).
-#define BOOT_C_OK    0x7DDB8A   // hijau
-#define BOOT_C_FAIL  0xFF6B6B   // merah
-#define BOOT_C_WARN  0xFFCC66   // kuning/amber
-#define BOOT_C_INFO  0x7CC7FF   // biru muda (informasional)
-#define BOOT_C_TEXT  0xFFFFFF   // teks netral
-
-// Cetak marker "[  OK  ]" dengan warna sesuai state, lalu kembalikan fg netral.
-static void boot_marker(const char* state) {
-    int i = 0; while (state[i] == ' ') i++;
-    uint32_t col = BOOT_C_TEXT;
-    switch (state[i]) {
-    case 'O': col = BOOT_C_OK;   break;
-    case 'F': col = BOOT_C_FAIL; break;
-    case 'W': col = BOOT_C_WARN; break;
-    case 'I': col = BOOT_C_INFO; break;
-    default: break;             // SKIP/dll → netral
-    }
-    tty_set_fg(col);
-    kprint("["); kprint(state); kprint("] ");
-    tty_set_fg(BOOT_C_TEXT);
+// Pesan kegagalan fatal saat boot: tidak ada jalur render / tidak ada RAM map.
+// Halt dengan interrupts mati — tidak ada gunanya lanjut tanpa konsol.
+static __attribute__((noreturn)) void boot_halt(void) {
+    for (;;) { __asm__ volatile("cli; hlt"); }
 }
 
-static void boot_label(const char* label) {
-    kprint(label);
-}
-
-// Satu baris status: "[  OK  ] Label" atau "[  OK  ] Label detail"
-// (satu spasi biasa; tanpa kolom detail fixed-width). Marker berwarna.
-static void boot_state(const char* state, const char* label, const char* detail) {
-    boot_marker(state);
-    boot_label(label);
-    if (detail && detail[0]) { kprint(" "); kprint(detail); }
-    kprint("\n");
-}
-
-static void boot_state_num(const char* state, const char* label, uint64_t v,
-                           const char* suffix) {
-    boot_marker(state);
-    boot_label(label);
-    kprint(" ");
-    kprint_num(v);
-    if (suffix) kprint(suffix);
-    kprint("\n");
-}
-
-// IPv4 network byte order → "a.b.c.d" ke buffer (pola sama dengan net_init.c).
-static void boot_ip_str(uint32_t a, char* out) {
-    const char* sep = ".";
-    int q = 0;
-    for (int sh = 0; sh <= 24; sh += 8) {
-        char nb[4]; boot_u64_str((uint64_t)((a >> sh) & 0xFF), nb);
-        for (int j = 0; nb[j]; j++) out[q++] = nb[j];
-        if (sh < 24) out[q++] = sep[0];
-    }
-    out[q] = '\0';
-}
-
-static void boot_u64_str(uint64_t num, char* out) {
-    if (num == 0) { out[0] = '0'; out[1] = '\0'; return; }
-    char tmp[24]; int i = 0;
-    while (num > 0 && i < 23) { tmp[i++] = (char)('0' + (num % 10)); num /= 10; }
-    int j = 0; while (i > 0) out[j++] = tmp[--i]; out[j] = '\0';
-}
 static void serial_num(uint64_t num) {
     char b[24]; boot_u64_str(num, b); serial_print(b);
 }
 
-// ----> ENTRY POINT 64-BIT BERSIH <---
-void kernel_main(void) {
-    // 0. AMBIL HHDM OFFSET — WAJIB SEBELUM APA PUN (dipakai oleh paging.c)
-    if (hhdm_request.response != NULL) {
-        hhdm_offset = hhdm_request.response->offset;
-    } else {
-        // Fallback: Limine default HHDM biasanya di 0xFFFF800000000000
-        hhdm_offset = 0xFFFF800000000000ULL;
+// ============================================================
+// FASE 1 — Layar, GDT/IDT, memori awal, proteksi CPU
+// ============================================================
+
+// Tangkap framebuffer Limine + validasi format (bukan asumsi XRGB8888).
+static void boot_phase_display(void) {
+    if (framebuffer_request.response == NULL ||
+        framebuffer_request.response->framebuffer_count == 0) {
+        boot_halt();
     }
 
-    int ghal_ok = 0;   // hasil ghal_init(), dilaporkan di boot console
+    struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
+    display_format_desc_t fdesc = {
+        .bpp = fb->bpp,
+        .memory_model = fb->memory_model,
+        .red_size = fb->red_mask_size, .red_shift = fb->red_mask_shift,
+        .green_size = fb->green_mask_size, .green_shift = fb->green_mask_shift,
+        .blue_size = fb->blue_mask_size, .blue_shift = fb->blue_mask_shift,
+    };
 
-    // 1. TANGKAP LAYAR DARI LIMINE + VALIDASI FORMAT (bukan asumsi XRGB8888)
-    if (framebuffer_request.response != NULL && framebuffer_request.response->framebuffer_count > 0) {
-        struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
-        display_format_desc_t fdesc = {
-            .bpp = fb->bpp,
-            .memory_model = fb->memory_model,
-            .red_size = fb->red_mask_size, .red_shift = fb->red_mask_shift,
-            .green_size = fb->green_mask_size, .green_shift = fb->green_mask_shift,
-            .blue_size = fb->blue_mask_size, .blue_shift = fb->blue_mask_shift,
-        };
-        // Serial dini: kegagalan validasi harus terlihat di host, bukan halt bisu.
-        extern void serial_init(void);
-        serial_init();
-        serial_print("[DISPLAY] limine fb ");
-        serial_num(fb->width); serial_print("x"); serial_num(fb->height);
-        serial_print(" bpp="); serial_num(fb->bpp);
-        serial_print(" model="); serial_num(fb->memory_model);
-        serial_print(" masks=");
-        serial_num(fb->red_mask_size);   serial_print("."); serial_num(fb->red_mask_shift);   serial_print(",");
-        serial_num(fb->green_mask_size); serial_print("."); serial_num(fb->green_mask_shift); serial_print(",");
-        serial_num(fb->blue_mask_size);  serial_print("."); serial_num(fb->blue_mask_shift);
-        serial_print("\n");
+    // Serial dini: kegagalan validasi harus terlihat di host, bukan halt bisu.
+    serial_init();
+    serial_print("[DISPLAY] limine fb ");
+    serial_num(fb->width); serial_print("x"); serial_num(fb->height);
+    serial_print(" bpp="); serial_num(fb->bpp);
+    serial_print(" model="); serial_num(fb->memory_model);
+    serial_print(" masks=");
+    serial_num(fb->red_mask_size);   serial_print("."); serial_num(fb->red_mask_shift);   serial_print(",");
+    serial_num(fb->green_mask_size); serial_print("."); serial_num(fb->green_mask_shift); serial_print(",");
+    serial_num(fb->blue_mask_size);  serial_print("."); serial_num(fb->blue_mask_shift);
+    serial_print("\n");
 
-        if (display_boot_init((uint32_t *)fb->address, fb->width, fb->height,
-                              fb->pitch, &fdesc) != 0) {
-            serial_print("[DISPLAY] FATAL: framebuffer format tidak didukung\n");
-            while(1) { __asm__ volatile("hlt"); }
-        }
-    } else {
-        while(1) { __asm__ volatile("hlt"); }
+    if (display_boot_init((uint32_t *)fb->address, fb->width, fb->height,
+                          fb->pitch, &fdesc) != 0) {
+        serial_print("[DISPLAY] FATAL: framebuffer format tidak didukung\n");
+        boot_halt();
     }
+}
 
+static void boot_phase_cpu_tables(void) {
     init_gdt();
     init_idt();
+}
 
-    // 2. PMM DYNAMIC VIA LIMINE
-    if (memmap_request.response != NULL) {
-        pmm_init_dynamic(memmap_request.response->entries, memmap_request.response->entry_count);
-    } else {
+// PMM dynamic via Limine + paging + heap + crash log + SMEP/SMAP/WP.
+static void boot_phase_memory(void) {
+    if (memmap_request.response == NULL) {
         kprint("PANIC: Bootloader tidak mengirim Memory Map!\n");
-        while(1) { __asm__ volatile("hlt"); }
+        boot_halt();
     }
+    pmm_init_dynamic(memmap_request.response->entries,
+                     memmap_request.response->entry_count);
 
     init_paging(0); // paging.c membaca CR3 langsung, parameter tidak dipakai
     init_heap();
@@ -227,21 +168,27 @@ void kernel_main(void) {
     // boot sebelumnya (warm-reboot tidak menghapus DRAM) ketemu di tempat yang
     // sama. Disiapkan di sini supaya panic paling awal pun sudah tercatat.
     panic_log_init(pmm_alloc_page(), 4096u);
+}
 
-    // FIX_005 Tahap 4: SMEP/SMAP di BSP + pastikan CR0.WP. AP mengaktifkan
-    // miliknya sendiri di smp_ap_main (CR4/CR0 per-core).
-    {
-        extern void cpu_enable_smap_smep(void);
-        extern int  cpu_verify_wp(void);
-        extern int  g_smap_enabled, g_smep_enabled;
-        cpu_enable_smap_smep();
-        int wp = cpu_verify_wp();
-        kprint("[CPU] SMEP=");  kprint(g_smep_enabled ? "on" : "off");
-        kprint(" SMAP=");       kprint(g_smap_enabled ? "on" : "off");
-        kprint(" WP=");         kprint(wp ? "on" : "off");
-        kprint("\n");
-    }
+// FIX_005 Tahap 4: SMEP/SMAP di BSP + pastikan CR0.WP. AP mengaktifkan
+// miliknya sendiri di smp_ap_main (CR4/CR0 per-core).
+static void boot_phase_cpu_hardening(void) {
+    extern void cpu_enable_smap_smep(void);
+    extern int  cpu_verify_wp(void);
+    extern int  g_smap_enabled, g_smep_enabled;
+    cpu_enable_smap_smep();
+    int wp = cpu_verify_wp();
+    kprint("[CPU] SMEP=");  kprint(g_smep_enabled ? "on" : "off");
+    kprint(" SMAP=");       kprint(g_smap_enabled ? "on" : "off");
+    kprint(" WP=");         kprint(wp ? "on" : "off");
+    kprint("\n");
+}
 
+// ============================================================
+// FASE 2 — Interrupt controller, PCI, timer
+// ============================================================
+
+static void boot_phase_interrupts(void) {
     pic_remap();
     lapic_init_bsp();
 
@@ -249,46 +196,51 @@ void kernel_main(void) {
     pci_probe();
 
     init_timer(TIMER_HZ);      // Inisialisasi PIT pada frekuensi dari timer.h
+}
 
-    // Phase 2B: inisialisasi Graphics HAL SEBELUM timer_callbacks_init, supaya
-    // compositor_flush (cb_flush) langsung punya backend + main surface.
-    // Software backend butuh tahu framebuffer hardware untuk present.
-    // compositor_ghal_init() membuat main surface DI SINI (konteks task),
-    // bukan lazy di dalam IRQ — surface_create memakai kmalloc + virtqueue.
-    {
-        extern void ghal_set_framebuffer(uint32_t*, uint32_t, uint32_t, uint32_t);
-        extern void compositor_ghal_init(void);
-        const display_mode_t* dm = display_get_mode();
-        ghal_set_framebuffer(fb_ptr, dm->width, dm->height, dm->pitch_bytes);
-        ghal_ok = (ghal_init() == 0);
-        if (ghal_ok) {
-            // Mode authoritative dari backend aktif (software == Limine;
-            // virtio-gpu == pmodes[0]). Gagal → mode boot tetap dipakai.
-            display_sync_from_backend();
-        } else {
-            // Fallback: compositor langsung (jalur software). Diagnostik → serial.
-            serial_print("[GHAL] init failed — compositor fallback ke jalur langsung\n");
-        }
-        // Buffer layar seukuran mode. Task context (kmalloc) — wajib sebelum
-        // compositor/TTY menggambar. Gagal = fatal (tidak ada jalur render).
-        if (display_alloc_buffers() != 0) {
-            serial_print("[DISPLAY] FATAL: alokasi buffer layar gagal\n");
-            while(1) { __asm__ volatile("hlt"); }
-        }
-        if (ghal_ok) compositor_ghal_init();
+// ============================================================
+// FASE 3 — Graphics HAL, scheduler awal, input
+// ============================================================
+
+// Graphics HAL diinisialisasi SEBELUM timer_callbacks_init, supaya
+// compositor_flush (cb_flush) langsung punya backend + main surface.
+// Software backend butuh tahu framebuffer hardware untuk present.
+// compositor_ghal_init() membuat main surface DI SINI (konteks task),
+// bukan lazy di dalam IRQ — surface_create memakai kmalloc + virtqueue.
+static void boot_phase_graphics(void) {
+    extern void ghal_set_framebuffer(uint32_t*, uint32_t, uint32_t, uint32_t);
+    extern void compositor_ghal_init(void);
+    const display_mode_t* dm = display_get_mode();
+    ghal_set_framebuffer(fb_ptr, dm->width, dm->height, dm->pitch_bytes);
+    ghal_ok = (ghal_init() == 0);
+    if (ghal_ok) {
+        // Mode authoritative dari backend aktif (software == Limine;
+        // virtio-gpu == pmodes[0]). Gagal → mode boot tetap dipakai.
+        display_sync_from_backend();
+    } else {
+        // Fallback: compositor langsung (jalur software). Diagnostik → serial.
+        serial_print("[GHAL] init failed — compositor fallback ke jalur langsung\n");
     }
+    // Buffer layar seukuran mode. Task context (kmalloc) — wajib sebelum
+    // compositor/TTY menggambar. Gagal = fatal (tidak ada jalur render).
+    if (display_alloc_buffers() != 0) {
+        serial_print("[DISPLAY] FATAL: alokasi buffer layar gagal\n");
+        boot_halt();
+    }
+    if (ghal_ok) compositor_ghal_init();
+}
 
-    timer_callbacks_init();    // Daftarkan subscriber default (visual, cursor, flush)
-    tasking_init();            // Daftarkan kmain sebagai task awal scheduler
-
+static void boot_phase_input(void) {
     init_mouse();
     init_keyboard();
     init_tty();
+}
 
-    // ---- Boot console bersih (TTY baru siap di sini) ----
-    // Header + status tahap yang sudah dilalui. Semua kprint verbose sebelum
-    // init_tty adalah no-op, jadi layar dimulai dari sini. Status di bawah
-    // jujur: kernel hanya sampai baris ini bila tahap tsb berhasil (gagal=halt).
+// ---- Boot console bersih (TTY baru siap di sini) ----
+// Header + status tahap yang sudah dilalui. Semua kprint verbose sebelum
+// init_tty adalah no-op, jadi layar dimulai dari sini. Status di bawah
+// jujur: kernel hanya sampai baris ini bila tahap tsb berhasil (gagal=halt).
+static void boot_phase_banner(void) {
     kprint("KyuzenOS " KYUZEN_VERSION " x86_64\n\n");
     boot_state("  OK  ", "CPU", 0);
     boot_state_num("  OK  ", "Memory", pmm_get_total_ram() / 1024 / 1024, " MB");
@@ -303,7 +255,6 @@ void kernel_main(void) {
     // Serial COM1 selalu diinit — panic dump (panic.c) dan watchdog memakainya,
     // bukan hanya mode HEAP_WATCH. Aman dipanggil kapan pun. Diinit SEBELUM
     // kfs/smp supaya kprint_quiet bisa mem-mirror diagnostik ke COM1.
-    extern void serial_init(void);
     serial_init();
     serial_print("\n[SERIAL] ready\n");
 
@@ -311,7 +262,13 @@ void kernel_main(void) {
     // bersihkan flag-nya. Di sini serial & kprint sudah siap dua-duanya.
     if (!panic_check_previous_log())
         serial_print("[PANIC_LOG] tidak ada crash pada boot sebelumnya\n");
+}
 
+// ============================================================
+// FASE 4 — Filesystem, crashdump, ACPI, VFS
+// ============================================================
+
+static void boot_phase_filesystem(void) {
 #ifdef HEAP_WATCH_DEBUG
     // Pasang hardware watchpoint DR0 (per-CPU!) di BSP SEBELUM AP online.
     // Setiap AP memasang DR0-nya sendiri di smp_ap_main().
@@ -329,17 +286,15 @@ void kernel_main(void) {
     // CRASHDUMP DISK (kernel/debug/crashdump.c): 8 sektor terakhir disk — area yang
     // SAMA dengan yang disisihkan KyuzenFS (KZFS_CRASHDUMP_SECTORS), jadi
     // snapshot panic tidak pernah menimpa data file. ATA polling murni.
-    {
-        uint32_t total = ata_get_total_sectors();
-        if (total > KZFS_CRASHDUMP_SECTORS) {
-            crashdump_init((uint64_t)(total - KZFS_CRASHDUMP_SECTORS), KZFS_CRASHDUMP_SECTORS);
-            serial_print("[CRASHDUMP] area siap di LBA ");
-            serial_num(total - KZFS_CRASHDUMP_SECTORS);
-            serial_print(" (+ " ); serial_num(KZFS_CRASHDUMP_SECTORS);
-            serial_print(" sektor)\n");
-        } else {
-            serial_print("[CRASHDUMP] disk terlalu kecil - dinonaktifkan\n");
-        }
+    uint32_t total = ata_get_total_sectors();
+    if (total > KZFS_CRASHDUMP_SECTORS) {
+        crashdump_init((uint64_t)(total - KZFS_CRASHDUMP_SECTORS), KZFS_CRASHDUMP_SECTORS);
+        serial_print("[CRASHDUMP] area siap di LBA ");
+        serial_num(total - KZFS_CRASHDUMP_SECTORS);
+        serial_print(" (+ " ); serial_num(KZFS_CRASHDUMP_SECTORS);
+        serial_print(" sektor)\n");
+    } else {
+        serial_print("[CRASHDUMP] disk terlalu kecil - dinonaktifkan\n");
     }
 
     // CRASH ARCHIVE: kalau boot sebelumnya panic, snapshot mentah itu diterbitkan
@@ -354,7 +309,13 @@ void kernel_main(void) {
     vfs_init();
     vfs_task_init(0);   // P0 Phase 2: task 0 stdio (fd 0/1/2 -> TTY)
     boot_state("  OK  ", "VFS", 0);
+}
 
+// ============================================================
+// FASE 5 — SMP
+// ============================================================
+
+static void boot_phase_smp(void) {
     // LAPIC BSP sudah aktif sejak lapic_init_bsp(); SMP membawa AP online.
     // Detail (BSP lapic id, cpu_count, AP per-CPU) → serial via smp.c.
     boot_state("  OK  ", "LAPIC", "online");
@@ -362,11 +323,17 @@ void kernel_main(void) {
     smp_init(mp_request.response);
     kprint_quiet = 0;
     boot_state_num("  OK  ", "SMP", smp_online_cpu_count(), " CPUs");
+}
 
-    // 3. AUTO-INSTALL MODUL DARI LIMINE
-    // Console: satu baris ringkas. Detail per-modul + pesan kfs → serial.
+// ============================================================
+// FASE 6 — Auto-install modul dari Limine
+// ============================================================
+
+// Console: satu baris ringkas. Detail per-modul + pesan kfs → serial.
+static void boot_phase_modules(void) {
     int mod_ok = 0, mod_fail = 0, mod_total = 0;
     kprint_quiet = 1;   // redam "File dihapus"/error kfs selama instalasi
+
     if (module_request.response != NULL && module_request.response->module_count > 0) {
         mod_total = (int)module_request.response->module_count;
 
@@ -455,7 +422,13 @@ void kernel_main(void) {
     } else {
         boot_state(" FAIL ", "Applications", "module installation failed");
     }
+}
 
+// ============================================================
+// FASE 7 — Network
+// ============================================================
+
+static void boot_phase_network(void) {
     // Aktifkan interrupts SEBELUM masuk ke user code
     // Tanpa sti: timer IRQ tidak pernah fire, keyboard beku, OS freeze!
     __asm__ volatile("sti");
@@ -466,22 +439,12 @@ void kernel_main(void) {
     {
         extern const char* ghal_active_backend_name(void);
         extern void ghal_scanout_size(uint32_t*, uint32_t*);
-        extern void serial_print(const char* s);
         uint32_t sw = 0, sh = 0;
         ghal_scanout_size(&sw, &sh);
         serial_print("[GFX SELFTEST] backend=");
         serial_print(ghal_active_backend_name());
         serial_print(" scanout=");
-        {
-            char tmp[8]; uint32_t v = sw; int idx = 0;
-            if (v == 0) tmp[idx++] = '0';
-            else { char r[8]; int n = 0; while (v) { r[n++] = (char)('0' + v % 10); v /= 10; } while (n) tmp[idx++] = r[--n]; }
-            tmp[idx] = '\0'; serial_print(tmp); serial_print("x");
-            v = sh; idx = 0;
-            if (v == 0) tmp[idx++] = '0';
-            else { char r[8]; int n = 0; while (v) { r[n++] = (char)('0' + v % 10); v /= 10; } while (n) tmp[idx++] = r[--n]; }
-            tmp[idx] = '\0'; serial_print(tmp);
-        }
+        serial_num(sw); serial_print("x"); serial_num(sh);
         serial_print("\n");
     }
 #endif
@@ -517,26 +480,118 @@ void kernel_main(void) {
     extern void ksock_init(void);
     ksock_init();
     boot_state("  OK  ", "Socket layer", 0);
+}
 
+// ============================================================
+// FASE 8 — Serah terima boot → init (PID 1)
+// ============================================================
+
+// Muat /apps/init.elf dan jalankan sebagai task ring-3 pertama.
+//
+// Sebelumnya kernel memanggil user_login() LANGSUNG di CPL 0 (K-1): login,
+// shell, dan zen berjalan dengan privilege kernel penuh — uc->from_user == 0
+// membuat validasi pointer user di-bypass (usercopy.c) dan sys_alloc memberi
+// heap kernel, bukan uheap. Sekarang seluruh jalur user sudah keluar dari
+// image kernel sebagai ELF (login/shell/zen/init), jadi tidak ada lagi kode
+// user yang di-link ke kernel.
+//
+// Kernel TIDAK bisa menjalankan kode higher-half di CPL 3: heap kernel
+// dipetakan US=0 (kernel/mm/heap.c:139), jadi iretq ke CS=0x1B langsung #PF.
+// Karena itu init harus ELF terpisah, dimuat ke AS-nya sendiri.
+//
+// Setelah init berjalan, task 0 (kernel_main) menjadi idle: ia tidak pernah
+// kembali ke user code, hanya membiarkan scheduler menjalankan task lain.
+static void boot_handoff_to_init(void) {
+    const char* kInitPath = "/apps/init.elf";
+
+    if (!kfs_exists((char*)kInitPath)) {
+        kprint("\n[BOOT] FATAL: /apps/init.elf tidak ada - tidak ada proses init.\n");
+        kprint("[BOOT] Jalankan `make apps` lalu boot ulang.\n");
+        boot_halt();
+    }
+
+    phys_addr_t init_as = vmm_create_address_space();
+    if (init_as == PHYS_NULL) {
+        kprint("\n[BOOT] FATAL: alokasi address space untuk init gagal.\n");
+        boot_halt();
+    }
+
+    // elf_load_file menerjemahkan alamat user lewat CR3 aktif, jadi AS target
+    // harus dipasang lebih dulu. Task 0 belum punya pml4_phys (memakai AS boot
+    // Limine), jadi cukup switch CR3 — tidak ada state task yang perlu diubah.
+    phys_addr_t saved_cr3 = vmm_read_cr3();
+    vmm_switch_pml4(init_as);
+
+    uint64_t init_stack_top = 0;
+    uint64_t init_entry = elf_load_file((char*)kInitPath, &init_stack_top, init_as);
+
+    vmm_switch_pml4(saved_cr3);
+
+    if (init_entry == 0 || init_stack_top == 0) {
+        vmm_destroy_address_space(init_as, 1);
+        kprint("\n[BOOT] FATAL: init.elf gagal dimuat (ELF tidak valid?).\n");
+        boot_halt();
+    }
+
+    // create_user_task memalsukan frame iretq dengan CS=0x1B / SS=0x23, jadi
+    // init benar-benar mulai di CPL 3. Cred diwarisi dari task 0 (uid 0 = root),
+    // yang memang benar untuk proses init.
+    int tid = create_user_task(init_entry, init_stack_top, init_as,
+                               as_cookie_next(), "init",
+                               0, 0, NULL);
+    if (tid < 0) {
+        vmm_destroy_address_space(init_as, 1);
+        kprint("\n[BOOT] FATAL: create_user_task(init) gagal (slot task penuh?).\n");
+        boot_halt();
+    }
+
+    boot_state_num("  OK  ", "init", (uint64_t)tid, " (ring 3)");
     kprint("\nKyuzenOS ready.\n\n");
-
-    switch_to_user_mode(user_login);
-
-    __asm__ volatile("cli");
-    while (1) { __asm__ volatile("hlt"); }
 }
 
-extern fs_node_t tty_node;
-uint32_t string_length(const char* str) {
-    uint32_t len = 0;
-    while (str[len]) len++;
-    return len;
-}
-void print_hex(uint32_t num) { kprint_num(num); }
+// ============================================================
+// ENTRY POINT
+// ============================================================
+void kernel_main(void) {
+    // 0. AMBIL HHDM OFFSET — WAJIB SEBELUM APA PUN (dipakai oleh paging.c)
+    if (hhdm_request.response != NULL) {
+        hhdm_offset = hhdm_request.response->offset;
+    } else {
+        // Fallback: Limine default HHDM biasanya di 0xFFFF800000000000
+        hhdm_offset = 0xFFFF800000000000ULL;
+    }
 
+    boot_phase_display();          // framebuffer + validasi format
+    boot_phase_cpu_tables();       // GDT + IDT
+    boot_phase_memory();           // PMM + paging + heap + crash log
+    boot_phase_cpu_hardening();    // SMEP/SMAP/WP
+    boot_phase_interrupts();       // PIC + LAPIC + PCI + PIT
 
-void switch_to_user_mode(void (*user_func)()) {
-    // Ring 3 belum diimplementasikan — panggil langsung di Ring 0
-    // (Syscall via int $0x80 tetap bekerja karena IDT sudah di-setup)
-    if (user_func) user_func();
+    // Graphics HAL & surface harus siap SEBELUM timer_callbacks_init, karena
+    // cb_flush (compositor) langsung dipakai timer. tasking_init mendaftarkan
+    // kernel_main sebagai task 0.
+    boot_phase_graphics();
+    timer_callbacks_init();    // Daftarkan subscriber default (visual, cursor, flush)
+    tasking_init();            // Daftarkan kmain sebagai task awal scheduler
+    boot_phase_input();        // mouse + keyboard + TTY
+    boot_phase_banner();       // header + status tahap yang sudah dilalui
+
+    boot_phase_filesystem();   // KyuzenFS + crashdump + ACPI + VFS
+    boot_phase_smp();          // AP online
+    boot_phase_modules();      // auto-install dari Limine
+    boot_phase_network();      // sti + lwIP + DHCP + socket layer
+
+    boot_handoff_to_init();    // spawn init.elf (PID 1, ring 3) + banner "ready"
+
+    // Task 0 (kernel_main) selesai. Ia TIDAK boleh halt dengan `cli; hlt`:
+    // init.elf di-spawn ke runqueue CPU 0, jadi mematikan interrupt di CPU ini
+    // akan membekukan timer -> scheduler tidak pernah preempt task 0 -> init
+    // tidak pernah dijadwalkan (gejala: banner "ready" tampil lalu freeze).
+    //
+    // Jalur yang benar sama dengan AP di smp_ap_main (kernel/smp/smp.c:205):
+    // pindah ke idle stack permanen CPU ini, lalu masuk scheduler_idle_loop()
+    // yang memasang cpu_current_task[cpu] = -1 dan `sti; hlt` — interrupt tetap
+    // hidup sehingga CPU bisa mengambil task begitu timer/IPI menjadwalkannya.
+    // Keduanya noreturn.
+    task_switch_to_idle_stack(task_idle_stack_top(0));
 }

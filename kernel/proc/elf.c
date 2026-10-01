@@ -4,9 +4,8 @@
 #include "string.h"
 #include "paging.h"
 #include "smap.h"
+#include "kprint.h"
 
-extern void kprint(const char* str);
-extern void kprint_num(uint32_t num);
 
 // =======================================================================
 // elf_load_file() — Load ELF64 user-app ke RAM, kembalikan entry point
@@ -26,7 +25,7 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
 
     // Fase 3: app pindah ke /apps/. Bare name (tanpa '/') di-resolve ke
     // /apps/<name>; path absolut dipakai apa adanya. Semua caller (syscall
-    // 25/33/57, kernel_userlib) meng-copy filename ke buffer kernel dulu,
+    // 25/33/57) meng-copy filename ke buffer kernel dulu,
     // jadi nama maksimal UC_MAX_FNAME dan buffer path[72] aman.
     char path[72];
     const char* load = filename;

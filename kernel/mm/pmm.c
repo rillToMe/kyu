@@ -17,6 +17,7 @@
 #include "limine.h"
 #include "spinlock.h"
 #include <stddef.h>
+#include "kprint.h"
 
 // Zona kernel rendah yang TIDAK PERNAH dialokasikan PMM: kernel image, Limine
 // boot pages, BIOS/ROM, dan framebuffer. Satu definisi untuk tiga pemakai di
@@ -66,8 +67,6 @@ static inline int bitmap_test(uint64_t bit) {
 // ============================================================
 // kprint helper (avoid include hell)
 // ============================================================
-extern void kprint(const char* str);
-extern void kprint_num(uint64_t num);
 extern uint64_t hhdm_offset;  // from kernel.c — HHDM virtual base
 
 static void pmm_warn(const char* prefix, phys_addr_t addr) {

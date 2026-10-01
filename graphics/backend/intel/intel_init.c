@@ -38,14 +38,13 @@
 #include "pci.h"
 #include "io.h"
 #include "heap.h"
+#include "kprint.h"
 #include "display.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 
 // --- External kernel functions ---
-extern void kprint(const char* s);
-extern void print_hex(uint32_t num);
 extern void serial_print(const char* s);
 extern void serial_print_hex(uint64_t v);
 extern void serial_dec(uint64_t v);

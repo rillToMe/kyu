@@ -12,7 +12,7 @@
 
 // tty_node: deklarasi kanonis di tty.h (di-include di atas).
 // scheduler_lock (kernel/sched/core.c) tidak punya owner header dan dipakai
-// lintas TU (proc.c, kernel_userlib.c juga extern manual) — tetap lokal di
+// lintas TU (proc.c juga extern manual) — tetap lokal di
 // sini; membuat sched.h adalah out-of-scope phase ini.
 // Guards task cred transitions (defined in kernel/sched/core.c).
 extern spinlock_t scheduler_lock;

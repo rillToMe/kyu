@@ -13,6 +13,28 @@
 // user-ABI ada di userlib.h) dan hanya dipakai satu TU di sini — tetap lokal.
 extern void get_cpu_string(char* buffer);
 
+// ============================================================
+// GUARD: tabrakan nomor syscall.
+//
+// Nomor syscall di file ini adalah literal di rantai if/else, dan cabang yang
+// dievaluasi lebih dulu menang tanpa peringatan. Bug nyata: refresh rate pernah
+// memakai 87, yang sudah dipakai SYS_ENTROPY — akibatnya sys_entropy() selalu
+// mengembalikan 60 (refresh rate) dan TLS memakai angka itu sebagai seed
+// HMAC-DRBG. _Static_assert ini membuat tabrakan jadi error kompilasi.
+//
+// Cara pakai: tambahkan satu baris di bawah setiap kali nomor baru ditambahkan
+// ke file ini, atau (lebih baik) ganti literalnya dengan #define bernama.
+// ============================================================
+#define SYS_GET_REFRESH_RATE 89
+#define SYS_SET_REFRESH_RATE 90
+
+_Static_assert(SYS_GET_REFRESH_RATE != SYS_ENTROPY,
+               "syscall number collision: refresh-rate getter vs SYS_ENTROPY");
+_Static_assert(SYS_SET_REFRESH_RATE != SYS_ENTROPY,
+               "syscall number collision: refresh-rate setter vs SYS_ENTROPY");
+_Static_assert(SYS_GET_REFRESH_RATE != SYS_SET_REFRESH_RATE,
+               "syscall number collision: refresh-rate getter vs setter");
+
 // Counter: setiap kali sys_yield dipanggil, tambah counter ini.
 // Timer membaca dan mereset setiap tick untuk menentukan apakah CPU idle.
 volatile uint32_t yield_counter = 0;
@@ -76,6 +98,24 @@ int sys_system_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st
     else if (syscall_num == 46) { // sys_sleep — non-busy sleep RBX ms
         // Task masuk sleep queue (TASK_SLEEPING); CPU bebas jalankan task lain.
         task_sleep_ms((uint32_t)r->rbx);
+    }
+    else if (syscall_num == SYS_GET_REFRESH_RATE) { // sys_get_refresh_rate
+        *ret = timer_get_refresh_rate();
+    }
+    else if (syscall_num == SYS_SET_REFRESH_RATE) { // sys_set_refresh_rate(hz) — RBX = hz
+        // Root-only: mengubah frekuensi PIT global memengaruhi semua task.
+        // Return 0 sukses, -1 ditolak/tidak didukung (60/100/144 saja).
+        //
+        // Nomor 89/90 (BUKAN 87/88): 87 sudah dipakai SYS_ENTROPY
+        // (include/entropy.h). Kalau keduanya memakai 87, cabang refresh rate
+        // yang dievaluasi lebih dulu akan menelan sys_entropy() dan TLS
+        // (apps/browser/tls/tls_kyuzen.c:124) menerima refresh rate sebagai
+        // "byte acak" untuk seed HMAC-DRBG.
+        if (!cred_current_is_root()) {
+            *ret = (uint64_t)-1;
+        } else {
+            *ret = (uint64_t)(int64_t)timer_set_refresh_rate((uint32_t)r->rbx);
+        }
     }
     else if (syscall_num == SYS_ENTROPY) { // sys_entropy(out*, len)
         // RBX = buffer user, RCX = len. Isi via bounce kernel (RDRAND tak

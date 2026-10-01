@@ -51,6 +51,10 @@ void clear_screen(void);
 uint32_t read_keyboard(char* buffer, uint32_t size);
 void sys_yield(void);
 void sys_sleep(uint32_t ms);   // Non-busy sleep (Syscall 46)
+// Refresh rate PIT (Syscall 89/90). Set = root-only; nilai sah: 60/100/144.
+// 87 adalah SYS_ENTROPY — jangan pakai nomor itu di sini.
+uint32_t sys_get_refresh_rate(void);
+int      sys_set_refresh_rate(uint32_t hz);   // 0 sukses, -1 ditolak/tak didukung
 
 int fs_format(void);   // 0 sukses, -1 ditolak (butuh root). Mirror syscall 5.
 void fs_list(void);

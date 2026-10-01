@@ -389,6 +389,22 @@ void sys_sleep(uint32_t ms) {
     __asm__ volatile("int $0x80" : : "a"(46), "b"((uint64_t)ms));
 }
 
+// sys_get_refresh_rate: Syscall 89 - Hz PIT saat ini (60/100/144).
+// Nomor 89/90, BUKAN 87/88: 87 = SYS_ENTROPY (include/entropy.h).
+uint32_t sys_get_refresh_rate(void) {
+    uint64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(89));
+    return (uint32_t)ret;
+}
+
+// sys_set_refresh_rate: Syscall 90 - ubah Hz PIT. Root-only; return 0 sukses,
+// -1 ditolak (bukan root) atau tidak didukung (bukan 60/100/144).
+int sys_set_refresh_rate(uint32_t hz) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(90), "b"((uint64_t)hz));
+    return (int)ret;
+}
+
 // ===== fd layer (Fase 5) — file descriptors over KyuzenFS =====
 // fd valid hanya untuk task yang membuka. Return negatif = error.
 

@@ -54,3 +54,8 @@ void kprint_num(uint64_t num) {
     while (num > 0) { buf[i--] = (char)((num % 10) + '0'); num /= 10; }
     kprint(&buf[i + 1]);
 }
+
+// print_hex(uint32_t) — dipakai driver yang melaporkan ID PCI/register mentah
+// (drivers/pci.c, graphics/backend/intel/intel_init.c). Pindah ke sini dari
+// kernel/kernel.c supaya konsol jadi satu pemilik jalur output kernel.
+void print_hex(uint32_t num) { kprint_num(num); }

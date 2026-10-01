@@ -34,6 +34,11 @@ CC = clang
 AS = nasm
 LD = ld.lld
 QEMU = qemu-system-x86_64.exe
+# CMake dipakai untuk membangun LLVM libc freestanding (lihat blok LIBC_* di
+# bawah). Sebelumnya variabel ini dirujuk sebagai "$(CMAKE)" tanpa pernah
+# didefinisikan, sehingga rule build libc mengembang jadi command kosong dan
+# `make apps` gagal dengan "Error 127" (command not found) di setiap clone.
+CMAKE ?= cmake
 
 # --- Tampilan host (jendela QEMU) ---
 # Default: GTK + zoom-to-fit + FULLSCREEN, jadi guest 1920x1080 tampil besar
@@ -165,10 +170,13 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # tidak ada). aa_math_test / desktop_manifest_test / kyuzenfs_dir_test /
 # virtqueue_test / cred_test ada di tests/host/unit/ yang ikut SRC_DIRS saat
 # `make conc`/`make heap-stress`.
-# Util CLI system/cat.c + system/echo.c adalah ELF user-space (ENTRY main,
-# dibangun apps/Makefile) — bukan task kernel, jadi dikecualikan juga.
-C_SOURCES = $(filter-out libs/core/userlib.c libs/core/libgui.c libs/core/netutil.c libs/media/media.c \
-                         system/cat.c system/echo.c \
+# Util CLI + proses user system/ (cat/echo/zen/init/login/shell) adalah ELF
+# user-space (ENTRY main, dibangun apps/Makefile) — bukan task kernel, jadi
+# dikecualikan dari image kernel. Dulu login/shell/zen ikut kernel dan dipanggil
+# langsung di CPL 0 (FIX.md K-1); sekarang seluruh jalur user keluar dari image
+# dan berjalan di Ring 3. Lihat docs/design/ring3-init-migration.md.
+C_SOURCES = $(filter-out libs/core/userlib.c libs/core/libgui.c libs/core/netutil.c libs/core/userutil.c libs/media/media.c \
+                         system/cat.c system/echo.c system/zen.c system/init.c system/login.c system/shell.c system/shell_core.c \
                         tests/host/unit/aa_math_test.c tests/host/unit/desktop_manifest_test.cpp tests/host/unit/kyuzenfs_dir_test.c tests/host/unit/kyuzenfs_v4_test.c tests/host/unit/kyuzenfs_xcheck.c tests/host/unit/panic_test.c                        tests/host/unit/virtqueue_test.c tests/host/unit/virtio_gpu_cmd_test.c tests/host/unit/cred_test.c tests/host/unit/proc_test.c tests/host/unit/kill_test.c tests/host/unit/fd_test.c tests/host/unit/pipe_test.c tests/host/unit/fork_test.c tests/host/unit/color_test.c tests/host/unit/ata_devmodel_test.c,\
                         $(C_SOURCES_RAW))
 
@@ -1920,7 +1928,8 @@ tests/host/unit/libc_heap_test: tests/host/unit/libc_heap_test.cpp libs/c/libc-p
 # desktop — dibangun aturan Phase 8 dari apps/$(DESKTOP_APP)/, bukan
 # apps/), manifests/*.app, dan blok module_path di limine.conf.
 APP_NAMES = fileman viewer clock calc taskmgr notepad badptr widget_demo desktop \
-            terminal settings procinfo exit_test kill_test fd_test echo cat \
+            terminal settings procinfo exit_test kill_test fd_test echo cat zen \
+            init login shell \
             pipe_test fork_test gallery imageview fontdemo xml_demo browser
 APP_ELFS  = $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
 
@@ -1998,6 +2007,10 @@ kill_test.elf: $(ELF_DIR)/kill_test.elf
 fd_test.elf: $(ELF_DIR)/fd_test.elf
 echo.elf: $(ELF_DIR)/echo.elf
 cat.elf: $(ELF_DIR)/cat.elf
+zen.elf: $(ELF_DIR)/zen.elf
+init.elf: $(ELF_DIR)/init.elf
+login.elf: $(ELF_DIR)/login.elf
+shell.elf: $(ELF_DIR)/shell.elf
 pipe_test.elf: $(ELF_DIR)/pipe_test.elf
 fork_test.elf: $(ELF_DIR)/fork_test.elf
 gallery.elf: $(ELF_DIR)/gallery.elf
@@ -2309,6 +2322,12 @@ FONT_ASSETS = assets/fonts/Inter-Regular.ttf assets/fonts/DejaVuSans.ttf \
               assets/fonts/NotoSansMono-Bold.ttf \
               assets/fonts/NotoSansAdlam-Regular.ttf
 
+# Art neofetch (modul non-app -> akar FS, pola DESKTOP_ASSETS): dibaca
+# cmd_neofetch (system/shell_core.c) lewat sys_read_file_to_buffer.
+# WAJIB ada di sini — limine.conf mendaftarkannya sebagai module, dan Limine
+# PANIC ("Failed to open module with path") kalau file itu tidak ada di ISO.
+SHELL_ASSETS = assets/shell/neofect.json
+
 # Sumber limine.conf untuk ISO. Default: file di root repo (perilaku lama, tidak
 # berubah). Smoke test libc Phase 1 menyuntikkan varian hasil generate lewat
 # `make boot_image.iso LIMINE_CONF=...` supaya file repo tidak pernah memuat
@@ -2320,12 +2339,12 @@ boot_image.iso: $(ISO_IMAGE)
 
 $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
               $(LIMINE_CONF) assets/logo/kyuzen.png assets/logo/logo-splash.png $(MANIFESTS) $(LIMINE_FILES) \
-              $(DESKTOP_ASSETS) $(FONT_ASSETS)
+              $(DESKTOP_ASSETS) $(FONT_ASSETS) $(SHELL_ASSETS)
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@rm -f $(ISO_ROOT)/*.elf
 	@cp $(APP_ELFS) $(RUST_ELFS) $(TARGET) $(LIMINE_CONF) assets/logo/kyuzen.png $(MANIFESTS) $(LIMINE_FILES) $(ISO_ROOT)/
 	@cp assets/logo/logo-splash.png $(ISO_ROOT)/logo.png
-	@cp $(DESKTOP_ASSETS) $(FONT_ASSETS) $(ISO_ROOT)/
+	@cp $(DESKTOP_ASSETS) $(FONT_ASSETS) $(SHELL_ASSETS) $(ISO_ROOT)/
 	@# Opsional: app smoke test libc Phase 1/2/4/5/6/7 + SDK Phase 3 + contoh C++ (tidak diproduksi build normal).
 	@if [ -f $(LIBC_PHASE1_APP) ]; then cp $(LIBC_PHASE1_APP) $(ISO_ROOT)/libc_phase1.elf; fi
 	@if [ -f $(LEXBOR_A_APP) ]; then cp $(LEXBOR_A_APP) $(ISO_ROOT)/lexbor_phase_a.elf; fi
@@ -2337,6 +2356,24 @@ $(ISO_IMAGE): $(TARGET) $(COMPAT_BIN) $(APP_ELFS) $(RUST_ELFS) \
 	@if [ -f $(CPP_HELLO_APP) ]; then cp $(CPP_HELLO_APP) $(ISO_ROOT)/cpp_hello.elf; fi
 	@if [ -f $(SDK_SMOKE_APP) ]; then cp $(SDK_SMOKE_APP) $(ISO_ROOT)/sdk_smoke.elf; fi
 	@cp limine/BOOTX64.EFI $(ISO_ROOT)/EFI/BOOT/
+	@# GUARD: setiap module_path di $(LIMINE_CONF) WAJIB ada di $(ISO_ROOT).
+	@# Limine PANIC ("Failed to open module with path") kalau ada yang hilang,
+	@# dan itu baru terlihat saat boot — bukan saat build. Bug nyata: neofect.json
+	@# terdaftar di limine.conf tapi tidak pernah masuk daftar aset yang di-copy,
+	@# jadi ISO selalu panic saat boot sampai ketahuan. Guard ini mengubahnya jadi
+	@# error build dengan daftar file yang kurang.
+	@missing=""; \
+	for m in $$(grep -o 'boot():/[^ ]*' $(LIMINE_CONF) | sed 's|boot():/||'); do \
+	    [ -e "$(ISO_ROOT)/$$m" ] || missing="$$missing $$m"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	    echo ""; \
+	    echo "[ISO] FAIL: module berikut terdaftar di $(LIMINE_CONF) tapi tidak ada di $(ISO_ROOT):"; \
+	    for m in $$missing; do echo "         $$m"; done; \
+	    echo "       Tambahkan ke DESKTOP_ASSETS / FONT_ASSETS / SHELL_ASSETS,"; \
+	    echo "       atau ke daftar APP_NAMES kalau itu app ELF."; \
+	    exit 1; \
+	fi
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
 		--efi-boot limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label \

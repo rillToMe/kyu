@@ -122,6 +122,7 @@ void syscall_handler(registers_t *r) {
              syscall_num == 16 || syscall_num == 17 || syscall_num == 20 ||
              syscall_num == 35 || syscall_num == 36 || syscall_num == 37 ||
              syscall_num == 38 || syscall_num == 39 || syscall_num == 46 ||
+             syscall_num == 89 || syscall_num == 90 ||
              syscall_num == SYS_ENTROPY) {
         done = sys_system_handle(r, &uc, &ret_val, syscall_task);
     }

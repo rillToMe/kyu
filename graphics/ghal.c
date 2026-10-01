@@ -18,6 +18,7 @@
 #include "backend/intel/intel_gen12_ghal.h"
 #include "spinlock.h"
 #include <stddef.h>   // NULL
+#include "kprint.h"
 
 #define GHAL_MAX_BACKENDS 8
 
@@ -120,7 +121,6 @@ const char* ghal_engine_name(void) {
 
 // Diagnostik format roadmap §Phase 15 (TTY + serial).
 void ghal_diag_dump(void) {
-    extern void kprint(const char* s);
     extern void serial_print(const char* s);
     const char* be = ghal_active_backend_name();
     int acc = ghal_acceleration_enabled();
@@ -286,30 +286,4 @@ void ghal_cursor_move(int x, int y) {
 int ghal_gpu_stats(ghal_gpu_stats_t* out) {
     if (!g_active || !g_active->gpu_stats || !out) return -1;
     return g_active->gpu_stats(out);
-}
-
-// Dump statistik ke TTY (shell `gpu`). Format manual — freestanding.
-void ghal_stats_dump(void) {
-    extern void kprint(const char* s);
-    extern void kprint_num(uint64_t v);
-    if (!g_active) { kprint("[gpu] backend belum aktif\n"); return; }
-    kprint("[gpu] backend=");
-    kprint(g_active->name);
-    ghal_gpu_stats_t st;
-    if (ghal_gpu_stats(&st) != 0) { kprint(" (statistik tidak tersedia)\n"); return; }
-    kprint("\n[gpu] present=");
-    kprint_num(st.present_count);
-    kprint("  cmd=");
-    kprint_num(st.cmd_count);
-    kprint("  bytes=");
-    kprint_num(st.cmd_bytes);
-    kprint("\n[gpu] notify=");
-    kprint_num(st.notify_count);
-    kprint("  wait_calls=");
-    kprint_num(st.wait_calls);
-    kprint("  wait_ticks=");
-    kprint_num(st.wait_ticks);
-    kprint("  err=");
-    kprint_num(st.err_count);
-    kprint("\n");
 }

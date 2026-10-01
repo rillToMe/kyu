@@ -1,7 +1,7 @@
 // kernel/fs/kfs_shim.c — KyuzenFS V4: shim kompatibilitas API lama kfs_*
 // (split dari kyuzenfs_v4.c).
 //
-// Dipakai caller lama: syscall.c, elf.c, kernel.c, apps/kernel_userlib.c.
+// Dipakai caller lama: syscall.c, elf.c, kernel.c.
 // Konvensi return V3 dipertahankan:
 //   create_file/create_folder → 1 sukses, 0 gagal
 //   exists/read_to_buffer     → 1 / 0

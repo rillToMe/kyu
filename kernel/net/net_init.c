@@ -25,13 +25,12 @@
 #include "lwip/dns.h"
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
+#include "kprint.h"
 
 /* kyuzen_netif glue layer + g_kyuzen_netif */
 #include "kyuzen_netif.h"
 
 /* Kernel log */
-extern void kprint(const char *str);
-extern void kprint_num(uint64_t num);
 
 /* Timer — untuk DHCP wait loop */
 extern uint64_t timer_get_ms(void);

@@ -8,9 +8,8 @@
 #include "smp.h"
 #include "sched_internal.h"
 #include <stddef.h>
+#include "kprint.h"
 
-extern void kprint(const char* str);
-extern void kprint_num(uint64_t num);
 
 void scheduler_dump(void) {
     task_t task_snapshot[MAX_TASKS];

@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "kprint.h"
 
 /* Kyuzen OS freestanding string utilities */
 #include "../../../include/string.h"
@@ -60,7 +61,6 @@
 struct netif g_kyuzen_netif;
 
 /* Kernel log output */
-extern void kprint(const char *str);
 
 /* ===========================================================================
  * INTERNAL CONSTANTS

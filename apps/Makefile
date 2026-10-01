@@ -159,7 +159,7 @@ FONT_BLOB_OBJS = $(addprefix $(OBJ_DIR)/apps/fonts/,$(addsuffix .o,$(FONTDEMO_FO
 #                 Bukan kelompok lain: rule kompilasi/link-nya beda (clang++,
 #                 subdir, -I libs/gui/widget/include).
 GUI_APPS    = viewer clock calc notepad widget_demo fontdemo xml_demo
-SYS_APPS    = echo cat
+SYS_APPS    = echo cat zen init login shell
 TEST_APPS   = procinfo exit_test kill_test fd_test pipe_test fork_test badptr
 SIMPLE_APPS = $(SYS_APPS) $(TEST_APPS)
 OTHER_APPS  = terminal
@@ -314,11 +314,28 @@ $(ELF_DIR)/clock.elf: $(OBJ_DIR)/apps/clock.o $(GUI_LIBS) $(SDK_CRT) $(SDK_LIB)
 	@echo "[LD-SDK] clock.elf (libui toolkit + Kyuzen C SDK)"
 	$(LD) -m elf_x86_64 -nostdlib -T $(SDK_LD) $< $(GUI_LIBS) $(SDK_CRT) $(SDK_LIB) -o $@
 
-# Util CLI system/ (echo/cat): sumber di system/
-$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(SYS_APPS))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/system/%.o $(USERLIB_OBJ)
+# Util CLI system/ (echo/cat/zen/init): sumber di system/, hanya butuh userlib.
+# shell & login DIKECUALIKAN — punya rule sendiri di bawah (butuh shell_core /
+# userutil), jadi rule generik ini tidak boleh ikut mendeklarasikannya.
+SYS_APPS_PLAIN = $(filter-out shell login,$(SYS_APPS))
+$(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(SYS_APPS_PLAIN))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/system/%.o $(USERLIB_OBJ)
 	@mkdir -p $(ELF_DIR)
 	@echo "[LD] $(notdir $@) ke $(APP_BASE)"
 	$(LD) $(LDFLAGS) $< $(USERLIB_OBJ) -o $@
+
+# shell.elf: frontend konsol + engine bersama (shell_core.c) + userutil
+# (parse auth/adduser) + netutil (perintah nettest). Sama seperti terminal.elf
+# yang juga memakai shell_core, tapi tanpa toolkit GUI.
+$(ELF_DIR)/shell.elf: $(OBJ_DIR)/system/shell.o $(USERLIB_OBJ) $(USERUTIL_OBJ) $(NETUTIL_OBJ) $(SHELLCORE_OBJ)
+	@mkdir -p $(ELF_DIR)
+	@echo "[LD] shell.elf (shell engine + userutil + netutil)"
+	$(LD) $(LDFLAGS) $< $(USERLIB_OBJ) $(USERUTIL_OBJ) $(NETUTIL_OBJ) $(SHELLCORE_OBJ) -o $@
+
+# login.elf: layar login + parser users.sys (userutil) + spawn shell.elf
+$(ELF_DIR)/login.elf: $(OBJ_DIR)/system/login.o $(USERLIB_OBJ) $(USERUTIL_OBJ)
+	@mkdir -p $(ELF_DIR)
+	@echo "[LD] login.elf (userutil)"
+	$(LD) $(LDFLAGS) $< $(USERLIB_OBJ) $(USERUTIL_OBJ) -o $@
 
 # ELF uji (tests/): sumber di tests/
 $(addprefix $(ELF_DIR)/,$(addsuffix .elf,$(TEST_APPS))): $(ELF_DIR)/%.elf: $(OBJ_DIR)/tests/%.o $(USERLIB_OBJ)

@@ -71,12 +71,10 @@ int shell_supply_input(shell_t* sh, const char* line); // lanjutkan perintah
 // Parse & jalankan satu baris perintah. Return status (SHELL_*).
 int shell_execute(shell_t* sh, const char* line);
 
-// --- Legacy exec-chain (system/shell.c) ---
-// Loop shell utama + stack kembali untuk sys_exit kernel-path (syscall 34).
-// Dipakai kernel/syscall/sys_proc.c dan system/login.c — bukan engine API,
-// tetapi shell.h adalah owner subsystem yang jelas (bukan header misc baru).
-void user_shell(void);
-extern uint64_t g_shell_return_rsp;
+// --- Frontend konsol ---
+// Loop shell utama kini ada di system/shell.c sebagai ELF ring-3 (entry `main`),
+// di-spawn oleh login.elf. Deklarasi user_shell()/g_shell_return_rsp dihapus
+// bersama jalur exec-chain kernel (lihat docs/design/ring3-init-migration.md).
 
 // 1 jika `name` adalah perintah terdaftar (dipakai frontend console untuk
 // fallback "implicit exec" <nama>.elf pada perintah tak dikenal).

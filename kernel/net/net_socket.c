@@ -28,12 +28,11 @@
 #include "lwip/err.h"
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
+#include "kprint.h"
 
 extern uint64_t timer_get_ms(void);
 extern void task_sleep_ms(uint32_t ms);   // BLOCKED/SLEEPING + kill observation
 extern void unblock_task(int task_id);    // ISR-safe wake, no-op if not blocked
-extern void kprint(const char *str);
-extern void kprint_num(uint64_t num);
 
 // Syscalls enter with IF=0 (int 0x80 clears it); re-enable so the timer
 // poll that drives lwIP can fire while we block. No-op under the host

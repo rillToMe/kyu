@@ -23,7 +23,7 @@ task_t* syscall_current_task(void);
 
 // Counter: setiap sys_yield menambahkannya; timer membaca + mereset
 // tiap tick untuk CPU idle tracking. Definisi di sys_system.c; deklarasi
-// kanonis di sini (konsumen timer.c/kernel_userlib.c memakai extern sendiri
+// kanonis di sini (konsumen timer.c memakai extern sendiri
 // yang tidak diubah phase ini).
 extern volatile uint32_t yield_counter;
 

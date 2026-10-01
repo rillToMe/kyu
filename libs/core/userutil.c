@@ -1,10 +1,13 @@
 // ============================================================
-// libs/core/userutil.c — helper identitas user bersama
+// libs/core/userutil.c - helper identitas user bersama
 //
-// Satu implementasi untuk DUA konteks: kernel Ring 0 (shell via
-// libs/core/kernel_userlib.c) dan user-space (terminal.elf via libs/core/userlib.c).
-// Hanya memakai API generik yang tersedia di kedua konteks (sys_file_*,
-// sys_get_uid), jadi tidak ada parser yang diduplikasi di shell/terminal.
+// Dipakai ELF user-space (login.elf, shell.elf, terminal.elf) lewat
+// libs/core/userlib.c. Hanya memakai API generik (sys_file_*, sys_get_uid),
+// jadi tidak ada parser yang diduplikasi di shell/terminal.
+//
+// Dulu juga dipakai konteks kernel Ring 0 lewat libs/core/kernel_userlib.c.
+// Setelah migrasi Ring-3 (docs/design/ring3-init-migration.md) shim kernel itu
+// dihapus dan file ini di-`filter-out` dari image kernel.
 // ============================================================
 
 #include "userlib.h"

@@ -23,8 +23,8 @@
 #include <stdint.h>
 #include "panic.h"
 #include "serial.h"
+#include "kprint.h"
 
-extern void kprint(const char* s);
 
 static uint64_t g_log_phys  = 0;
 static uint32_t g_log_len   = 0;
