@@ -27,6 +27,18 @@ compile_commands.json
 
 # Runtime artifacts from `make run` (QEMU serial mirror / test dumps)
 serial.log
+# Runtime log di root repo (mis. f_settings.log dari app Settings).
+# Sengaja di-scope ke root (/*.log) supaya log dokumentasi yang memang
+# disimpan di docs/troubleshooting/ tidak ikut tersembunyi.
+/*.log
+
+# Output probe GUI host-side (PPM ~24 MB) — regenerated oleh
+# `make probe-*` / tests/host/probes/_ui_probe.py
+tests/host/probes/_ui_out/
+tests/host/probes/__pycache__/
+
+# Host tool binary (dibangun oleh `make mkfs` dari tools/mkfs.kyuzenfs.c)
+/mkfs.kyuzenfs
 
 # Build directories
 build/
@@ -40,11 +52,9 @@ stdlib/llvm-project
 #file
 run.md
 iso_root
-CLAUDE.md
 implementasi_step.md
 .qoder
 roadmap
-.rules
 .serena
 Analisa.md
 STRUKTURE_FILE.md
