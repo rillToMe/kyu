@@ -17,6 +17,7 @@ implementation wins.
 | [Scheduler Module Split](sched-module-split.md) | Why `kernel/sched/` is split into core/runqueue/lifecycle/block/debug |
 | [ATA Driver Redesign Proposal](ata-driver-redesign-proposal.md) | Proposed redesign of the ATA PIO driver |
 | [Hot Reload API](hot-reload-api.md) | The generic hot-reload syscall design (84/85) |
+| [Ring-3 Init Migration](ring3-init-migration.md) | Moving login/shell/zen out of the kernel image into ring-3 ELFs, with `init.elf` as supervisor (FIX.md K-1) |
 
 ## Libraries & SDKs
 

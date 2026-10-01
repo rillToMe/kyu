@@ -47,8 +47,20 @@ apps/
 └── browser/          # C++ (engine + app)
 ```
 
-Kernel-context programs (compiled into the kernel, Ring 0) live in `system/`:
-`shell.c`, `shell_core.c`, `login.c`, `zen.c`.
+System programs also live in `system/`, but they are **not** compiled into the
+kernel — each is a separate ring-3 ELF (`ENTRY main`), same as the apps above:
+
+| Source | ELF | Role |
+| --- | --- | --- |
+| `init.c` | `/apps/init.elf` | PID 1 — spawns and supervises `login.elf` |
+| `login.c` | `/apps/login.elf` | login screen; spawns `desktop.elf` + `shell.elf` |
+| `shell.c` | `/apps/shell.elf` | console shell front end |
+| `shell_core.c` | (linked into `shell.elf` / `terminal.elf`) | the shared shell engine |
+| `zen.c` | `/apps/zen.elf` | text editor |
+| `cat.c`, `echo.c` | `/apps/cat.elf`, `/apps/echo.elf` | pipeline helpers |
+
+The kernel image contains no user code. See
+[Ring-3 Init Migration](../design/ring3-init-migration.md).
 
 ## Manifests
 

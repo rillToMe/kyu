@@ -36,8 +36,9 @@ mandatory development rules; this document is the human-readable entry point.
   subdirectories (`mm/`, `sched/`, `proc/`, `sync/`, `fs/`, `net/`, `gfx/`,
   `syscall/`, `panic/`, `debug/`, `smp/`). Architecture code is in `arch/x86/`;
   drivers in `drivers/`.
-- **Userspace**: libraries in `libs/`, applications in `apps/`, kernel-context
-  programs in `system/`.
+- **Userspace**: libraries in `libs/`, applications in `apps/`, system programs
+  in `system/` (built as ring-3 ELFs, not linked into the kernel — see
+  [Ring-3 Init Migration](../design/ring3-init-migration.md)).
 - **One authoritative path per subsystem.** Legacy entry points are retained
   deliberately and documented as such; do not add a second implementation.
 

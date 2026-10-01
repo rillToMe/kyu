@@ -145,8 +145,8 @@ child resumes after the fork trap with `0`; failure returns `-1`.
 - **Heap**: `uheap_clone` duplicates the region list; pages ride along in the
   address-space clone. Parent and child allocate independently afterwards.
 - **KWM**: the child starts with zero windows (ownership is per-task).
-- **Kernel contexts** (no user address space, including the Ring-0 console) are
-  rejected with `-1`; Ring-3 is required.
+- **Kernel contexts** (no user address space, e.g. Task 0/idle) are rejected
+  with `-1`; Ring-3 is required.
 
 ## exit and wait
 
@@ -160,7 +160,13 @@ child resumes after the fork trap with `0`; failure returns `-1`.
   reaps any child.
 - **Orphans**: children are reparented to Task 0 (the kernel reaper
   placeholder) at parent exit. Task 0 never waits, so its adoptees auto-reap
-  (`DEAD`, no zombie accumulation). There is no `init`/PID 1.
+  (`DEAD`, no zombie accumulation).
+- **init (PID 1)**: `init.elf` is the first ring-3 process. The kernel loads
+  it in `boot_handoff_to_init()` and then idles — it contains no user code.
+  `init` spawns `login.elf` and supervises it: a dead child is logged to
+  serial and restarted with exponential backoff (1s → 30s cap). `login` in
+  turn spawns `desktop.elf` and `shell.elf` after authentication. See
+  [Ring-3 Init Migration](../design/ring3-init-migration.md).
 - `sys_proc_list` (72) returns a read-only `proc_info_t` snapshot
   (`pid/ppid/state/uid/gid/exit_code/name`) for Task Manager. Userspace cannot
   mutate task state through it.
@@ -249,8 +255,8 @@ The shell (`system/shell_core.c`) provides explicit opt-in builtins:
 
 Signals (including `SIGPIPE` — a broken-pipe write fails with `-1`), signal
 handlers, process groups/sessions, PTY/TTY per-terminal routing, job control
-(`&`), `2>` stderr redirection, environment variables, full `init`/PID 1 (only
-the Task-0 reaper placeholder), whole-table fd inheritance on spawn (only
+(`&`), `2>` stderr redirection, environment variables, per-service supervision
+beyond init's single-child restart policy, whole-table fd inheritance on spawn (only
 explicit 0/1/2 via `sys_spawn_redir`), COW/shared memory/`mmap`/ASLR, and
 `vfork`.
 

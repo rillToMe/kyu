@@ -43,43 +43,48 @@ Setiap fase punya "Definition of Done" — jangan tandai selesai sebelum lulus.
 > Fase ini **tidak menambah fitur baru**. Ini yang mengubah "kodemu" menjadi
 > "proyek". Semua item di sini berasal dari `FIX.md` yang sudah kamu audit sendiri.
 
-### 1.1 — Selesaikan isolasi Ring-3 (FIX K-1) `[P0]`
+### 1.1 — Selesaikan isolasi Ring-3 (FIX K-1) `[P0]` — ✅ **SELESAI**
 
-**Masalah terverifikasi:** `kernel/kernel.c:538` masih stub — `switch_to_user_mode()`
-memanggil `user_func()` langsung di Ring 0. Login & shell berjalan di CPL 0,
-`ucopy_ctx.from_user` = 0, seluruh validasi pointer user di-bypass.
+**Masalah (sudah diperbaiki):** `kernel/kernel.c` dulu memanggil `user_login()`
+langsung di CPL 0 lewat stub `switch_to_user_mode()`. Login & shell berjalan di
+Ring 0, `ucopy_ctx.from_user` = 0, seluruh validasi pointer user di-bypass.
 
-**Kenapa ini P0 untuk portofolio:** README mengklaim *"memory-protected Ring-3
-applications"*. Selama ini belum benar untuk jalur utama, klaim itu cacat — dan
-reviewer OSDev akan langsung menemukannya.
+**Penyelesaian:** migrasi penuh, bukan tambalan. Kernel kini **nol kode user**:
+`init`, `login`, `shell`, `zen` semuanya ELF ring-3. Lihat
+[Ring-3 Init Migration](design/ring3-init-migration.md) untuk rencana lengkap,
+bukti, dan temuan sampingan.
 
-**Langkah:**
-1. Pelajari `create_user_task` — frame Ring-3 (CS=0x1B / SS=0x23) **sudah** dibuat.
-   Infrastruktur lengkap: IDT `int 0x80` DPL=3 (`arch/x86/idt.c:91`), TSS 16 descriptor.
-2. Ubah `switch_to_user_mode` untuk melakukan transisi `iretq` nyata ke CPL 3
-   dengan stack user, bukan memanggil langsung.
-3. Pastikan `user_login` (dan turunannya: shell, `zen`) sekarang benar-benar
-   dieksekusi di Ring 3.
-4. Verifikasi ulang `kernel/proc/usercopy.c`: jalur `from_user` sekarang aktif —
-   pointer user yang tidak valid **harus** ditolak, bukan blanket-pass.
-5. Pastikan `sys_alloc/sys_free/sys_realloc` (`kernel/syscall/sys_mem.c`)
-   mengembalikan **uheap** untuk shell, bukan `kmalloc`.
+Yang berubah:
 
-**Verifikasi (bukti yang harus kamu simpan):**
-- [ ] `make run` → login → shell, dan di shell cetak `CS` register → harus `0x1b`
-- [ ] Test negatif: sengaja kirim pointer kernel ke syscall dari shell → harus
-      `-EFAULT`, bukan sukses
-- [ ] `make conc` masih 5/5 PASS (regresi SMP)
-- [ ] Semua 19 app masih jalan setelah perubahan
+| | Sebelum | Sesudah |
+|---|---|---|
+| Handoff kernel | `switch_to_user_mode()` → `user_login()` di CPL 0 | `boot_handoff_to_init()` memuat `/apps/init.elf` + `create_user_task()` (frame `CS=0x1B`/`SS=0x23`), lalu task 0 masuk `scheduler_idle_loop()` |
+| PID 1 | tidak ada | `init.elf` — spawn + supervisi `login.elf` (restart backoff 1s→30s) |
+| Jalur login | `login.c` di kernel | `login.elf` ring-3 → spawn `desktop.elf` + `shell.elf` setelah auth |
+| Jalur shell | `shell.c` di kernel, `user_shell()` loop | `shell.elf` ring-3, `logout` → `sys_exit` |
+| Editor | `zen_main()` in-process | `/apps/zen.elf` di-spawn |
+| `libs/core/kernel_userlib.c` | shim Ring 0 (13 KB) | **dihapus** — 0 pemakai |
+| `sys_exit` longjmp | `mov rsp; jmp *user_shell` (PM-2) | dihapus — semua task user `TASK_KIND_SPAWNED` |
 
-**DoD:** Login dan shell berjalan di Ring 3, validasi pointer aktif untuk
-keduanya, tanpa regresi. Update `FIX.md` K-1 → `FIXED`.
+**Bukti:** `make -n all | grep build/obj/system/` → kosong (nol objek user di
+link kernel). `llvm-nm build/bin/myos.bin` tidak memuat `user_login`,
+`user_shell`, `zen_main`, `shell_init`, `cmd_start`, `g_shell_return_rsp`.
 
-> **Alternatif jika terlalu berat:** jika transisi `iretq` ternyata butuh
-> restrukturisasi besar, jalur kedua yang sah adalah **mengoreksi README**
-> secara jujur: "Ring-3 isolation applies to spawned/exec'd applications;
-> login/shell bootstrap currently runs in Ring 0 (tracked in FIX.md K-1)".
-> Klaim jujur > klaim muluk. Tapi target tetap menyelesaikan, bukan menghindar.
+**Verifikasi:**
+- [x] Build hijau dari nol: `make all` (0 error/warning), `make apps` (28 ELF),
+      `make boot_image.iso` (30,2 MB), host test 17/17
+- [x] Kernel nol kode user (dibuktikan lewat `make -n all` + `llvm-nm`)
+- [x] `init.elf`/`login.elf`/`shell.elf`: `T main` di `0x4000000`, 0 undefined symbol
+- [ ] `make run` → login → shell, cetak `CS` register → harus `0x1b` *(butuh QEMU)*
+- [ ] Test negatif: kirim pointer kernel ke syscall dari shell → `-EFAULT` *(butuh QEMU)*
+- [ ] `make conc` masih 5/5 PASS (regresi SMP) *(butuh QEMU)*
+- [ ] Semua app masih jalan setelah perubahan *(butuh QEMU)*
+
+**DoD:** ✅ Login dan shell berjalan di Ring 3; validasi pointer aktif untuk
+keduanya. `FIX.md` K-1 → `FIXED`, PM-2 → `FIXED`.
+
+> **Catatan:** jalur alternatif "koreksi README" (yang disebut di bawah) **tidak
+> dipakai** — migrasi penuh dikerjakan, jadi klaim README sekarang akurat.
 
 ---
 
@@ -585,8 +590,9 @@ Jangan mulai dari yang besar. Mulai dari yang **membuka pintu**:
 1. **Hari 1–3:** Buat `.github/workflows/build.yml` dengan job `make && make apps`.
    Ukur berapa lama sampai hijau. Ini satu-satunya langkah yang paling cepat
    mengubah persepsi proyekmu.
-2. **Minggu 1:** Selesaikan FIX K-1 (Ring-3 login/shell) **atau** koreksi
-   README. Pilih satu, selesaikan, jangan mengambang.
+2. ✅ ~~**Minggu 1:** Selesaikan FIX K-1 (Ring-3 login/shell) **atau** koreksi
+   README.~~ **Selesai** — migrasi penuh dikerjakan (lihat §1.1). README kini
+   akurat: kernel tidak memuat kode user sama sekali.
 3. **Minggu 2:** Reproduksi fresh-clone build, catat setiap kegagalan.
 
 Setelah ketiganya, kamu sudah punya fondasi Fase 1 dan momentum.

@@ -142,6 +142,14 @@ Userspace pointers are validated against the caller's address space and bounded
 | 39 | `reboot` | — | root only |
 | 80 | `crash_notice` | `RBX=crash_notice_t*` | 1 / 0 |
 | 87 | `entropy` | `RBX=buf, RCX=len` | 0 / error |
+| 89 | `get_refresh_rate` | - | Hz (60/100/144) |
+| 90 | `set_refresh_rate` | `RBX=hz` | 0 / -1 (root only) |
+
+> **Nomor 87 milik `entropy`, bukan refresh rate.** Keduanya sempat bertabrakan:
+> refresh rate memakai 87, dan karena cabangnya dievaluasi lebih dulu di
+> `sys_system.c`, `sys_entropy()` selalu mengembalikan 60 sehingga TLS memakai
+> angka itu sebagai seed HMAC-DRBG. Guard `_Static_assert` di `sys_system.c`
+> sekarang menolak tabrakan seperti ini saat kompilasi.
 
 ## Miscellaneous
 

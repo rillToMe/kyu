@@ -1,6 +1,6 @@
 # KyuzenOS Network ABI (audited, not specified)
 
-Source of truth: `kernel/syscall/syscall.c:66-72` (registers), `:111-114` (routing), `kernel/syscall/sys_net.c` (semantics), `libs/core/userlib.c:316-323,476-507` (ring-3 wrappers), `system/shell.c:35-58` (ring-0 wrappers), `include/usercopy.h:22` + `UC_MAX_SOCK` (caps).
+Source of truth: `kernel/syscall/syscall.c:66-72` (registers), `:111-114` (routing), `kernel/syscall/sys_net.c` (semantics), `libs/core/userlib.c:316-323,476-507` (wrappers — the only implementation), `include/usercopy.h:22` + `UC_MAX_SOCK` (caps).
 
 Trap: `int 0x80`. `RAX` = number, `RBX`/`RCX`/`RDX` = args 1–3. All returns are `int64`-sign-extended. Failures are negative `KSOCK_*` codes (`include/net_socket.h`): `-1` generic, `-2` stale handle, `-3` not owner, `-4` timeout, `-5` conn failed, `-6` closed, `-7` no resource. Legacy `< 0` checks keep failing safe.
 

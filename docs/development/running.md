@@ -66,8 +66,11 @@ The disk image is mounted as the filesystem on first boot.
 ## First Boot
 
 On a fresh disk, KyuzenOS runs a one-time setup asking you to **create the root
-password** (stored in `users.sys`). Afterwards you land on the login screen;
-logging in drops you into the shell.
+password** (stored in `users.sys`). Afterwards you land on the login screen.
+
+Both the login screen and the shell are **ring-3 processes** (`login.elf` and
+`shell.elf`, spawned by `init.elf` — PID 1). The kernel itself contains no user
+code; see [Ring-3 Init Migration](../design/ring3-init-migration.md).
 
 Default credentials:
 
@@ -77,6 +80,9 @@ Pass: 1
 ```
 
 ## After Login
+
+Logging in starts the desktop (GUI) and the console shell. `logout` ends the
+shell session and returns you to the login screen.
 
 The shell provides 30+ commands. A quick tour:
 

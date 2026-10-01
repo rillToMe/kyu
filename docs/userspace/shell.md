@@ -1,9 +1,13 @@
 # Shell & CLI
 
 KyuzenOS has one shell engine (`system/shell_core.c`) shared by the console
-shell and the GUI terminal. The console shell runs as a kernel task (Task 0);
-the GUI terminal (`apps/terminal.c`) is a front end that delegates every command
-to the same engine.
+shell and the GUI terminal. Both are **ring-3 ELFs**: `shell.elf` (console,
+spawned by `login.elf`) and `apps/terminal.c` (GUI, spawned by the user).
+Each is a front end that delegates every command to the same engine — commands
+are registered once and appear in every terminal.
+
+The console shell exits on `logout`; `login.elf` waits for it (`waitpid`)
+and then shows the login screen again.
 
 ## Builtin Commands
 
@@ -75,7 +79,7 @@ Rules:
 - Builtin-only names and `start` inside a stage are rejected with an error.
 
 The GUI terminal implements pipelines with `fork` → `dup2` → `execve`. The
-console shell (Task 0, no user address space to clone) falls back to the
+console shell (`shell.elf`, also ring-3 since the init migration) uses the
 `spawn_redir` path with identical wiring.
 
 Examples:

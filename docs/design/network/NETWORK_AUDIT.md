@@ -13,8 +13,8 @@ Single-NIC IPv4 TCP-client + ping box. One e1000 driver (polling, no IRQ), one l
 ## 2. Current Architecture (actual, not aspirational)
 
 ```text
-shell (kernel task) / ring-3 ELF
-  │  libs/core/userlib.c (int 0x80 wrappers)   │  libs/core/kernel_userlib.c (direct calls, kernel tasks)
+ring-3 ELF (shell.elf / app) — kernel image contains no user code
+  │  libs/core/userlib.c (int 0x80 wrappers)
   ▼
 int 0x80, RAX=num RBX/RCX/RDX=args            kernel/syscall/syscall.c:111 → sys_net_handle
   ▼
@@ -101,9 +101,9 @@ All lwIP entry under `net_lock` (irqsave spinlock): socket syscalls, ping sectio
 
 `int 0x80`; RAX=num, RBX/RCX/RDX=args 1-3 (`kernel/syscall/syscall.c:66-72`). Net routed at `syscall.c:111-114` → `sys_net_handle`.
 
-| Syscall | Num | Args | Implemented | User API (ring-3 `libs/core/userlib.c`, kernel `libs/core/kernel_userlib.c`) | Tested |
+| Syscall | Num | Args | Implemented | User API (`libs/core/userlib.c`) | Tested |
 | --- | --- | --- | --- | --- | --- |
-| ping | 41 | RBX=host* | y, 4×echo + DNS, avg RTT / -1 | `sys_ping` (:319); kernel direct `:123` | manual shell |
+| ping | 41 | RBX=host* | y, 4×echo + DNS, avg RTT / -1 | `sys_ping` (:319) | manual shell |
 | socket | 52 | — | y, TCP pcb alloc | `sys_socket` (:477) | manual nettest |
 | connect | 53 | RBX=s RCX=ip_be RDX=port | y, 5s block | `sys_connect` (:485) | manual |
 | send | 54 | RBX=s RCX=buf RDX=len | y, partial-ok | `sys_send` (:492) | manual |
@@ -111,7 +111,7 @@ All lwIP entry under `net_lock` (irqsave spinlock): socket syscalls, ping sectio
 | close | 56 | RBX=s | y | `sys_sock_close` (:506) | manual |
 | bind/listen/accept/sendto/recvfrom/shutdown/sockopt | — | — | no (no refs anywhere outside lwIP) | none | — |
 
-All errors collapse to `-1`; no errno (`ENOMEM/EAGAIN/ETIMEDOUT/…` never surfaced). `system/shell.c:35-58` = ring-0 wrappers for the in-kernel shell.
+All errors collapse to `-1`; no errno (`ENOMEM/EAGAIN/ETIMEDOUT/…` never surfaced). `system/shell.c` ring-0 wrappers are gone — wrappers live in `libs/core/userlib.c`.
 
 ## 11. File Descriptor Integration
 
@@ -161,7 +161,10 @@ No http/tls/ssl/crypto refs in kernel/libs/apps/system/drivers/tools (verified g
 
 - `ping <host>` (`system/shell_core.c:436`) → syscall 41 → kernel prints + RTT.
 - `nettest <ip> <port>` (`system/shell_core.c:605-640`) → 52→53→54→55→56, IP-literal only, echo-style. Only socket demo in-tree; `apps/` has zero net users (verified grep).
-- Both run in the kernel shell task (ring-0 wrappers in `system/shell.c`), so ring-3 path (usercopy bounce) exercised only by spawned ELFs — none exist yet.
+- Both run in `shell.elf`, a **ring-3** task (since the init migration), so the
+  ring-3 path (usercopy bounce) is exercised directly. The ring-0 wrappers that
+  used to live in `system/shell.c` are gone — `libs/core/userlib.c` is the only
+  implementation.
 
 ## 23. Process Lifecycle / Cleanup — weakest layer
 

@@ -72,7 +72,7 @@ Routing is grouped by subsystem:
 | `sys_kwm_handle` | 22, 23, 26, 29–32, 58–63, 66, 67, 84, 85 | `sys_kwm.c` |
 | `sys_net_handle` | 41, 52–56, 86 | `sys_net.c` |
 | `sys_gpu_handle` | 65 | `sys_gpu.c` |
-| `sys_system_handle` | 4, 14–17, 20, 35–39, 46, 87 | `sys_system.c` |
+| `sys_system_handle` | 4, 14-17, 20, 35-39, 46, 87 (entropy), 89-90 (refresh) | `sys_system.c` |
 | `sys_misc_handle` | 1–3, 27, 28, 42–45, 80 | `sys_misc.c` |
 
 Syscall 21 is reserved and unused.
@@ -106,9 +106,14 @@ typedef struct {
 - for Ring 3: `uaddr >= UC_USER_VA_MAX`, or `len > UC_USER_VA_MAX - uaddr`
 
 For Ring-3 callers it then walks the range **page by page** (4 KB), confirming
-each page is mapped into the caller's address space. For Ring-0 callers
-(kernel-context shells calling via `int 0x80`) it returns immediately — kernel
-pointers are legal.
+each page is mapped into the caller's address space. For Ring-0 callers it
+returns immediately — kernel pointers are legal.
+
+> Since the ring-3 init migration **all** syscall callers are ring-3; the
+> kernel contains no user code. The Ring-0 path is retained as a safety net for
+> kernel-internal callers (and for the `from_user == 0` case that no longer
+> occurs in practice). See
+> [Ring-3 Init Migration](../design/ring3-init-migration.md).
 
 `copy_from_user` / `copy_to_user` validate, then `memcpy` inside a
 `user_access_begin()`/`user_access_end()` window (STAC/CLAC) for Ring-3
@@ -172,9 +177,14 @@ SMAP never execute them (avoiding `#UD`).
 ## Userspace Wrappers
 
 Applications do not issue `int 0x80` directly. They call wrapper functions in
-`libs/core/userlib.c` (and the kernel-context shim
-`libs/core/kernel_userlib.c`). The C SDK's CRT and the C++ SDK's runtime build
-on these wrappers.
+`libs/core/userlib.c`. The C SDK's CRT and the C++ SDK's runtime build on these
+wrappers.
+
+The kernel-context shim (`libs/core/kernel_userlib.c`) that used to provide a
+second, direct-call path for kernel tasks was **removed** once the last user
+code left the kernel image (see
+[Ring-3 Init Migration](../design/ring3-init-migration.md)). `userlib.c` is now
+the single implementation.
 
 ## Related Documentation
 

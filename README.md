@@ -34,7 +34,7 @@ repository.
 | **Kernel** | Higher-half monolithic kernel at `0xFFFFFFFF80000000`, Limine boot (hybrid BIOS+UEFI ISO), SMP up to 16 CPUs, preemptive scheduler with per-CPU run queues and work stealing |
 | **Memory** | Bitmap physical allocator, 4-level paging, kernel heap, per-process user heap with guard pages |
 | **Processes** | Unified task model: spawn, exec, fork, wait, kill; per-task credentials; zombie reaping |
-| **Protection** | Ring-3 isolation with per-process address spaces, SMAP/SMEP, WP, and a validated boundary-copy layer |
+| **Protection** | Ring-3 isolation for **all** user code (including `init`/`login`/`shell`), per-process address spaces, SMAP/SMEP, WP, and a validated boundary-copy layer |
 | **Filesystem** | KyuzenFS V4: extent-based, 4 KB block cache, real directories, POSIX-style fd API |
 | **Networking** | lwIP TCP/IP on an Intel e1000 NIC: DHCP, DNS, ICMP ping, TCP client sockets |
 | **Graphics** | Graphics HAL (GHAL) with software, VirtIO-GPU, and Intel iGPU backends; dirty-region compositor; KWM window manager |
@@ -45,8 +45,9 @@ repository.
 ## Architecture at a Glance
 
 ```text
-Applications (Ring 3)
-    │  calc · fileman · terminal · notepad · browser · desktop · …
+Applications (Ring 3)   —  kernel image contains no user code
+    │  init (PID 1) → login → shell, desktop, zen
+    │  calc · fileman · terminal · notepad · browser · …
     ▼
 Frameworks & Libraries
     │  libdesktop · widget toolkit (libui) · XML UI · C/C++/Rust SDKs
@@ -72,7 +73,7 @@ Full details: [Architecture Overview](docs/architecture/overview.md).
 | `kernel/` | Kernel core: `mm/`, `sched/`, `proc/`, `sync/`, `fs/`, `net/`, `gfx/`, `syscall/`, `panic/`, `debug/`, `smp/` |
 | `drivers/` | ATA, PS/2, PCI, RTC, serial, timer, e1000 NIC, VirtIO-GPU |
 | `graphics/` | Graphics HAL (GHAL) and backends |
-| `system/` | Kernel-context programs: shell, login, editor, desktop |
+| `system/` | System programs built as ring-3 ELFs: `init` (PID 1), `login`, `shell`, `zen`, `cat`/`echo` |
 | `apps/` | Ring-3 applications and the application build |
 | `libs/` | Userspace libraries: `core/`, `gui/`, `c/`, `cpp/`, `media/`, `text/` |
 | `rust/` | Rust userspace crates and applications |

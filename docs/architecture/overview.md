@@ -46,9 +46,10 @@ in this repository.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Applications (Ring 3)                                                │
+│ Applications (Ring 3)   — kernel image contains no user code         │
+│   init (PID 1) → login → shell, desktop, zen                         │
 │   calc, clock, notepad, terminal, viewer, fileman, settings,         │
-│   taskmgr, browser, desktop, test suites                             │
+│   taskmgr, browser, test suites                                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Frameworks & Libraries                                               │
 │   libdesktop (C++)  ·  widget toolkit (libui)  ·  XML UI  ·          │
@@ -122,9 +123,15 @@ Firmware (BIOS / UEFI)
                             ├─ subsystems: FS mount, network, GHAL, KWM
                             ├─ SMP bring-up (LAPIC, AP cores)
                             ├─ tasking init (Task 0 = kernel main)
-                            └─ install modules into the filesystem,
-                               then start the desktop / login
+                            ├─ install modules into the filesystem
+                            └─ handoff: load /apps/init.elf as the first
+                               ring-3 task (PID 1), then Task 0 idles
 ```
+
+The kernel image contains **no user code**. Everything the user interacts with
+is a ring-3 ELF: `init.elf` (PID 1) spawns and supervises `login.elf`, which
+spawns `desktop.elf` and `shell.elf` after authentication. See
+[Ring-3 Init Migration](../design/ring3-init-migration.md).
 
 Details are in [Boot Process](boot.md).
 

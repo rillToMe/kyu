@@ -47,6 +47,17 @@ There are two entry paths:
 - `create_user_task` — used by spawn (57/68/77) and fork (78), building a fresh
   frame.
 
+Plus the **boot path**, which uses the same frame construction:
+
+- `boot_handoff_to_init()` - loads `/apps/init.elf` into a fresh address space
+  and starts it with `create_user_task()`. This is the first ring-3 process
+  (PID 1). After it starts, the kernel main thread switches to its idle stack
+  and never returns to user code — the kernel image contains no user code.
+
+All ring-3 processes are ELFs spawned from other ring-3 processes:
+`init.elf` → `login.elf` → (`desktop.elf`, `shell.elf`). See
+[Ring-3 Init Migration](../design/ring3-init-migration.md).
+
 ## Kernel Stacks and RSP0
 
 Interrupts and syscalls from Ring 3 switch to a kernel stack via TSS.RSP0.

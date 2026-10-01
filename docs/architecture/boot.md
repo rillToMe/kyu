@@ -97,7 +97,16 @@ stages depend on earlier ones:
     thread as **Task 0**.
 11. **Module installation** — install Limine modules into the filesystem and
     create the standard directory tree.
-12. **Userspace handoff** — start the desktop environment or login flow.
+12. **Userspace handoff** — `boot_handoff_to_init()` loads `/apps/init.elf`
+    into a fresh address space and starts it via `create_user_task()` (iretq
+    frame with `CS=0x1B`/`SS=0x23`, so init begins at CPL 3). Kernel main then
+    switches to this CPU's permanent idle stack and enters
+    `scheduler_idle_loop()` — it never returns to user code.
+
+    The kernel contains **no user code**: `init`, `login`, `shell`, and `zen`
+    are all ring-3 ELFs. `init` spawns `login.elf`; `login` spawns
+    `desktop.elf` and `shell.elf` after authentication. See
+    [Ring-3 Init Migration](../design/ring3-init-migration.md).
 
 > **Ordering constraint:** `tasking_init()` must be called after the timer is
 > initialized and before any `create_task()`. The kernel heap must exist before

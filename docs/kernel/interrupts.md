@@ -86,7 +86,7 @@ Each CPU has dedicated stacks so a ring transition has a safe stack:
 
 - **Idle stack** (`TASK_STACK_SIZE` = 16 KB) — used by the idle loop.
 - **Syscall stack** (`SYSCALL_STACK_SIZE` = 16 KB) — used for `int 0x80` entry
-  and kernel-context tasks.
+  from ring 3 (the TSS `RSP0` target).
 
 The TSS `RSP0` is repointed on every context switch to the incoming task's
 kernel stack (see [Scheduler](scheduler.md)), which is required for correctness
