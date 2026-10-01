@@ -112,6 +112,14 @@ function(kyuzen_add_image_target)
         list(APPEND _app_elf_files "$<TARGET_FILE:${_t}>")
     endforeach()
 
+    # Rust ELFs are produced by a custom target rather than per-app targets, so
+    # they are listed as paths and the target is added to DEPENDS below.
+    set(_rust_deps "")
+    if(TARGET ${KYUZEN_RUST_TARGET})
+        list(APPEND _rust_deps ${KYUZEN_RUST_TARGET})
+        list(APPEND _app_elf_files ${KYUZEN_RUST_ELFS})
+    endif()
+
     # -----------------------------------------------------------------------
     # Optional extra ELFs (smoke apps) — copied only when their target exists.
     # The old Makefile guarded each one with `if [ -f ... ]`.
@@ -165,18 +173,24 @@ function(kyuzen_add_image_target)
                 -DLIMINE_CONF=${KYUZEN_ROOT}/limine.conf
                 -P ${KYUZEN_ROOT}/cmake/iso_module_guard.cmake
         # --- build the hybrid BIOS+UEFI image --------------------------------
+        # xorriso is run from the staging directory's parent with a RELATIVE
+        # directory argument. An absolute Windows path gets mangled by MSYS
+        # path translation ("E:/..." is prepended to the current directory),
+        # which makes xorriso look for a nonsensical path.
         COMMAND xorriso -as mkisofs
                 -b limine-bios-cd.bin
                 -no-emul-boot -boot-load-size 4 -boot-info-table
                 --efi-boot limine-uefi-cd.bin
                 -efi-boot-part --efi-boot-image
                 --protective-msdos-label
-                "${KYUZEN_ISO_ROOT}" -o "${KYUZEN_ISO_IMAGE}"
+                iso_root -o boot_image.iso
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
         # --- install the BIOS boot stages ------------------------------------
         COMMAND "${KYUZEN_ROOT}/limine/limine.exe" bios-install "${KYUZEN_ISO_IMAGE}"
         DEPENDS
             kyuzen-kernel
             ${_app_targets}
+            ${_rust_deps}
             "${KYUZEN_ROOT}/limine.conf"
             ${_manifests}
             ${_limine_files}
@@ -186,7 +200,6 @@ function(kyuzen_add_image_target)
         VERBATIM
         USES_TERMINAL
     )
-
     add_custom_target(kyuzen-image DEPENDS "${KYUZEN_ISO_IMAGE}")
 
     # -----------------------------------------------------------------------

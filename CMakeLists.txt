@@ -101,6 +101,12 @@ if(KYUZEN_BUILD_APPS)
     list(APPEND KYUZEN_APP_TARGETS ${KYUZEN_APP_TARGETS_FROM_APPS})
 endif()
 
+# Rust stays a separate build domain (Rule 17): CMake invokes cargo and copies
+# the resulting ELFs. Must run after apps/ so KYUZEN_ELF_DIR exists.
+if(KYUZEN_BUILD_RUST)
+    add_subdirectory(rust)
+endif()
+
 if(KYUZEN_BUILD_ISO)
     kyuzen_add_image_target()
 endif()
