@@ -98,7 +98,14 @@ void mouse_handler() {
     // PANIC LOCKDOWN: saat BSOD aktif, jangan update posisi kursor atau
     // mengirim event ke app — kalau tidak, redraw desktop menimpa layar
     // panic dan gejalanya tampak seperti "glitch lalu hilang".
-    if (panic_is_locked()) return;
+    //
+    // EOI tetap dikirim (IRQ12 = slave PIC, jadi dua outb) supaya state
+    // PIC/APIC konsisten — simetris dengan keyboard_handler(). Tanpa EOI,
+    // delivery IRQ12 berikutnya bisa ter-mask di jalur non-APIC.
+    if (panic_is_locked()) {
+        outb(0xA0, 0x20); outb(0x20, 0x20);   // End of Interrupt (slave + master)
+        return;
+    }
 
     uint8_t status = inb(0x64);
     uint8_t packet_size = mouse_has_wheel ? 4 : 3;
