@@ -33,6 +33,13 @@
 // jadi konstantanya diduplikasi seperti konstanta layout lain di atas.
 #define KZFS_CRASHDUMP_SECTORS 8u
 
+// Block data yang langsung dipakai mkfs untuk struktur awal: 1 block root dir
+// + 1 block /apps. Harus sama dengan jumlah fwrite data di bawah.
+#define KZFS_MKFS_PREALLOC_BLOCKS 2u
+
+// Inode yang langsung dipakai mkfs: inode 1 (root) + 2 (/apps).
+#define KZFS_MKFS_PREALLOC_INODES 2u
+
 #define FLAG_DIR  0x02
 
 struct kzfs_extent {
@@ -141,8 +148,19 @@ int main(int argc, char **argv) {
     sb.inode_table_start = sb.inode_bitmap_start + sb.inode_bitmap_blocks;
     sb.inode_table_blocks = (uint32_t)((total_inodes + KZFS_INODES_PER_BLOCK - 1) / KZFS_INODES_PER_BLOCK);
     sb.data_blocks_start = sb.inode_table_start + sb.inode_table_blocks;
-    sb.free_blocks = total_blocks - sb.data_blocks_start;
-    sb.free_inodes = (uint32_t)total_inodes - 1;   // inode 1 = root
+    // Dua block data pertama langsung dipakai mkfs: block root dir dan block
+    // /apps (lihat "Data:" di bawah). Keduanya WAJIB dikurangi dari free_blocks
+    // di sini karena superblock ditulis (block 0) SEBELUM bitmap ditulis —
+    // kalau tidak, kernel akan mengalokasi ulang block 53 untuk file pertama
+    // dan menimpa dirent "." ".." "apps" (root dir langsung korup). Jalur kernel
+    // (kfs_super.c) tidak terkena karena alokasi lewat blk_alloc_run_nolock
+    // yang menaikkan free_blocks sendiri.
+    sb.free_blocks = total_blocks - sb.data_blocks_start - KZFS_MKFS_PREALLOC_BLOCKS;
+    // Inode 1 (root) + 2 (/apps) ditandai di inode bitmap di bawah, jadi
+    // keduanya harus dikurangi. Jalur kernel menghasilkan angka yang sama:
+    // layout_compute memakai "total_inodes - 1" (root), lalu create_child("apps")
+    // memanggil ino_alloc_nolock() yang men-decrement satu lagi.
+    sb.free_inodes = (uint32_t)total_inodes - KZFS_MKFS_PREALLOC_INODES;
     sb.root_inode = 1;
 
     // --- Tulis image ---
@@ -160,9 +178,13 @@ int main(int argc, char **argv) {
     memcpy(blk, &sb, sizeof(sb));
     fwrite(blk, 1, KZFS_BLOCK_SIZE, f);
 
-    // Block bitmap: metadata (0..data_start-1) dipakai; inode 1 & 2 (root+apps)
+    // Block bitmap: metadata (0..data_start-1) dipakai, PLUS dua block data
+    // pertama yang langsung diisi mkfs (root dir + /apps). Tanpa dua bit
+    // terakhir, blk_alloc_run_nolock akan mengembalikan block 53 untuk file
+    // pertama dan dir_add_entry menimpanya ke block root dir → korup.
     memset(bm, 0, (size_t)sb.block_bitmap_blocks * KZFS_BLOCK_SIZE);
-    for (uint64_t b = 0; b < sb.data_blocks_start; b++) put_bitmap(bm, b);
+    for (uint64_t b = 0; b < sb.data_blocks_start + KZFS_MKFS_PREALLOC_BLOCKS; b++)
+        put_bitmap(bm, b);
     fwrite(bm, KZFS_BLOCK_SIZE, sb.block_bitmap_blocks, f);
 
     // Inode bitmap: inode 1 (root) + 2 (apps)
