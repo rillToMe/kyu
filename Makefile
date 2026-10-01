@@ -434,17 +434,13 @@ tests/host/unit/browser_url_http_test: tests/host/unit/browser_url_http_test.cpp
 	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra -o $@ tests/host/unit/browser_url_http_test.cpp
 
 # --- Host-side unit test: browser engine HTML + DOM ---
-# Forgiving subset parser: recovery rules, entities, void/raw-text elements,
-# title/style/link extraction, nesting caps. No QEMU needed.
+# Stage B: html::parse() delegates to Lexbor via lexbor_html_adapter.cpp, so
+# these tests link a host build of the SAME Lexbor sources (C, HOSTCC) into a
+# host archive. Rules live below the Lexbor block (vars defined there).
 # Run: make test-browser-html.
 .PHONY: test-browser-html
 test-browser-html: tests/host/unit/browser_html_test
 	./tests/host/unit/browser_html_test
-
-tests/host/unit/browser_html_test: tests/host/unit/browser_html_test.cpp \
-		apps/browser/engine/dom.hpp apps/browser/engine/html.hpp \
-		apps/browser/engine/html.cpp
-	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra -o $@ tests/host/unit/browser_html_test.cpp
 
 # --- Host-side unit test: browser engine CSS + layout + hit test ---
 # Cascade/specificity/inheritance + block/inline layout, wrapping, images,
@@ -453,13 +449,6 @@ tests/host/unit/browser_html_test: tests/host/unit/browser_html_test.cpp \
 .PHONY: test-browser-css-layout
 test-browser-css-layout: tests/host/unit/browser_css_layout_test
 	./tests/host/unit/browser_css_layout_test
-
-tests/host/unit/browser_css_layout_test: tests/host/unit/browser_css_layout_test.cpp \
-		apps/browser/engine/dom.hpp apps/browser/engine/html.hpp \
-		apps/browser/engine/html.cpp apps/browser/engine/css.hpp \
-		apps/browser/engine/css.cpp apps/browser/engine/layout.hpp \
-		apps/browser/engine/layout.cpp
-	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra -o $@ tests/host/unit/browser_css_layout_test.cpp
 
 # --- BearSSL host lib + brssl tool (TLS) ---
 # Full lib (all src/*/*.c) compiled for host into build/host-tls/.
@@ -600,6 +589,51 @@ tests/host/unit/lexbor_html_test: tests/host/unit/lexbor_html_test.c $(LEXBOR_KY
 	$(HOSTCC) -O1 -Wall -Wextra -Wno-unused-parameter \
 	    -I$(LEXBOR_DIR)/kyuzen/include -I$(LEXBOR_DIR)/source \
 	    tests/host/unit/lexbor_html_test.c $(LEXBOR_HOST_SRCS) -o $@
+
+# --- Host build of the SAME Lexbor sources (Stage B) ---
+# The browser engine host tests #include html.cpp (which now calls the Lexbor
+# adapter), so they must link a host build of the identical Lexbor sources.
+# Compiled as C with HOSTCC (clang), one archive reused by both browser tests.
+# FP-banned files stay excluded and the int64 shim is included (see kyuzen.mk).
+LEXBOR_HOST_OBJDIR = $(BUILD_DIR)/lexbor-host/obj
+LEXBOR_HOST_OBJS = $(patsubst %.c,$(LEXBOR_HOST_OBJDIR)/%.o,$(LEXBOR_HOST_SRCS))
+LEXBOR_HOST_A    = $(BUILD_DIR)/lexbor-host/liblexbor_host.a
+
+$(LEXBOR_HOST_OBJDIR)/%.o: %.c $(LEXBOR_KYUZEN_HDRS)
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -O1 -std=c11 -DLEXBOR_STATIC \
+	    -I$(LEXBOR_DIR)/kyuzen/include -I$(LEXBOR_DIR)/source -c $< -o $@
+
+$(LEXBOR_HOST_A): $(LEXBOR_HOST_OBJS)
+	@mkdir -p $(dir $@)
+	llvm-ar rcs $@ $(LEXBOR_HOST_OBJS)
+
+# Browser engine host tests: compile the test (amalgamating html.cpp) + the
+# Lexbor adapter as C++, then link the host Lexbor archive. Lexbor headers are
+# reached via -I (shim <memory.h> wins); the archive is C compiled by HOSTCC.
+BROWSER_TEST_INCS = -I$(LEXBOR_DIR)/kyuzen/include -I$(LEXBOR_DIR)/source
+
+tests/host/unit/browser_html_test: tests/host/unit/browser_html_test.cpp \
+		apps/browser/engine/dom.hpp apps/browser/engine/html.hpp \
+		apps/browser/engine/html.cpp \
+		apps/browser/engine/lexbor_html_adapter.hpp \
+		apps/browser/engine/lexbor_html_adapter.cpp \
+		$(LEXBOR_HOST_A) $(LEXBOR_KYUZEN_HDRS)
+	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra $(BROWSER_TEST_INCS) -DLEXBOR_STATIC \
+	    -o $@ tests/host/unit/browser_html_test.cpp \
+	    apps/browser/engine/lexbor_html_adapter.cpp $(LEXBOR_HOST_A)
+
+tests/host/unit/browser_css_layout_test: tests/host/unit/browser_css_layout_test.cpp \
+		apps/browser/engine/dom.hpp apps/browser/engine/html.hpp \
+		apps/browser/engine/html.cpp apps/browser/engine/css.hpp \
+		apps/browser/engine/css.cpp apps/browser/engine/layout.hpp \
+		apps/browser/engine/layout.cpp \
+		apps/browser/engine/lexbor_html_adapter.hpp \
+		apps/browser/engine/lexbor_html_adapter.cpp \
+		$(LEXBOR_HOST_A) $(LEXBOR_KYUZEN_HDRS)
+	$(HOSTCXX) -std=c++17 -O1 -Wall -Wextra $(BROWSER_TEST_INCS) -DLEXBOR_STATIC \
+	    -o $@ tests/host/unit/browser_css_layout_test.cpp \
+	    apps/browser/engine/lexbor_html_adapter.cpp $(LEXBOR_HOST_A)
 
 # Catatan: target probe QEMU Lexbor Stage A (butuh LIBC_OUT/LIBC_TRIPLE/
 # LIBC_PORT_OBJ/LIBC_ARCHIVE) didefinisikan LEBIH BAWAH, setelah variabel
@@ -2137,7 +2171,8 @@ BW_SRCS       = $(wildcard $(BROWSER_DIR)/*.cpp) $(wildcard $(BROWSER_DIR)/engin
 BW_OBJDIR     = $(BUILD_DIR)/obj/browser
 BW_OBJS       = $(patsubst $(BROWSER_DIR)/%.cpp,$(BW_OBJDIR)/%.o,$(BW_SRCS))
 BW_ELF        = $(ELF_DIR)/browser.elf
-BW_SYS_INC    = -iquote include -Iapps/browser -Ilibs/gui/color/include -Ilibs/text/include
+BW_SYS_INC    = -iquote include -Iapps/browser -Ilibs/gui/color/include -Ilibs/text/include \
+                -I$(LEXBOR_DIR)/kyuzen/include -I$(LEXBOR_DIR)/source -DLEXBOR_STATIC
 BW_HEADERS    = $(wildcard $(BROWSER_DIR)/*.hpp) $(wildcard $(BROWSER_DIR)/engine/*.hpp)
 
 BW_TOOLKIT_GLOBS = $(BUILD_DIR)/obj/user/libs/gui/widget/src/*/*.o \
@@ -2221,11 +2256,11 @@ $(BW_OBJDIR)/%.o: $(BROWSER_DIR)/%.cpp $(BW_HEADERS) $(SDK_CPP_STAGE) | $(SDK_CP
 	@mkdir -p $(dir $@)
 	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) -c $< -o $@ $(BW_SYS_INC)
 
-$(BW_ELF): $(BW_OBJS) $(BL_OS_OBJS) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
+$(BW_ELF): $(BW_OBJS) $(BL_OS_OBJS) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $(LEXBOR_KYUZEN_A) $(SDK_CPP_STAGE) | $(SDK_CPP_WRAPPER)
 	@test -n "$(BW_SRCS)" || { echo "[browser] FAIL: tidak ada *.cpp di $(BROWSER_DIR)/"; exit 1; }
 	@$(MAKE) -C apps all
 	@mkdir -p $(dir $@)
-	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(BW_OBJS) $(BL_OS_OBJS) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $$(ls $(BW_TOOLKIT_GLOBS)) -o $@ $(BW_SYS_INC)
+	@KYUZEN_CXX="$(LIBC_CXX)" KYUZEN_LD="$(LIBC_LD)" $(SDK_CPP_WRAPPER) $(BW_OBJS) $(BL_OS_OBJS) $(USERAPP_LIB_OBJS) $(TEXT_USER_OBJS) $(FT_KYUZEN_A) $(LEXBOR_KYUZEN_A) $$(ls $(BW_TOOLKIT_GLOBS)) -o $@ $(BW_SYS_INC)
 	@$(LIBC_NM) $@ | grep -qE "[Tt] _start$$" || { echo "[browser] FAIL: _start tidak ada di browser.elf"; exit 1; }
 	@if $(LIBC_NM) --undefined-only $@ | grep -q .; then \
 		echo "[browser] FAIL: masih ada simbol undefined di browser.elf"; $(LIBC_NM) --undefined-only $@; exit 1; \

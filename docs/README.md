@@ -94,6 +94,14 @@ Stable design rationale that does not fit a single subsystem:
 | --- | --- |
 | [Design Decisions](design/README.md) | Index of architecture decision records |
 
+### Planning
+
+Forward-looking plans and the project-level roadmap:
+
+| Document | Description |
+| --- | --- |
+| [OSDev Portfolio Roadmap](ROADMAP-OSDEV.md) | Phased plan to reach reproducible-build, CI, stability, FPU/SSE, and a defined technical angle |
+
 ### History
 
 | Document | Description |
