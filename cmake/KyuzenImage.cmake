@@ -29,24 +29,25 @@ function(kyuzen_add_image_target)
         "${KYUZEN_ROOT}/limine/limine-uefi-cd.bin"
     )
 
-    # Fail early and clearly if a required Limine artifact is absent. These are
-    # gitignored (limine.exe by limine/.gitignore, *.bin by the root
-    # .gitignore) yet mandatory — a fresh clone cannot build an ISO
-    # (docs/development/build-system-audit.md §13.5).
+    # Fail early and clearly if a required Limine artifact is absent. All of
+    # them are TRACKED (they used to be gitignored, which made a fresh clone
+    # unable to configure at all — docs/development/build-system-audit.md
+    # §13.5). The checks stay as a guard against a deleted or half-restored
+    # tree.
     foreach(_f IN LISTS _limine_files)
         if(NOT EXISTS "${_f}")
             message(FATAL_ERROR
                 "ISO: required Limine artifact is missing: ${_f}\n"
-                "It is gitignored but mandatory. Restore it (or fetch the "
-                "Limine release) before building the image.")
+                "It is tracked and mandatory. Restore it with "
+                "`git checkout -- limine/` before building the image.")
         endif()
     endforeach()
 
     if(NOT EXISTS "${KYUZEN_ROOT}/limine/limine.exe")
         message(FATAL_ERROR
             "ISO: limine/limine.exe is missing (needed for `bios-install`).\n"
-            "It is gitignored and is NOT built by this project — build it once "
-            "with `make -C limine` (or `cc -O2 limine.c -o limine.exe`).")
+            "It is tracked — restore it with `git checkout -- limine/limine.exe`.\n"
+            "(`make -C limine` builds the Linux/macOS `limine` binary instead.)")
     endif()
 
     file(GLOB _manifests "${KYUZEN_ROOT}/manifests/*.app")

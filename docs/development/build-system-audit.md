@@ -832,6 +832,11 @@ requires all four files. `limine/Makefile` is **never invoked** by the build, so
 `limine.exe` must be produced out-of-band (`make -C limine`). A fresh clone cannot
 build an ISO.
 
+> **RESOLVED (2026-10-02):** the three files are tracked now (`limine.exe`,
+> `limine-bios-cd.bin`, `limine-uefi-cd.bin`), so a fresh clone configures and
+> builds an ISO. The configure-time guards in `cmake/KyuzenImage.cmake` remain,
+> as a check against a deleted or half-restored tree.
+
 ### 13.6 `make clean` destroys the nested CMake build — MEDIUM
 
 `rm -rf build` removes `build/libc/cmake`, forcing a full LLVM libc rebuild (~7 min).

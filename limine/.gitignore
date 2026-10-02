@@ -1,2 +1,12 @@
+# `limine` is the Linux/macOS host tool built by `make -C limine`. The MSYS2
+# build does not use it - it runs the tracked limine.exe instead.
 limine
-limine.exe
+
+# Tracked on purpose. cmake/KyuzenImage.cmake hard-requires these three at
+# configure time, so without them a fresh clone cannot even configure, let
+# alone build an ISO. They are release artifacts, the same as the already
+# tracked BOOTX64.EFI and limine-bios.sys. These negations override the root
+# *.exe / *.bin patterns.
+!limine.exe
+!limine-bios-cd.bin
+!limine-uefi-cd.bin
