@@ -15,11 +15,24 @@ include_guard(GLOBAL)
 # ---------------------------------------------------------------------------
 # Host display settings, overridable the same way the Makefile allowed.
 #   -DKYUZEN_QEMU_DISPLAY=none          (headless)
-#   -DKYUZEN_QEMU_FULLSCREEN=OFF        (windowed)
+#   -DKYUZEN_QEMU_FULLSCREEN=ON         (full-screen)
+#
+# KYUZEN_QEMU_FULLSCREEN DEFAULTS TO OFF, MATCHING WHAT THE MAKEFILE ACTUALLY
+# DID — which is not what its comments claimed.
+#
+# The Makefile set `FULLSCREEN ?= 1` and its comment block describes full-screen
+# as the default, but it defined FULLSCREEN_ARG on line 55 and then never
+# referenced it in any recipe. So `make run` always launched WINDOWED, and
+# `make run FULLSCREEN=0` was indistinguishable from `make run`.
+#
+# The observable behaviour is what has to be preserved, so OFF is the default
+# here. The Makefile's documented intent is still reachable, and now it
+# genuinely works: -DKYUZEN_QEMU_FULLSCREEN=ON adds -full-screen.
 # ---------------------------------------------------------------------------
 set(KYUZEN_QEMU_DISPLAY "gtk,zoom-to-fit=on" CACHE STRING
     "QEMU -display value")
-option(KYUZEN_QEMU_FULLSCREEN "Start QEMU full-screen" ON)
+option(KYUZEN_QEMU_FULLSCREEN
+    "Start QEMU full-screen (OFF = what the Makefile actually did)" OFF)
 
 set(_qemu_fullscreen_arg "")
 if(KYUZEN_QEMU_FULLSCREEN)
