@@ -1,0 +1,13 @@
+# CODEOWNERS
+#
+# KyuzenOS has a single maintainer: @rillToMe owns the repository and is the
+# author of every commit in its history. There are no subsystem maintainers to
+# route by, so one default rule is the accurate description — a longer file
+# would imply a review structure that does not exist.
+#
+# This requests a review from the maintainer on every pull request. It does not
+# prevent anyone else from reviewing.
+#
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+*       @rillToMe

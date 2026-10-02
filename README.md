@@ -172,12 +172,20 @@ points:
 
 ## Contributing
 
-Contributions are welcome. Start with the
-[Contributing Guide](docs/contributing/README.md), then read the binding
-development rules in the `.rules/` directory.
+Contributions are welcome. Start with the [Contributing Guide](CONTRIBUTING.md)
+for the full workflow — setup, build, test, branch, commit, and pull request.
 
-The core rules: never prioritize speed over quality, prefer readability, reuse
+Two rule sets apply:
+
+- [`RULES.md`](RULES.md) — commits, branches, and pull request expectations.
+- [`.rules/`](.rules/RULES.md) — how to write the code: style, architecture,
+  error handling, memory safety, synchronization, and documentation.
+
+In short: never prioritize speed over quality, prefer readability, reuse
 existing systems, make minimal changes, and update the documentation.
+
+Report bugs with the [issue templates](.github/ISSUE_TEMPLATE/); report
+security vulnerabilities privately per [`SECURITY.md`](SECURITY.md).
 
 ## Project Status
 

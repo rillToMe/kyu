@@ -76,9 +76,16 @@ The big picture: how the pieces fit together.
 
 ### Contributing
 
+The contribution documentation lives at the repository root, so that GitHub
+surfaces it. [`docs/contributing/README.md`](contributing/README.md) is a short
+pointer to these:
+
 | Document | Description |
 | --- | --- |
-| [Contributing Guide](contributing/README.md) | Workflow, conventions, review checklist |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | The full workflow: setup, build, test, commit, review |
+| [`RULES.md`](../RULES.md) | Conventional Commits, branch naming, pull request expectations |
+| [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Community standards |
+| [`SECURITY.md`](../SECURITY.md) | Reporting a vulnerability privately |
 
 ### Reference
 

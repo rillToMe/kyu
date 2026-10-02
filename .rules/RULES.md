@@ -12,7 +12,7 @@ This is the entry-point file. Detailed rules live in the other files under `.rul
 - `ARCHITECTURE.md` — architecture, kernel APIs, drivers, error handling, memory safety, synchronization, logging, performance
 - `BUILD.md` — build verification & testing
 - `DOCUMENTATION.md` — documentation requirements
-- `COMMIT_GUIDE.md` — git/commit rules
+- `../RULES.md` — commit, branch, and pull request rules (repository root)
 - `REVIEW_CHECKLIST.md` — checklists to run before declaring a task done
 
 ---
