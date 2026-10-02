@@ -17,13 +17,19 @@ Toolchain lives in `E:\Tools\msys2`. **Use `./build.sh`** — it locates MSYS2 a
 sets PATH correctly no matter which shell you started in.
 
 ```sh
+./build.sh setup      # fetch llvm-project (~137 MB sparse; skipped if present)
 ./build.sh            # kernel + libs + apps
 ./build.sh iso        # + Rust + ISO staging → build/target/boot_image.iso
 ./build.sh run        # boot in QEMU (8 CPUs, 1G RAM, e1000 NIC, disk.img)
 ./build.sh test       # host tests (separate build tree)
+./build.sh mkfs       # KyuzenFS disk formatter (host tool)
 ./build.sh clean      # remove build/ entirely
 ./build.sh <target>   # any ninja target (kyuzen-kernel, kyuzen-calc, ...)
 ```
+
+`llvm-project` is ~1.9 GB and is NOT committed — the SDKs are built from its
+`libc`/`libcxx`. `setup` clones it sparsely (only what is compiled) at the
+pinned tag. Run it once on a fresh clone; it is safe to re-run.
 
 Why the script rather than plain `cmake`/`ninja`: MSYS2 ships two clang builds
 and this project needs tools from both, in a combination no single PATH order

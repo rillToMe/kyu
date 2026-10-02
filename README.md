@@ -102,10 +102,16 @@ Full platform setup (Windows/MSYS2 and Linux) is in
 ### Build and run
 
 ```sh
+./build.sh setup      # 0. fetch llvm-project (~137 MB; skipped if present)
 ./build.sh            # 1. compile the kernel and libraries → build/target/bin/myos.bin
 ./build.sh iso        # 2. build the SDKs, apps, Rust apps, and the ISO
 ./build.sh run        # 3. boot in QEMU (virtio-vga 1920×1080, 8 CPUs)
 ```
+
+The C and C++ SDKs are built from LLVM's `libc` and `libcxx`. Upstream is
+~1.9 GB, so it is not committed; `./build.sh setup` clones it sparsely — only
+the parts this project compiles — at the pinned tag. See
+[Building](docs/development/building.md).
 
 `./build.sh` sets up the toolchain PATH for you — on MSYS2 this matters, because
 the project needs tools from two different clang installations. See

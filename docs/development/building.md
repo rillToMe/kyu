@@ -29,9 +29,32 @@ This document covers toolchain setup and the build targets for KyuzenOS.
 | --- | --- |
 | Limine bootloader binaries | `limine/` |
 | lwIP TCP/IP stack | `third_party/net/lwip/` |
-| LLVM libc + libc++ sources | `third_party/stdlib/llvm-project/` |
 | FreeType | `third_party/freetype/` |
 | BearSSL | `third_party/bearssl/` |
+| Kyuzen LLVM libc config | `third_party/stdlib/kyuzen/` |
+
+### Fetched, not committed: llvm-project
+
+The C and C++ SDKs are built from LLVM's `libc` and `libcxx`. Upstream is
+~1.9 GB, so it is **not** in the repository. Fetch it once:
+
+```sh
+./build.sh setup
+```
+
+That clones it sparsely — only `libc`, `libcxx`, `libcxxabi`, `libunwind`,
+`cmake`, `runtimes` and `llvm/cmake` — at the pinned tag `llvmorg-22.1.8`.
+About **137 MB instead of 1.9 GB**, in roughly five minutes. The tag is verified
+against the commit the parity baseline was built with.
+
+`third_party/stdlib/kyuzen/` holds the Kyuzen-specific libc configuration
+(upstream ships no x86_64 baremetal variant); `setup` copies it into the clone.
+
+To skip the SDKs entirely and build just the kernel and non-SDK apps:
+
+```sh
+cmake -S . -B build/target -G Ninja -DKYUZEN_BUILD_LIBC_SDK=OFF
+```
 
 ## Platform Setup
 
@@ -58,8 +81,12 @@ finds the MSYS2 root, puts `usr/bin` first (so clang 21 wins) and calls
 Verify with:
 
 ```sh
-./build.sh setup     # prints the resolved MSYS2 root, cmake and clang version
+./build.sh setup     # toolchain report + fetch llvm-project if missing
 ```
+
+On a fresh clone the first run does both: it reports the resolved MSYS2 root,
+cmake path and clang version, then fetches llvm-project. Running it again is
+safe — an existing clone is detected and left alone.
 
 Optionally install Rust (`rustup target add x86_64-unknown-none`) — the `iso`
 target needs `cargo` on PATH, and skips the Rust apps without it.
