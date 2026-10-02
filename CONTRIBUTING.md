@@ -78,11 +78,42 @@ Run all commands from the repository root. Use `./build.sh` — it locates MSYS2
 and sets `PATH` correctly regardless of which shell you started in.
 
 ```sh
+./build.sh setup        # FIRST RUN ONLY: fetch llvm-project (~137 MB)
 ./build.sh              # kernel + libraries + applications
 ./build.sh iso          # + Rust apps and the bootable ISO
 ./build.sh run          # build the ISO and boot it in QEMU
 ./build.sh clean        # remove build/ entirely
 ./build.sh <target>     # any Ninja target, e.g. kyuzen-kernel, kyuzen-desktop
+```
+
+### `./build.sh setup` — why it is needed
+
+The C and C++ SDKs are built from LLVM's `libc` and `libcxx`. Upstream
+`llvm-project` is **~1.9 GB**, so it is not committed. Without it, configure
+fails with a message pointing at `third_party/stdlib/llvm-project`.
+
+`setup` clones it sparsely — only the seven directories this project actually
+compiles — at the pinned tag:
+
+| | |
+| --- | --- |
+| Size | **~137 MB** instead of ~1.9 GB |
+| Time | about five minutes |
+| Pinned to | `llvmorg-22.1.8` (`ca7933e4`), verified after checkout |
+
+It also copies the Kyuzen-specific libc configuration from
+`third_party/stdlib/kyuzen/` into the clone. That configuration is tracked in
+this repository precisely because upstream ships no x86_64 baremetal variant —
+it is ours, and it used to live inside the (gitignored) clone where a re-clone
+would have destroyed it.
+
+`setup` is safe to re-run: an existing clone is detected and left alone. It also
+reports the resolved MSYS2 root, cmake path and clang version.
+
+If you only want the kernel and do not need the SDKs, skip it entirely:
+
+```sh
+cmake -S . -B build/target -G Ninja -DKYUZEN_BUILD_LIBC_SDK=OFF
 ```
 
 Useful individual targets: `kyuzen-kernel`, `kyuzen-desktop`,

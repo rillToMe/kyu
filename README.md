@@ -102,16 +102,11 @@ Full platform setup (Windows/MSYS2 and Linux) is in
 ### Build and run
 
 ```sh
-./build.sh setup      # 0. fetch llvm-project (~137 MB; skipped if present)
+./build.sh setup      # 0. FIRST RUN ONLY: fetch llvm-project (~137 MB)
 ./build.sh            # 1. compile the kernel and libraries → build/target/bin/myos.bin
 ./build.sh iso        # 2. build the SDKs, apps, Rust apps, and the ISO
 ./build.sh run        # 3. boot in QEMU (virtio-vga 1920×1080, 8 CPUs)
 ```
-
-The C and C++ SDKs are built from LLVM's `libc` and `libcxx`. Upstream is
-~1.9 GB, so it is not committed; `./build.sh setup` clones it sparsely — only
-the parts this project compiles — at the pinned tag. See
-[Building](docs/development/building.md).
 
 `./build.sh` sets up the toolchain PATH for you — on MSYS2 this matters, because
 the project needs tools from two different clang installations. See
@@ -120,10 +115,36 @@ the project needs tools from two different clang installations. See
 See [Running](docs/development/running.md) for QEMU options and first-boot
 details.
 
+### First-time setup: llvm-project
+
+The C and C++ SDKs are built from LLVM's `libc` and `libcxx`. Upstream
+`llvm-project` is **~1.9 GB**, so it is not committed. Fetch it once:
+
+```sh
+./build.sh setup
+```
+
+This clones it sparsely at the pinned tag `llvmorg-22.1.8` — only the seven
+directories this project compiles:
+
+| | |
+| --- | --- |
+| Size | **~137 MB** instead of ~1.9 GB |
+| Time | about five minutes |
+| Verified | checked out commit is compared against the pinned one |
+
+`setup` also copies the Kyuzen-specific libc configuration (upstream ships no
+x86_64 baremetal variant) and reports the resolved toolchain. It is safe to
+re-run — an existing clone is detected and left alone.
+
+If you only want the kernel and do not need the SDKs, skip it and configure
+with `-DKYUZEN_BUILD_LIBC_SDK=OFF`.
+
 ### Common targets
 
 | Target | Purpose |
 | --- | --- |
+| `./build.sh setup` | Fetch `llvm-project` and report the toolchain (first run) |
 | `./build.sh` | Compile the kernel, libraries, and applications |
 | `./build.sh iso` | Build the bootable ISO |
 | `./build.sh run` | Build and boot in QEMU |
