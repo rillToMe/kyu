@@ -23,7 +23,7 @@ cmake_minimum_required(VERSION 3.20)
 # Force clang/clang++.
 #
 # The old Makefile used HOSTCC=clang, HOSTCXX=clang++. CMake's default
-# detection would pick `cc`/`c++`, which on this host are GCC — and the test
+# detection would pick `cc`/`c++`, which on this host are GCC - and the test
 # suite relies on clang behaviour (e.g. colour_test.c's _Static_assert on a
 # struct member, which GCC rejects as a non-constant expression).
 #
@@ -32,8 +32,26 @@ cmake_minimum_required(VERSION 3.20)
 find_program(KYUZEN_HOST_CLANG   NAMES clang   REQUIRED)
 find_program(KYUZEN_HOST_CLANGXX NAMES clang++ REQUIRED)
 
-set(CMAKE_C_COMPILER   "${KYUZEN_HOST_CLANG}")
-set(CMAKE_CXX_COMPILER "${KYUZEN_HOST_CLANGXX}")
+# ---------------------------------------------------------------------------
+# Depfile normalisation — the same wrapper the target build uses.
+#
+# These are HOST compiles, but the compiler is still MSYS2's usr/bin clang, so
+# its depfiles still carry POSIX paths (/usr/include/string.h, /usr/lib/clang/
+# 21/include/stddef.h). Native Ninja cannot stat those, treats them as missing,
+# and rebuilds all 645 steps on every invocation — a no-op `ninja -C build-host`
+# never settles.
+#
+# The wrapper is shared rather than copied: it is triple-agnostic (it runs the
+# real compiler with whatever arguments it is handed and only rewrites the
+# resulting depfile), so it works identically for host and bare-metal compiles.
+# It is pulled from cmake/KyuzenCompilerWrapper.cmake, NOT from
+# KyuzenToolchain.cmake, which would switch these tests to the bare-metal ABI.
+# ---------------------------------------------------------------------------
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/KyuzenCompilerWrapper.cmake")
+kyuzen_install_compiler_wrapper("${KYUZEN_HOST_CLANG}" "${KYUZEN_HOST_CLANGXX}")
+
+set(CMAKE_C_COMPILER   "${KYUZEN_WRAPPED_CC}")
+set(CMAKE_CXX_COMPILER "${KYUZEN_WRAPPED_CXX}")
 
 project(KyuzenHostTests LANGUAGES C CXX)
 
@@ -352,9 +370,16 @@ if(EXISTS "${KYUZEN_UNIT_DIR}/color_test.c")
     # a quoted "path" becomes an argument with embedded quote characters once
     # CTest writes the command line, and the compiler then cannot find the
     # directory.
+    #
+    # CMAKE_CXX_COMPILER is a LIST when the depfile-normalising wrapper is in
+    # use (sh;build-tools/kyuzen-cxx;clang++). add_test(COMMAND ...) would turn
+    # each element into a separate argv entry, so sh would be handed
+    # "-std=c++17" as its own option and fail with "-d: invalid option".
+    # Only the real compiler is needed here: this is a syntax-only check, it
+    # produces no object file and therefore no depfile to normalise.
     if(EXISTS "${KYUZEN_UNIT_DIR}/color_cxx_check.cpp")
         add_test(NAME test-color-cxx-headers
-            COMMAND "${CMAKE_CXX_COMPILER}"
+            COMMAND "${KYUZEN_HOST_CLANGXX}"
                     -std=c++17 -Wall -Wextra -fsyntax-only
                     -I${KYUZEN_ROOT}/libs/gui/color/include
                     "${KYUZEN_UNIT_DIR}/color_cxx_check.cpp"
