@@ -1,0 +1,331 @@
+# KyuzenOS — LLVM libc baremetal x86_64 config (Phase 0–4)
+#
+# Target triple : x86_64-pc-none-elf  (system component "none" => LIBC_TARGET_OS=baremetal)
+# Scope         : pure / non-OS entrypoints + subset ber-hook vendor (Phase 1+).
+#
+# Phase 0: pure only (ctype/locale/string/strings/inttypes/stdbit/errno).
+# Phase 1: + exit/errno/malloc (hook __llvm_libc_exit/errno + freelist_heap).
+# Phase 2: + stdio console (hook __llvm_libc_stdio_read/write + cookie).
+# Phase 4: + time (hook __llvm_libc_timespec_get_active/utc) + utilitas
+#          stdlib murni + strdup/strndup. Lihat §16 audit untuk klasifikasi
+#          IMPLEMENT/DEFER/UNSUPPORTED per API.
+#
+# Masih DIKECUALIKAN (butuh syscall yang tidak ada / langgar kebijakan):
+#   threads, fenv, setjmp, filesystem, networking, process APIs, syscall APIs,
+#   libm (SSE/x87), time/difftime/nanosleep/clock_gettime-*(tanpa backend
+#   baremetal di 22.1.8 / return double yang tak bisa dikompilasi -mno-sse).
+#
+# Only the generic (non-SIMD) string implementations are referenced: on x86_64
+# src/string/CMakeLists.txt also registers memcpy/memmove/memset/memcmp SSE2/AVX
+# variants, but those are separate targets and stay out of this archive.
+
+set(TARGET_LIBC_ENTRYPOINTS
+    # ctype.h entrypoints
+    libc.src.ctype.isalnum
+    libc.src.ctype.isalpha
+    libc.src.ctype.isascii
+    libc.src.ctype.isblank
+    libc.src.ctype.iscntrl
+    libc.src.ctype.isdigit
+    libc.src.ctype.isgraph
+    libc.src.ctype.islower
+    libc.src.ctype.isprint
+    libc.src.ctype.ispunct
+    libc.src.ctype.isspace
+    libc.src.ctype.isupper
+    libc.src.ctype.isxdigit
+    libc.src.ctype.toascii
+    libc.src.ctype.tolower
+    libc.src.ctype.toupper
+
+    # locale-aware ctype.h entrypoints
+    libc.src.ctype.isalnum_l
+    libc.src.ctype.isalpha_l
+    libc.src.ctype.isblank_l
+    libc.src.ctype.iscntrl_l
+    libc.src.ctype.isdigit_l
+    libc.src.ctype.isgraph_l
+    libc.src.ctype.islower_l
+    libc.src.ctype.isprint_l
+    libc.src.ctype.ispunct_l
+    libc.src.ctype.isspace_l
+    libc.src.ctype.isupper_l
+    libc.src.ctype.isxdigit_l
+    libc.src.ctype.tolower_l
+    libc.src.ctype.toupper_l
+
+    # errno.h entrypoints
+    # With LIBC_ERRNO_MODE_EXTERNAL this object is compiled against the
+    # embedder-provided `int *__llvm_libc_errno(void)` hook. Phase 0 does not
+    # provide it and never references this object, so the archive stays
+    # linkable; Phase 1 adds the hook.
+    libc.src.errno.errno
+
+    # locale.h entrypoints
+    # In LLVM 22.1.8 these are all allocation-free (freelocale is a no-op,
+    # newlocale returns the static "C" locale), so no malloc is pulled in.
+    libc.src.locale.localeconv
+    libc.src.locale.duplocale
+    libc.src.locale.freelocale
+    libc.src.locale.newlocale
+    libc.src.locale.setlocale
+    libc.src.locale.uselocale
+
+    # string.h entrypoints
+    # Phase 4: strdup/strndup AKTIF (allocator Phase 1 terverifikasi; §16 audit).
+    libc.src.string.memccpy
+    libc.src.string.memchr
+    libc.src.string.memcmp
+    libc.src.string.memcpy
+    libc.src.string.memmem
+    libc.src.string.memmove
+    libc.src.string.mempcpy
+    libc.src.string.memrchr
+    libc.src.string.memset
+    libc.src.string.memset_explicit
+    libc.src.string.stpcpy
+    libc.src.string.stpncpy
+    libc.src.string.strcasestr
+    libc.src.string.strcat
+    libc.src.string.strchr
+    libc.src.string.strchrnul
+    libc.src.string.strcmp
+    libc.src.string.strcoll
+    libc.src.string.strcpy
+    libc.src.string.strcspn
+    libc.src.string.strerror
+    libc.src.string.strerror_r
+    libc.src.string.strlcat
+    libc.src.string.strlcpy
+    libc.src.string.strlen
+    libc.src.string.strncat
+    libc.src.string.strncmp
+    libc.src.string.strncpy
+    libc.src.string.strnlen
+    libc.src.string.strpbrk
+    libc.src.string.strrchr
+    libc.src.string.strsep
+    libc.src.string.strspn
+    libc.src.string.strstr
+    libc.src.string.strtok
+    libc.src.string.strtok_r
+    libc.src.string.strxfrm
+    libc.src.string.strcoll_l
+    libc.src.string.strxfrm_l
+    # Phase 4: alokasi via LLVM malloc → arena sys_alloc #9 (bukti: smoke test
+    # strdup/strndup; §16 audit). Tidak ada versi custom Kyuzen.
+    libc.src.string.strdup
+    libc.src.string.strndup
+
+    # strings.h entrypoints
+    libc.src.strings.bcmp
+    libc.src.strings.bcopy
+    libc.src.strings.bzero
+    libc.src.strings.ffs
+    libc.src.strings.ffsl
+    libc.src.strings.ffsll
+    libc.src.strings.index
+    libc.src.strings.rindex
+    libc.src.strings.strcasecmp
+    libc.src.strings.strncasecmp
+    libc.src.strings.strcasecmp_l
+    libc.src.strings.strncasecmp_l
+
+    # inttypes.h entrypoints
+    libc.src.inttypes.imaxabs
+    libc.src.inttypes.imaxdiv
+    libc.src.inttypes.strtoimax
+    libc.src.inttypes.strtoumax
+
+    # stdlib.h entrypoints (Phase 1: alokasi + terminasi proses)
+    # Di baremetal, malloc/calloc/realloc/free hanya pembungkus satu baris di
+    # atas `freelist_heap`; di KyuzenOS instance heap itu disediakan port layer
+    # (libs/libc-port) di atas arena dari syscall #9, bukan simbol linker
+    # _end/__llvm_libc_heap_limit. exit/_Exit/abort berakhir di vendor hook
+    # __llvm_libc_exit (int 0x80 #34) / __builtin_trap().
+    libc.src.stdlib.abort
+    libc.src.stdlib._Exit
+    libc.src.stdlib.calloc
+    libc.src.stdlib.exit
+    libc.src.stdlib.free
+    libc.src.stdlib.malloc
+    libc.src.stdlib.realloc
+    # `exit()` di baremetal hanya bergantung pada OSUtil + _Exit, tetapi
+    # implementasinya memanggil __cxa_finalize (src/stdlib/exit.cpp), dan
+    # definisi kuat __cxa_finalize/__cxa_atexit ada di atexit.cpp. Tanpa
+    # entrypoint ini, memakai exit() (bukan _Exit()) berakhir undefined symbol.
+    libc.src.stdlib.atexit
+
+    # stdlib.h entrypoints (Phase 4: runtime murni-userspace, §16 audit)
+    # Konversi integer (str_to_integer header-only + errno; tanpa float):
+    libc.src.stdlib.atoi
+    libc.src.stdlib.atol
+    libc.src.stdlib.atoll
+    libc.src.stdlib.strtol
+    libc.src.stdlib.strtoul
+    libc.src.stdlib.strtoll
+    libc.src.stdlib.strtoull
+    # Utilitas integer (integer_operations header-only):
+    libc.src.stdlib.abs
+    libc.src.stdlib.labs
+    libc.src.stdlib.llabs
+    libc.src.stdlib.div
+    libc.src.stdlib.ldiv
+    libc.src.stdlib.lldiv
+    # Alokasi selaras (satu baris di atas freelist_heap yang sama):
+    libc.src.stdlib.aligned_alloc
+    # Sort/cari (qsort_util header-only; tanpa syscall):
+    libc.src.stdlib.qsort
+    libc.src.stdlib.bsearch
+    # PRNG xorshift (atomics single-thread + sleep no-op; BUKAN CSPRNG):
+    libc.src.stdlib.rand
+    libc.src.stdlib.srand
+    # SENGAJA absen (§16): atof/strtod(f/l)(+_l) [return float/double — error
+    # kompilasi -mno-sse di sisi pemanggil], varian _l [subset minimal],
+    # a64l/l64a [legacy], qsort_r [ekstensi GNU], getenv/setenv/putenv/system
+    # [TIDAK ADA backend-nya di baremetal 22.1.8 — tanpa model environment].
+
+    # stdio.h entrypoints (Phase 2: console I/O via __llvm_libc_stdio_read/
+    # __llvm_libc_stdio_write → syscall #48/#49 fd 0/1/2).
+    # Hanya subset baremetal yang didukung 22.1.8: FILE* ADALAH cookie vendor
+    # (tidak ada fopen/fclose/fflush/fseek/ftell/ungetc/setvbuf — tidak ada
+    # backend-nya di src/stdio/baremetal/). printf memakai buffer stack 1024 B
+    # lalu flush per panggilan; fwrite/fread langsung satu hook call; tidak ada
+    # syarat OS di luar read/write. putc/getc SENGAJA absen: tidak ada target
+    # baremetal-nya di 22.1.8 (hanya implementasi generik File-based yang butuh
+    # dukungan OS file) — pakai fputc/fgetc/putchar/getchar. scanf/asprintf/
+    # remove juga dikecualikan (lihat audit §14).
+    libc.src.stdio.printf
+    libc.src.stdio.vprintf
+    libc.src.stdio.fprintf
+    libc.src.stdio.vfprintf
+    libc.src.stdio.snprintf
+    libc.src.stdio.vsnprintf
+    libc.src.stdio.sprintf
+    libc.src.stdio.vsprintf
+    libc.src.stdio.puts
+    libc.src.stdio.fputs
+    libc.src.stdio.putchar
+    libc.src.stdio.fputc
+    libc.src.stdio.getchar
+    libc.src.stdio.fgetc
+    libc.src.stdio.fgets
+    libc.src.stdio.fread
+    libc.src.stdio.fwrite
+    libc.src.stdio.feof
+    libc.src.stdio.ferror
+    # Phase 6: stub remove (selalu -1, upstream baremetal). BUKAN untuk dipakai app C — tanpa FS,
+    # menghapus file mustahil. Alasan: libc++ <cstdio> memakai
+    # `using ::remove` yang bertabrakan dengan template std::remove
+    # (<algorithm>) bila ::remove TAK ADA (ditemukan saat audit §18);
+    # setiap C library yang didukung hulu mendeklarasikannya. Jujur stub.
+    libc.src.stdio.remove
+
+    # stdbit.h entrypoints
+    libc.src.stdbit.stdc_bit_ceil_uc
+    libc.src.stdbit.stdc_bit_ceil_ui
+    libc.src.stdbit.stdc_bit_ceil_ul
+    libc.src.stdbit.stdc_bit_ceil_ull
+    libc.src.stdbit.stdc_bit_ceil_us
+    libc.src.stdbit.stdc_bit_floor_uc
+    libc.src.stdbit.stdc_bit_floor_ui
+    libc.src.stdbit.stdc_bit_floor_ul
+    libc.src.stdbit.stdc_bit_floor_ull
+    libc.src.stdbit.stdc_bit_floor_us
+    libc.src.stdbit.stdc_bit_width_uc
+    libc.src.stdbit.stdc_bit_width_ui
+    libc.src.stdbit.stdc_bit_width_ul
+    libc.src.stdbit.stdc_bit_width_ull
+    libc.src.stdbit.stdc_bit_width_us
+    libc.src.stdbit.stdc_count_ones_uc
+    libc.src.stdbit.stdc_count_ones_ui
+    libc.src.stdbit.stdc_count_ones_ul
+    libc.src.stdbit.stdc_count_ones_ull
+    libc.src.stdbit.stdc_count_ones_us
+    libc.src.stdbit.stdc_count_zeros_uc
+    libc.src.stdbit.stdc_count_zeros_ui
+    libc.src.stdbit.stdc_count_zeros_ul
+    libc.src.stdbit.stdc_count_zeros_ull
+    libc.src.stdbit.stdc_count_zeros_us
+    libc.src.stdbit.stdc_first_leading_one_uc
+    libc.src.stdbit.stdc_first_leading_one_ui
+    libc.src.stdbit.stdc_first_leading_one_ul
+    libc.src.stdbit.stdc_first_leading_one_ull
+    libc.src.stdbit.stdc_first_leading_one_us
+    libc.src.stdbit.stdc_first_leading_zero_uc
+    libc.src.stdbit.stdc_first_leading_zero_ui
+    libc.src.stdbit.stdc_first_leading_zero_ul
+    libc.src.stdbit.stdc_first_leading_zero_ull
+    libc.src.stdbit.stdc_first_leading_zero_us
+    libc.src.stdbit.stdc_first_trailing_one_uc
+    libc.src.stdbit.stdc_first_trailing_one_ui
+    libc.src.stdbit.stdc_first_trailing_one_ul
+    libc.src.stdbit.stdc_first_trailing_one_ull
+    libc.src.stdbit.stdc_first_trailing_one_us
+    libc.src.stdbit.stdc_first_trailing_zero_uc
+    libc.src.stdbit.stdc_first_trailing_zero_ui
+    libc.src.stdbit.stdc_first_trailing_zero_ul
+    libc.src.stdbit.stdc_first_trailing_zero_ull
+    libc.src.stdbit.stdc_first_trailing_zero_us
+    libc.src.stdbit.stdc_has_single_bit_uc
+    libc.src.stdbit.stdc_has_single_bit_ui
+    libc.src.stdbit.stdc_has_single_bit_ul
+    libc.src.stdbit.stdc_has_single_bit_ull
+    libc.src.stdbit.stdc_has_single_bit_us
+    libc.src.stdbit.stdc_leading_ones_uc
+    libc.src.stdbit.stdc_leading_ones_ui
+    libc.src.stdbit.stdc_leading_ones_ul
+    libc.src.stdbit.stdc_leading_ones_ull
+    libc.src.stdbit.stdc_leading_ones_us
+    libc.src.stdbit.stdc_leading_zeros_uc
+    libc.src.stdbit.stdc_leading_zeros_ui
+    libc.src.stdbit.stdc_leading_zeros_ul
+    libc.src.stdbit.stdc_leading_zeros_ull
+    libc.src.stdbit.stdc_leading_zeros_us
+    libc.src.stdbit.stdc_trailing_ones_uc
+    libc.src.stdbit.stdc_trailing_ones_ui
+    libc.src.stdbit.stdc_trailing_ones_ul
+    libc.src.stdbit.stdc_trailing_ones_ull
+    libc.src.stdbit.stdc_trailing_ones_us
+    libc.src.stdbit.stdc_trailing_zeros_uc
+    libc.src.stdbit.stdc_trailing_zeros_ui
+    libc.src.stdbit.stdc_trailing_zeros_ul
+    libc.src.stdbit.stdc_trailing_zeros_ull
+    libc.src.stdbit.stdc_trailing_zeros_us
+
+    # time.h entrypoints (Phase 4: §16 audit)
+    # clock/timespec_get = alias ke backend baremetal (butuh hook vendor
+    # __llvm_libc_timespec_get_active/utc dari port layer → syscall #14/#20).
+    # Sisanya murni-userspace (time_utils integer + printf_core yang sudah ada
+    # via stdio Phase 2). localtime == UTC (tanpa tz database, upstream).
+    libc.src.time.clock
+    libc.src.time.timespec_get
+    libc.src.time.gmtime
+    libc.src.time.gmtime_r
+    libc.src.time.localtime
+    libc.src.time.localtime_r
+    libc.src.time.mktime
+    libc.src.time.asctime
+    libc.src.time.asctime_r
+    libc.src.time.ctime
+    libc.src.time.ctime_r
+    libc.src.time.strftime
+    libc.src.time.strftime_l
+    # SENGAJA absen (§16): time [butuh __support/time/baremetal/clock_gettime
+    # yang TIDAK ADA di 22.1.8], difftime [return double — error kompilasi
+    # -mno-sse di sisi pemanggil], nanosleep/clock_gettime/getres/settime/
+    # gettimeofday [TIDAK ADA backend baremetal-nya di 22.1.8].
+)
+
+# Phase 0 ships no libm entrypoints: every math.h entrypoint is either
+# OS-dependent (fenv/MXCSR) or needs the x87/SSE decision that is out of scope.
+set(TARGET_LIBM_ENTRYPOINTS
+)
+
+# Required by libc/CMakeLists.txt: it builds TARGET_ENTRYPOINT_NAME_LIST from
+# this variable, and any entrypoint whose C name is absent here is turned into
+# a skipped dummy target (which then breaks dependency resolution).
+set(TARGET_LLVMLIBC_ENTRYPOINTS
+  ${TARGET_LIBC_ENTRYPOINTS}
+  ${TARGET_LIBM_ENTRYPOINTS}
+)

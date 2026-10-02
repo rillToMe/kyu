@@ -1,0 +1,29 @@
+# KyuzenOS — LLVM libc baremetal x86_64 public headers (Phase 0)
+#
+# Only headers whose entrypoints are enabled in entrypoints.txt are listed.
+#
+# NOT listed because LLVM libc 22.1.8 does not provide them as libc targets
+# (they are freestanding headers supplied by clang itself):
+#   stddef.h, stdbool.h, stdalign.h, stdatomic.h
+#
+# NOT listed because their modules are out of scope:
+#   fenv.h, setjmp.h, assert.h,
+#   complex.h, math.h, wchar.h, wctype.h, uchar.h, stdfix.h
+# Phase 4: time.h AKTIF (§16 audit). Catatan: time.h hasil hdrgen mendeklarasikan
+# SEMUA fungsi time upstream (termasuk time/difftime/nanosleep); yang menentukan
+# keterpautan adalah entrypoints.txt — simbol tanpa entrypoint = link error yang
+# jujur, bukan stub palsu.
+
+set(TARGET_PUBLIC_HEADERS
+    libc.include.ctype
+    libc.include.errno
+    libc.include.inttypes
+    libc.include.locale
+    libc.include.stdbit
+    libc.include.stdint
+    libc.include.stdio
+    libc.include.stdlib
+    libc.include.string
+    libc.include.strings
+    libc.include.time
+)

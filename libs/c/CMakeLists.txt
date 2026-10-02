@@ -29,8 +29,37 @@ set(_libc_out    "${KYUZEN_LIBC_DIR}")
 set(_libc_cmake  "${_libc_out}/cmake")
 set(_libc_inc    "${_libc_cmake}/libc/include")
 set(_libc_archive "${_libc_out}/${_libc_triple}/lib/libc.a")
-set(_libc_cache  "${_libc_src}/libc/cmake/caches/${_libc_triple}.cmake")
-set(_libc_cfg    "${_libc_src}/libc/config/baremetal/x86_64")
+
+# ---------------------------------------------------------------------------
+# Kyuzen-specific LLVM libc configuration.
+#
+# These three files are OURS, not upstream's. Upstream ships
+# libc/config/baremetal/{aarch64,arm,riscv}/ but no x86_64 variant, and no
+# x86_64-pc-none-elf cache file.
+#
+# They used to live INSIDE third_party/stdlib/llvm-project/, which is a
+# gitignored clone — so they were tracked nowhere and would have been lost the
+# moment anyone re-cloned. They now live in third_party/stdlib/kyuzen/ (tracked)
+# and ./build.sh setup copies them into the clone.
+#
+# The in-tree location is still honoured if it exists, so an existing checkout
+# that has not been re-provisioned keeps working.
+# ---------------------------------------------------------------------------
+set(_libc_cfg_kyuzen "${KYUZEN_ROOT}/third_party/stdlib/kyuzen/libc/config/baremetal/x86_64")
+set(_libc_cache_kyuzen "${KYUZEN_ROOT}/third_party/stdlib/kyuzen/libc/cmake/caches/${_libc_triple}.cmake")
+
+set(_libc_cfg "${_libc_src}/libc/config/baremetal/x86_64")
+set(_libc_cache "${_libc_src}/libc/cmake/caches/${_libc_triple}.cmake")
+
+# Prefer the tracked copies whenever they are present, so a provisioned clone
+# and an un-provisioned one build identically. Only fall back to the in-tree
+# location for checkouts that predate third_party/stdlib/kyuzen/.
+if(EXISTS "${_libc_cfg_kyuzen}/entrypoints.txt")
+    set(_libc_cfg "${_libc_cfg_kyuzen}")
+endif()
+if(EXISTS "${_libc_cache_kyuzen}")
+    set(_libc_cache "${_libc_cache_kyuzen}")
+endif()
 
 set(_sdk_dir   "${KYUZEN_SDK_DIR}/c")
 set(_sdk_inc   "${_sdk_dir}/include")
@@ -42,12 +71,19 @@ set(_sdk_stage "${_sdk_dir}/.staged")
 
 if(NOT EXISTS "${_libc_src}/runtimes/CMakeLists.txt")
     message(FATAL_ERROR
-        "LLVM libc sources are missing at ${_libc_src}.\n"
-        "third_party/stdlib/llvm-project is a gitlink WITHOUT a .gitmodules "
-        "entry (docs/development/build-system-audit.md §13.4), so a fresh clone cannot "
-        "materialise it.\n"
-        "Either populate that directory, or configure with "
-        "-DKYUZEN_BUILD_LIBC_SDK=OFF.")
+        "LLVM sources are missing at:\n"
+        "  ${_libc_src}\n"
+        "\n"
+        "llvm-project is ~1.9 GB and is NOT committed. Fetch it with:\n"
+        "\n"
+        "  ./build.sh setup\n"
+        "\n"
+        "That clones it sparsely (only libc, libcxx, cmake, runtimes, libcxxabi,\n"
+        "libunwind — about 90 MB instead of 1.9 GB) at the pinned tag, and copies\n"
+        "the Kyuzen-specific libc config into place.\n"
+        "\n"
+        "Alternatively, configure with -DKYUZEN_BUILD_LIBC_SDK=OFF to skip the C\n"
+        "and C++ SDKs. The kernel and the apps that do not use the SDK still build.")
 endif()
 
 # ===========================================================================
@@ -63,6 +99,12 @@ add_custom_command(
             -B "${_libc_cmake}"
             -G "Unix Makefiles"
             -C "${_libc_cache}"
+            # The Kyuzen cache file includes upstream's baremetal_common.cmake,
+            # which lives in the clone. It is told where to find it rather than
+            # assuming the two are side by side, because the cache file itself
+            # now lives in third_party/stdlib/kyuzen/ (tracked) while
+            # baremetal_common.cmake stays in the (untracked) clone.
+            -DKYUZEN_LLVM_LIBC_CACHES=${_libc_src}/libc/cmake/caches
             -DCMAKE_C_COMPILER=${KYUZEN_CLANG}
             -DCMAKE_CXX_COMPILER=${KYUZEN_CLANGXX}
             -DCMAKE_BUILD_TYPE=Release

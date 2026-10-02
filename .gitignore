@@ -58,7 +58,19 @@ build-*/
 /graphify-out
 .codegraph
 
-stdlib/llvm-project
+# llvm-project: ~1.9 GB, deliberately not committed. Fetch it with
+# ./build.sh setup, which clones it sparsely (about 137 MB) at the pinned tag.
+#
+# The old pattern was "stdlib/llvm-project" with no leading path, so it never
+# actually matched this directory — the clone only stayed out of git because a
+# gitlink for it happened to be in the index. Anchored properly now.
+/third_party/stdlib/llvm-project/
+
+# Kyuzen-specific LLVM libc configuration. Tracked on purpose: upstream ships
+# no x86_64 baremetal variant, so these are ours, and they used to live inside
+# the gitignored clone where a re-clone would have destroyed them.
+# NOT ignored:
+!/third_party/stdlib/kyuzen/
 
 #file
 run.md

@@ -156,11 +156,150 @@ configure() {
     "$CMAKE" -S "$SCRIPT_DIR" -B "$SCRIPT_DIR/$TARGET_DIR" -G "$GENERATOR"
 }
 
+# ---------------------------------------------------------------------------
+# fetch_llvm — clone llvm-project sparsely at the pinned tag, then copy the
+# Kyuzen-specific libc config into place.
+#
+# WHY SPARSE
+#   Full llvm-project is ~1.9 GB. This project uses only libc and libcxx (plus
+#   the cmake modules and runtimes wrapper they depend on) — about 90 MB of
+#   working tree. The rest is clang, llvm, mlir, lldb, flang, polly... none of
+#   which is compiled or even read here.
+#
+# WHY --filter=blob:none --no-checkout FIRST
+#   It fetches the commit graph and trees but no file contents, so the sparse
+#   filter applies before anything large is downloaded. A plain `git clone`
+#   followed by `sparse-checkout set` would still download the full pack.
+#
+# WHY THE CONFIG FILES ARE COPIED
+#   libc/config/baremetal/x86_64/ and the x86_64-pc-none-elf cache are OURS;
+#   upstream ships no x86_64 baremetal variant. They used to live inside the
+#   (gitignored) clone, tracked nowhere — a re-clone would have destroyed them.
+#   They now live in third_party/stdlib/kyuzen/ and are copied in here.
+# ---------------------------------------------------------------------------
+LLVM_REPO="https://github.com/llvm/llvm-project.git"
+LLVM_TAG="llvmorg-22.1.8"
+# The commit the project's parity baseline was built with. Same as LLVM_TAG —
+# the tag is annotated, so `git rev-parse llvmorg-22.1.8^{commit}` resolves to
+# this. Kept explicit so the checkout cannot silently follow a moved tag.
+LLVM_COMMIT="ca7933e47d3a3451d81e72ac174dcb5aa28b59d1"
+# Overridable so the fetch path can be exercised against a scratch directory.
+LLVM_DIR="${KYUZEN_LLVM_DIR:-$SCRIPT_DIR/third_party/stdlib/llvm-project}"
+KYUZEN_LLVM_CFG="$SCRIPT_DIR/third_party/stdlib/kyuzen"
+# Only what the build actually reads.
+#
+#   libc, libcxx      the two libraries this project compiles
+#   libcxxabi,
+#   libunwind         referenced by libcxx's CMakeLists
+#   cmake             Modules/LLVMVersion.cmake, needed by runtimes/
+#   runtimes          the nested build's entry point
+#   llvm/cmake        GetHostTriple.cmake and friends, included by runtimes/
+#                     (CONE MODE LIMITATION: sparse-checkout --cone only matches
+#                     whole directories, so `llvm` here would pull the entire
+#                     ~1.2 GB llvm/ tree. The nested path is written explicitly
+#                     to fetch only the 0.49 MB of CMake modules that is used.)
+LLVM_PATHS="libc libcxx libcxxabi libunwind cmake runtimes llvm/cmake"
+
+install_kyuzen_libc_config() {
+    # Copy the tracked Kyuzen libc config into the clone, at the paths LLVM's
+    # build expects. Idempotent: safe to run on every setup.
+    #
+    # Only entrypoints.txt and headers.txt are copied. The cache file
+    # (x86_64-pc-none-elf.cmake) is NOT: it is passed to the nested configure
+    # with -C straight from third_party/stdlib/kyuzen/, and it locates
+    # upstream's baremetal_common.cmake relative to its own location. Copying it
+    # would put a second copy in the tree that could drift.
+    local _src="$KYUZEN_LLVM_CFG/libc"
+    local _dst="$LLVM_DIR/libc"
+    if [ ! -d "$_src" ]; then
+        echo "  WARNING: $_src is missing — the Kyuzen libc config is not in the tree." >&2
+        echo "  The C/C++ SDK will fail to build." >&2
+        return 1
+    fi
+    mkdir -p "$_dst/config/baremetal/x86_64"
+    cp -f "$_src/config/baremetal/x86_64/entrypoints.txt" "$_dst/config/baremetal/x86_64/"
+    cp -f "$_src/config/baremetal/x86_64/headers.txt"     "$_dst/config/baremetal/x86_64/"
+    echo "  Kyuzen libc config installed into the clone."
+}
+
+fetch_llvm() {
+    if [ -f "$LLVM_DIR/runtimes/CMakeLists.txt" ]; then
+        echo "llvm-project: already present."
+        install_kyuzen_libc_config
+        return 0
+    fi
+
+    if [ -e "$LLVM_DIR" ] && [ ! -d "$LLVM_DIR/.git" ]; then
+        echo "llvm-project: $LLVM_DIR exists but is not a git checkout." >&2
+        echo "  Move it aside, then re-run ./build.sh setup" >&2
+        return 1
+    fi
+
+    # A directory that IS a git checkout but has no runtimes/ is a partial or
+    # broken clone (a failed sparse checkout, or a leftover from a previous
+    # run). Move it aside rather than deleting it: it is a 137 MB download, and
+    # deleting a directory the user may still want is not this script's call.
+    if [ -d "$LLVM_DIR/.git" ]; then
+        local _aside="${LLVM_DIR}.incomplete.$$"
+        echo "llvm-project: existing checkout is incomplete (no runtimes/CMakeLists.txt)."
+        echo "  Moving it to ${_aside##*/} and fetching a fresh one."
+        echo "  Delete that directory once the build works."
+        mv "$LLVM_DIR" "$_aside" || {
+            echo "llvm-project: could not move the incomplete checkout aside." >&2
+            return 1
+        }
+    fi
+
+    echo "llvm-project: not present. Fetching sparsely (this takes a few minutes)."
+    echo "  repo    : $LLVM_REPO"
+    echo "  tag     : $LLVM_TAG  ($LLVM_COMMIT)"
+    echo "  paths   : $LLVM_PATHS"
+    echo "  ~137 MB working tree + .git instead of ~1.9 GB for a full clone."
+    echo ""
+
+    mkdir -p "$(dirname "$LLVM_DIR")"
+
+    # 1. Trees only — no file contents yet, so the sparse filter saves the
+    #    bulk of the download.
+    if ! git clone --filter=blob:none --no-checkout --depth 1 \
+                   --branch "$LLVM_TAG" "$LLVM_REPO" "$LLVM_DIR"; then
+        echo "llvm-project: clone failed. Check network access to GitHub." >&2
+        return 1
+    fi
+
+    # 2. Restrict the checkout, then materialise it.
+    git -C "$LLVM_DIR" sparse-checkout init --cone
+    git -C "$LLVM_DIR" sparse-checkout set $LLVM_PATHS
+    git -C "$LLVM_DIR" checkout "$LLVM_TAG"
+
+    # 3. Pin and verify. A moved or mis-resolved tag would silently change the
+    #    libc the whole SDK is built from.
+    local _head
+    _head="$(git -C "$LLVM_DIR" rev-parse HEAD)"
+    if [ "$_head" != "$LLVM_COMMIT" ]; then
+        echo "llvm-project: WRONG COMMIT after checkout." >&2
+        echo "  expected $_LLVM_COMMIT" >&2
+        echo "  got      $_head" >&2
+        return 1
+    fi
+    echo "  checked out $LLVM_TAG at ${_head%"${_head#????????}"}..."
+
+    install_kyuzen_libc_config
+    echo "llvm-project: done."
+}
+
 case "${1:-all}" in
     setup)
         report_toolchain
         echo ""
-        echo "PATH exported for this shell only. To build, run: ./build.sh"
+        fetch_llvm
+        echo ""
+        echo "To build, run: ./build.sh"
+        ;;
+
+    fetch-llvm)
+        # Same work as `setup` minus the toolchain report, for scripted use.
+        fetch_llvm
         ;;
 
     clean)
