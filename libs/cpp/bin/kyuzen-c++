@@ -1,0 +1,175 @@
+#!/usr/bin/env sh
+# Kyuzen C++ SDK compiler wrapper (sumber boundary: libs/cpp/bin/kyuzen-c++).
+#
+# Salinan yang dipakai developer adalah hasil stage:
+#   build/sdk/cpp/bin/kyuzen-c++
+# Wrapper ini turun dari direktori itu ke SDK yang di-stage, sehingga perintah
+# aplikasi tidak menyebut path LLVM, CRT, arsip, atau linker script.
+#
+# Bentuk yang didukung:
+#   kyuzen-c++ app.cpp -o app.elf
+#   kyuzen-c++ a.cpp b.cpp -o app.elf
+#   kyuzen-c++ -c app.cpp -o app.o
+#   kyuzen-c++ a.o libfoo.a -o app.elf
+#   kyuzen-c++ a.o libfoo.a -o app.elf   (Phase 8: object + arsip penerus)
+#
+# Semua pemanggilan mendapat flag kompilasi kanonis dan include SDK. Mode link
+# mengompilasi tiap input C++ ke object sementara, lalu me-link dengan ld.lld
+# langsung (driver clang di host ini mendelegasikan link ke GCC — lihat bawah),
+# dengan urutan kanonis:
+#   app objects -> libcxxrt.a -> cxxrt.o -> crt.o -> libc.a
+#   -T <sdk-cpp>/linker/app.ld, -m elf_x86_64, -nostdlib
+#
+# Opsi yang diteruskan di mode link: -D/-U/-I/-isystem/-iquote/-O/-g/-W dan
+# -std=... (opsi link lain ditolak keras agar tidak ada perilaku tersembunyi).
+# Toolchain diambil dari KYUZEN_CXX/KYUZEN_LD bila di-set Makefile (eksak);
+# default interaktif adalah clang++/ld.lld di PATH sesuai toolchain repo ini.
+set -eu
+
+usage() {
+  cat <<'EOF'
+Usage:
+  kyuzen-c++ app.cpp -o app.elf
+  kyuzen-c++ a.cpp b.cpp -o app.elf
+  kyuzen-c++ -c app.cpp -o app.o
+
+Canonical compiler flags (always applied):
+  --target=x86_64-pc-none-elf -ffreestanding -nostdlib -nostdinc++
+  -fno-exceptions -fno-rtti -std=c++17 -O2
+  -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float
+
+Canonical includes:
+  <staged sdk-cpp>/include
+  <staged sdk-c>/include
+
+Canonical link (ld.lld -m elf_x86_64 -nostdlib -T app.ld):
+  caller objects, <sdk-cpp>/lib/libcxxrt.a, <sdk-cpp>/cxxrt.o,
+  <sdk-c>/crt/crt.o, <sdk-c>/lib/libc.a
+
+Forwarded in link mode: -D* -U* -I* -isystem* -iquote* -O* -g* -W* -std=*
+EOF
+}
+
+if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  usage
+  exit 0
+fi
+
+SDK_CPP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SDK_C_DIR="$SDK_CPP_DIR/../c"
+: "${KYUZEN_CXX:=clang++}"
+: "${KYUZEN_LD:=ld.lld}"
+
+CXX_FLAGS="--target=x86_64-pc-none-elf -ffreestanding -nostdlib -nostdinc++ -fno-exceptions -fno-rtti -std=c++17 -O2 -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float"
+
+compile_only=0
+for arg in "$@"; do
+  case "$arg" in
+    -c|-S|-E|-M|-MM|-fsyntax-only|-print-*|--version|-###|-v)
+      compile_only=1
+      break
+      ;;
+  esac
+done
+
+# shellcheck disable=SC2086: flag list disengaja sebagai kata terpisah.
+if [ "$compile_only" -eq 1 ]; then
+  # shellcheck disable=SC2086
+  exec "$KYUZEN_CXX" $CXX_FLAGS \
+    -isystem "$SDK_CPP_DIR/include" \
+    -isystem "$SDK_C_DIR/include" \
+    "$@"
+fi
+
+output=""
+inputs=""
+extra=""
+expect=""
+optname=""
+n=0
+for arg in "$@"; do
+  if [ "$expect" = "output" ]; then
+    if [ -n "$output" ]; then
+      echo "kyuzen-c++: hanya satu -o yang didukung" >&2
+      exit 2
+    fi
+    output="$arg"
+    expect=""
+    continue
+  fi
+  if [ "$expect" = "optval" ]; then
+    extra="$extra $optname $arg"
+    expect=""
+    continue
+  fi
+  case "$arg" in
+    -o)
+      expect="output"
+      ;;
+    -o*)
+      if [ -n "$output" ]; then
+        echo "kyuzen-c++: hanya satu -o yang didukung" >&2
+        exit 2
+      fi
+      output="${arg#-o}"
+      ;;
+    -D*|-U*|-O*|-g*|-W*|-std=*)
+      extra="$extra $arg"
+      ;;
+    -I|-isystem|-iquote)
+      extra="$extra $arg"
+      optname="$arg"
+      expect="optval"
+      ;;
+    -I*|-isystem*|-iquote*)
+      extra="$extra $arg"
+      ;;
+    *.cpp|*.cc|*.cxx|*.C|*.o|*.a)
+      inputs="$inputs $arg"
+      ;;
+    *)
+      echo "kyuzen-c++: opsi tidak didukung di mode link: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -n "$expect" ]; then
+  echo "kyuzen-c++: nilai hilang setelah -$([ "$expect" = "output" ] && echo o || echo "$optname")" >&2
+  exit 2
+fi
+if [ -z "$output" ] || [ -z "$inputs" ]; then
+  echo "kyuzen-c++: mode link butuh input dan '-o output'" >&2
+  usage >&2
+  exit 2
+fi
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/kyuzen-cxx.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT INT TERM HUP
+objects=""
+for src in $inputs; do
+  case "$src" in
+    *.o|*.a)
+      objects="$objects $src"
+      ;;
+    *)
+      n=$((n + 1))
+      obj="$tmp/app$n.o"
+      # shellcheck disable=SC2086
+      "$KYUZEN_CXX" $CXX_FLAGS \
+        -isystem "$SDK_CPP_DIR/include" \
+        -isystem "$SDK_C_DIR/include" $extra \
+        -c "$src" -o "$obj"
+      objects="$objects $obj"
+      ;;
+  esac
+done
+
+# shellcheck disable=SC2086
+exec "$KYUZEN_LD" -m elf_x86_64 -nostdlib \
+  -T "$SDK_CPP_DIR/linker/app.ld" \
+  -o "$output" $objects \
+  "$SDK_CPP_DIR/lib/libcxxrt.a" \
+  "$SDK_CPP_DIR/cxxrt.o" \
+  "$SDK_C_DIR/crt/crt.o" \
+  "$SDK_C_DIR/lib/libc.a"

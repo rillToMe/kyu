@@ -58,6 +58,14 @@ build-*/
 /graphify-out
 .codegraph
 
+# The C++ SDK compiler wrapper is SOURCE, not a build output. It lives in a
+# bin/ directory (matching where the SDK stages it) but is a tracked input:
+# libs/cpp/CMakeLists.txt copies it into the SDK and depends on it, so
+# without it a fresh clone fails to build. The negation must follow the bin/
+# pattern above to win.
+!/libs/cpp/bin/
+!/libs/cpp/bin/kyuzen-c++
+
 # llvm-project: ~1.9 GB, deliberately not committed. Fetch it with
 # ./build.sh setup, which clones it sparsely (about 137 MB) at the pinned tag.
 #
