@@ -178,8 +178,14 @@ add_custom_command(
 # ===========================================================================
 # Stage the C++ SDK.
 # ===========================================================================
+# The staged files whose ONLY producer is this command. cxxrt.o and
+# libcxxrt.a have their own custom commands above and are listed in DEPENDS
+# instead — naming them here too would create a duplicate rule.
 add_custom_command(
-    OUTPUT "${_sdk_cpp_stage}"
+    OUTPUT
+        "${_sdk_cpp_ld}"
+        "${_sdk_cpp_wrapper}"
+        "${_sdk_cpp_stage}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_cpp_inc}"
     COMMAND ${CMAKE_COMMAND} -E make_directory
             "${_sdk_cpp_inc}/kyuzen/desktop"

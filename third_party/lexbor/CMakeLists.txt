@@ -36,20 +36,20 @@ set(_lexbor_fp_banned
 )
 
 # ---------------------------------------------------------------------------
-# Module closure. CONFIGURE_DEPENDS keeps the list correct when upstream adds
-# files within an already-selected module directory — the same behaviour the
-# Makefile's per-module wildcards had.
+# Module closure. kyuzen_glob resolves each module's pattern at configure time
+# — the same per-module wildcard behaviour the Makefile had, without CMake's
+# per-build glob verification (see cmake/KyuzenGlob.cmake).
 # ---------------------------------------------------------------------------
-file(GLOB _lexbor_core  CONFIGURE_DEPENDS "${_lexbor_src}/core/*.c")
-file(GLOB _lexbor_dom   CONFIGURE_DEPENDS "${_lexbor_src}/dom/*.c")
-file(GLOB _lexbor_dom_iface CONFIGURE_DEPENDS "${_lexbor_src}/dom/interfaces/*.c")
-file(GLOB _lexbor_html  CONFIGURE_DEPENDS "${_lexbor_src}/html/*.c")
-file(GLOB _lexbor_html_iface CONFIGURE_DEPENDS "${_lexbor_src}/html/interfaces/*.c")
-file(GLOB _lexbor_html_tok   CONFIGURE_DEPENDS "${_lexbor_src}/html/tokenizer/*.c")
-file(GLOB _lexbor_html_tree  CONFIGURE_DEPENDS "${_lexbor_src}/html/tree/*.c")
-file(GLOB _lexbor_html_tree_im CONFIGURE_DEPENDS "${_lexbor_src}/html/tree/insertion_mode/*.c")
-file(GLOB _lexbor_ns    CONFIGURE_DEPENDS "${_lexbor_src}/ns/*.c")
-file(GLOB _lexbor_tag   CONFIGURE_DEPENDS "${_lexbor_src}/tag/*.c")
+kyuzen_glob(_lexbor_core "${_lexbor_src}/core/*.c")
+kyuzen_glob(_lexbor_dom "${_lexbor_src}/dom/*.c")
+kyuzen_glob(_lexbor_dom_iface "${_lexbor_src}/dom/interfaces/*.c")
+kyuzen_glob(_lexbor_html "${_lexbor_src}/html/*.c")
+kyuzen_glob(_lexbor_html_iface "${_lexbor_src}/html/interfaces/*.c")
+kyuzen_glob(_lexbor_html_tok "${_lexbor_src}/html/tokenizer/*.c")
+kyuzen_glob(_lexbor_html_tree "${_lexbor_src}/html/tree/*.c")
+kyuzen_glob(_lexbor_html_tree_im "${_lexbor_src}/html/tree/insertion_mode/*.c")
+kyuzen_glob(_lexbor_ns "${_lexbor_src}/ns/*.c")
+kyuzen_glob(_lexbor_tag "${_lexbor_src}/tag/*.c")
 
 # core/ is globbed, so the FP files must be filtered OUT of it — the same
 # `$(filter-out $(LEXBOR_FP_BANNED),$(wildcard ...))` the old Makefile used.

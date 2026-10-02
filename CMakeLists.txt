@@ -70,9 +70,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 # Canonical flag sets + kernel source lists + linker rule.
 #
-# The linker rule must be installed BEFORE any target is created.
+# The linker rule must be installed BEFORE any target is created, and
+# KyuzenGlob must be available before any subdirectory globs its sources.
 # ---------------------------------------------------------------------------
 include(${KYUZEN_ROOT}/cmake/KyuzenLinker.cmake)
+include(${KYUZEN_ROOT}/cmake/KyuzenGlob.cmake)
 include(${KYUZEN_ROOT}/cmake/KyuzenCompiler.cmake)
 include(${KYUZEN_ROOT}/cmake/KyuzenSources.cmake)
 include(${KYUZEN_ROOT}/cmake/KyuzenApplication.cmake)

@@ -29,8 +29,8 @@ set(_bl_dir "${KYUZEN_ROOT}/third_party/bearssl")
 # The host triple is detected once at configure time rather than hardcoded, so
 # this works on any build machine.
 # ===========================================================================
-file(GLOB _bl_host_subdirs CONFIGURE_DEPENDS "${_bl_dir}/src/*/*.c")
-file(GLOB _bl_host_tools   CONFIGURE_DEPENDS "${_bl_dir}/tools/*.c")
+kyuzen_glob(_bl_host_subdirs "${_bl_dir}/src/*/*.c")
+kyuzen_glob(_bl_host_tools "${_bl_dir}/tools/*.c")
 
 # Detect the compiler's default (host) triple by running it without --target.
 execute_process(
@@ -160,7 +160,7 @@ add_custom_target(kyuzen-bearssl-tas DEPENDS
 # Its POSITION MATTERS: it sits between rsa_i31_pub.c and i62_modpow2.c, not at
 # the end of the list. Object order determines symbol addresses, so the glob is
 # expanded here and spliced into place below.
-file(GLOB _bl_i31 CONFIGURE_DEPENDS "${_bl_dir}/src/int/i31_*.c")
+kyuzen_glob(_bl_i31 "${_bl_dir}/src/int/i31_*.c")
 list(SORT _bl_i31)
 
 set(_bl_os_sources

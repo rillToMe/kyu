@@ -26,8 +26,8 @@
 # ---------------------------------------------------------------------------
 set(_lwip_dir "${KYUZEN_ROOT}/third_party/net/lwip/src")
 
-file(GLOB _lwip_core  CONFIGURE_DEPENDS "${_lwip_dir}/core/*.c")
-file(GLOB _lwip_ipv4  CONFIGURE_DEPENDS "${_lwip_dir}/core/ipv4/*.c")
+kyuzen_glob(_lwip_core "${_lwip_dir}/core/*.c")
+kyuzen_glob(_lwip_ipv4 "${_lwip_dir}/core/ipv4/*.c")
 
 # file(GLOB) order is unspecified; Make's $(wildcard) is sorted. Sort so the
 # object order (and therefore the linked binary) is deterministic and matches

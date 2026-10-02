@@ -33,9 +33,10 @@
 set(_widget_dir "${KYUZEN_ROOT}/libs/gui/widget")
 
 # --- layer sources (sorted) -------------------------------------------------
-# CONFIGURE_DEPENDS so a new layer directory is picked up on reconfigure (the
-# old Makefile used $(wildcard $(WIDGET_DIR)/src/*/*.cpp)).
-file(GLOB _widget_layer_sources CONFIGURE_DEPENDS
+# kyuzen_glob resolves the pattern at configure time (the old Makefile used
+# $(wildcard $(WIDGET_DIR)/src/*/*.cpp)). See cmake/KyuzenGlob.cmake for why
+# CONFIGURE_DEPENDS is deliberately avoided.
+kyuzen_glob(_widget_layer_sources
     "${_widget_dir}/src/*/*.cpp"
 )
 list(SORT _widget_layer_sources)

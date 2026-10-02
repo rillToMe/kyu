@@ -140,7 +140,7 @@ set(_graphics_sources
 )
 
 if(KYUZEN_ENABLE_INTEL_GHAL)
-    file(GLOB _intel_sources CONFIGURE_DEPENDS
+    kyuzen_glob(_intel_sources
         "${KYUZEN_ROOT}/graphics/backend/intel/*.c"
     )
     # file(GLOB) returns paths in an unspecified order; Make's $(wildcard) is

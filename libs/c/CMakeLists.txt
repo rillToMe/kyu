@@ -137,7 +137,7 @@ add_custom_command(
 # must NOT be copied — hence the explicit re-create of the include directory.
 # ===========================================================================
 add_custom_command(
-    OUTPUT "${_sdk_stage}"
+    OUTPUT "${_sdk_lib}" "${_sdk_crt}" "${_sdk_ld}" "${_sdk_stage}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_inc}"
     COMMAND ${CMAKE_COMMAND} -E make_directory
             "${_sdk_inc}"

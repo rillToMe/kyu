@@ -66,9 +66,57 @@ find_program(KYUZEN_LLVM_OBJDUMP  NAMES llvm-objdump  REQUIRED)
 find_program(KYUZEN_LLVM_AR       NAMES llvm-ar       REQUIRED)
 find_program(KYUZEN_LLVM_OBJCOPY  NAMES llvm-objcopy  REQUIRED)
 
-set(CMAKE_C_COMPILER   "${KYUZEN_CLANG}")
-set(CMAKE_CXX_COMPILER "${KYUZEN_CLANGXX}")
-set(CMAKE_LINKER       "${KYUZEN_LD_LLD}")
+# ---------------------------------------------------------------------------
+# DEPFILE PATH STYLE — normalise POSIX paths so native Ninja can stat them.
+#
+# MSYS2 ships two clang builds and they report dependencies differently:
+#
+#   usr/bin (MSYS/cygwin) -> /usr/lib/clang/21/include/stdint.h   (POSIX)
+#   clang64/bin (MINGW)   -> E:/Tools/msys2/clang64/include/...   (native)
+#
+# Ninja is a NATIVE Windows binary: it cannot resolve /usr/..., so it treats
+# every such dependency as MISSING and the affected target is permanently out
+# of date. The symptom is misleading — a no-op `ninja` reports hundreds of
+# rebuilds, and `ninja -d explain` blames "stdint.h is dirty" even though the
+# file is untouched and older than the object it supposedly invalidates.
+#
+# The MINGW clang emits native paths but is a different LLVM major version and
+# produces a byte-different kernel, which would break parity with the baseline.
+# So the MSYS clang is kept and its depfiles are rewritten by a wrapper.
+#
+# The wrapper is generated from cmake/kyuzen-cc.in with the MSYS root
+# substituted. It only rewrites paths that are NOT already absolute Windows
+# paths, so it is a no-op on a toolchain that already behaves.
+# ---------------------------------------------------------------------------
+find_program(KYUZEN_SH NAMES sh REQUIRED)
+
+# Derive the MSYS root from the compiler's own location: <root>/usr/bin/clang.
+get_filename_component(_clang_bin_dir "${KYUZEN_CLANG}" DIRECTORY)
+get_filename_component(_clang_usr_dir "${_clang_bin_dir}" DIRECTORY)
+get_filename_component(KYUZEN_MSYS_ROOT "${_clang_usr_dir}" DIRECTORY)
+
+set(_wrapper_in  "${CMAKE_CURRENT_LIST_DIR}/kyuzen-cc.in")
+set(_wrapper_dir "${CMAKE_CURRENT_LIST_DIR}/../build-tools")
+set(_wrapper_cc  "${_wrapper_dir}/kyuzen-cc")
+set(_wrapper_cxx "${_wrapper_dir}/kyuzen-cxx")
+
+if(EXISTS "${_wrapper_in}")
+    file(MAKE_DIRECTORY "${_wrapper_dir}")
+    file(READ "${_wrapper_in}" _wrapper_src)
+    string(REPLACE "@MSYS_ROOT@" "${KYUZEN_MSYS_ROOT}" _wrapper_src "${_wrapper_src}")
+    file(WRITE "${_wrapper_cc}"  "${_wrapper_src}")
+    file(WRITE "${_wrapper_cxx}" "${_wrapper_src}")
+endif()
+
+if(EXISTS "${_wrapper_cc}")
+    set(CMAKE_C_COMPILER   "${KYUZEN_SH};${_wrapper_cc};${KYUZEN_CLANG}")
+    set(CMAKE_CXX_COMPILER "${KYUZEN_SH};${_wrapper_cxx};${KYUZEN_CLANGXX}")
+else()
+    set(CMAKE_C_COMPILER   "${KYUZEN_CLANG}")
+    set(CMAKE_CXX_COMPILER "${KYUZEN_CLANGXX}")
+endif()
+
+set(CMAKE_LINKER "${KYUZEN_LD_LLD}")
 
 # NASM assembles the 12 arch/x86/*.asm files (Intel syntax). CMake has
 # first-class NASM support via the ASM_NASM language; the language itself is

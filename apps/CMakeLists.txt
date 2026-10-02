@@ -211,6 +211,13 @@ function(_kyuzen_add_cpp_toolkit_app name)
     )
     add_dependencies(kyuzen-${name} ${name}-objects)
 
+    # Build ordering for the toolkit objects, which reach the link line through
+    # the generator expressions above (CMake does not infer those edges).
+    kyuzen_object_libraries(_obj_libs ${_gui_libs} kyuzen-media)
+    foreach(_ol IN LISTS _obj_libs)
+        add_dependencies(kyuzen-${name} ${_ol})
+    endforeach()
+
     kyuzen_output_basename(kyuzen-${name} _out_name)
     set_target_properties(kyuzen-${name} PROPERTIES
         OUTPUT_NAME "${_out_name}"
@@ -272,7 +279,7 @@ if(NOT IS_DIRECTORY "${_desktop_impl_dir}")
         "Set -DKYUZEN_DESKTOP_APP=<name> to one of the directories under system/.")
 endif()
 
-file(GLOB _desktop_sources CONFIGURE_DEPENDS "${_desktop_impl_dir}/*.cpp")
+kyuzen_glob(_desktop_sources "${_desktop_impl_dir}/*.cpp")
 if(NOT _desktop_sources)
     message(FATAL_ERROR
         "desktop: no *.cpp sources in ${_desktop_impl_dir}")
@@ -307,7 +314,7 @@ list(APPEND KYUZEN_APP_TARGETS kyuzen-desktop)
 #     widget/src/chrome/*.o ... widget/src/xml/*.o, media.o
 # Reproducing that sorted order is what places the colour objects at the same
 # addresses as the Make build.
-file(GLOB _fileman_sources CONFIGURE_DEPENDS "${_apps_dir}/filemanager/*.cpp")
+kyuzen_glob(_fileman_sources "${_apps_dir}/filemanager/*.cpp")
 kyuzen_add_sdk_app(kyuzen-fileman
     SOURCES ${_fileman_sources}
     LIBS
@@ -328,7 +335,7 @@ list(APPEND KYUZEN_APP_TARGETS kyuzen-fileman)
 # --- settings ----------------------------------------------------------------
 # Order: ST_OBJS, USERAPP_LIB_OBJS, TEXT_USER_OBJS, FT archive, then the same
 # `ls`-sorted toolkit globs (colour first, then widget).
-file(GLOB _settings_sources CONFIGURE_DEPENDS "${_apps_dir}/settings/*.cpp")
+kyuzen_glob(_settings_sources "${_apps_dir}/settings/*.cpp")
 kyuzen_add_sdk_app(kyuzen-settings
     SOURCES ${_settings_sources}
     LIBS
@@ -349,7 +356,7 @@ list(APPEND KYUZEN_APP_TARGETS kyuzen-settings)
 
 # --- taskmgr -----------------------------------------------------------------
 # Order: TM_OBJS, USERAPP_LIB_OBJS, then the `ls`-sorted toolkit globs.
-file(GLOB _taskmgr_sources CONFIGURE_DEPENDS "${_apps_dir}/taskmgr/*.cpp")
+kyuzen_glob(_taskmgr_sources "${_apps_dir}/taskmgr/*.cpp")
 kyuzen_add_sdk_app(kyuzen-taskmgr
     SOURCES ${_taskmgr_sources}
     LIBS

@@ -108,6 +108,35 @@ function(kyuzen_expand_objects out_var)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# kyuzen_object_libraries(<out_var> <target-or-path>...)
+#
+# Collect the names of every OBJECT library reachable from the given list,
+# recursing through INTERFACE libraries. Callers use this to declare build
+# dependencies: objects reach the link line through $<TARGET_OBJECTS:...> inside
+# target_link_options, and CMake does not infer a dependency edge from a
+# generator expression used in an option.
+# ---------------------------------------------------------------------------
+function(kyuzen_object_libraries out_var)
+    set(_libs "")
+    foreach(_lib IN LISTS ARGN)
+        if(TARGET ${_lib})
+            get_target_property(_type ${_lib} TYPE)
+            if(_type STREQUAL "OBJECT_LIBRARY")
+                list(APPEND _libs ${_lib})
+            elseif(_type STREQUAL "INTERFACE_LIBRARY")
+                get_target_property(_deps ${_lib} INTERFACE_LINK_LIBRARIES)
+                if(_deps)
+                    kyuzen_object_libraries(_sub ${_deps})
+                    list(APPEND _libs ${_sub})
+                endif()
+            endif()
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _libs)
+    set(${out_var} "${_libs}" PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
 # kyuzen_link_items(<out_var> <target-or-path>...)
 #
 # Normalise a mixed list of OBJECT libraries and plain file paths into link
@@ -213,6 +242,14 @@ function(kyuzen_add_plain_app name)
         -nostdlib
         -T ${ARG_LINKER_SCRIPT}
     )
+
+    # Build ordering: objects reach the link line as $<TARGET_OBJECTS:...>, and
+    # CMake does not infer a dependency edge from a generator expression used in
+    # a link option.
+    kyuzen_object_libraries(_obj_libs ${ARG_LIBS})
+    foreach(_ol IN LISTS _obj_libs)
+        add_dependencies(${name} ${_ol})
+    endforeach()
 
     kyuzen_output_basename(${name} _out_name)
     set_target_properties(${name} PROPERTIES
@@ -365,8 +402,13 @@ function(kyuzen_add_sdk_app name)
         "@${_rsp_file}"
     )
 
-    # Build-ordering only: the objects are emitted from the response file.
+    # Build-ordering: the objects reach the link line through the response file,
+    # which CMake does not parse, so the edges are declared explicitly.
     add_dependencies(${name} ${name}-objects)
+    kyuzen_object_libraries(_obj_libs ${ARG_LIBS})
+    foreach(_ol IN LISTS _obj_libs)
+        add_dependencies(${name} ${_ol})
+    endforeach()
 
     # The SDK artifacts must exist before the link.
     add_dependencies(${name} kyuzen-sdk-cpp)

@@ -102,7 +102,7 @@ endfunction()
 # BearSSL host library — needed by the TLS test and the browser TLS path.
 # Full library, host ABI, exactly as the old Makefile built it for the host.
 # ===========================================================================
-file(GLOB _bl_host_srcs CONFIGURE_DEPENDS
+kyuzen_glob(_bl_host_srcs
     "${KYUZEN_ROOT}/third_party/bearssl/src/*/*.c")
 list(APPEND _bl_host_srcs "${KYUZEN_ROOT}/third_party/bearssl/src/settings.c")
 
@@ -129,10 +129,10 @@ set(_lexbor_fp_banned
     "${_lexbor_src}/core/diyfp.c"
 )
 
-file(GLOB _lexbor_core CONFIGURE_DEPENDS "${_lexbor_src}/core/*.c")
+kyuzen_glob(_lexbor_core "${_lexbor_src}/core/*.c")
 list(REMOVE_ITEM _lexbor_core ${_lexbor_fp_banned})
 
-file(GLOB _lexbor_rest CONFIGURE_DEPENDS
+kyuzen_glob(_lexbor_rest
     "${_lexbor_src}/dom/*.c"
     "${_lexbor_src}/dom/interfaces/*.c"
     "${_lexbor_src}/html/*.c"
@@ -408,7 +408,7 @@ endif()
 # --- libui toolkit: theme / XML / fileman widgets / owner propagation ---
 # All four link the REAL toolkit sources and stub the syscall layer.
 set(_widget_srcs "")
-file(GLOB _widget_srcs CONFIGURE_DEPENDS "${KYUZEN_ROOT}/libs/gui/widget/src/*/*.cpp")
+kyuzen_glob(_widget_srcs "${KYUZEN_ROOT}/libs/gui/widget/src/*/*.cpp")
 list(APPEND _widget_srcs "${KYUZEN_ROOT}/libs/gui/widget/abi/libui_abi.cpp")
 
 foreach(_t IN ITEMS theme xml fileman_widgets owner)
