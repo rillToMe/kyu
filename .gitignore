@@ -65,3 +65,7 @@ STRUKTURE_FILE.md
 p6-run.ps1
 fix
 # Resolve Build
+
+# Codegraph index + config (tool-generated, machine-specific)
+codegraph.json
+.codegraphignore

@@ -2,7 +2,7 @@
 # KyuzenImage.cmake — bootable ISO assembly.
 #
 # Reproduces the old Makefile's $(ISO_IMAGE) recipe step for step
-# (BUILD_SYSTEM_AUDIT.md §9). Two things matter more than the rest:
+# (docs/development/build-system-audit.md §9). Two things matter more than the rest:
 #
 #   * The MODULE GUARD. limine.conf lists 86 modules; Limine panics at BOOT
 #     with "Failed to open module with path" if any is missing, and that is
@@ -32,7 +32,7 @@ function(kyuzen_add_image_target)
     # Fail early and clearly if a required Limine artifact is absent. These are
     # gitignored (limine.exe by limine/.gitignore, *.bin by the root
     # .gitignore) yet mandatory — a fresh clone cannot build an ISO
-    # (BUILD_SYSTEM_AUDIT.md §13.5).
+    # (docs/development/build-system-audit.md §13.5).
     foreach(_f IN LISTS _limine_files)
         if(NOT EXISTS "${_f}")
             message(FATAL_ERROR

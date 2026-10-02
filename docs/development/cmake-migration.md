@@ -7,7 +7,7 @@ output does not.**
 | | |
 | --- | --- |
 | Branch | `feature/64bit-migration` |
-| Pre-migration audit | `fab719b` — `BUILD_SYSTEM_AUDIT.md` (1326 lines) |
+| Pre-migration audit | `fab719b` — `docs/development/build-system-audit.md` |
 | Migration commits | 12, `1cd2806` … `5f55acd` |
 | Parity result | **133 / 133 artifacts BIT-IDENTICAL** |
 | Host tests | 17 / 17 pass (matches the Make baseline) |
@@ -32,9 +32,9 @@ Every artifact the Make build produced is reproduced byte-for-byte.
 | SDK artifacts (`libc.a`, `crt.o`, `app.ld`, `libcxxrt.a`, `cxxrt.o`) | 5 | BIT-IDENTICAL |
 | **Total** | **133** | **133 identical, 0 different, 0 missing** |
 
-The kernel hash is the strongest single check: `BUILD_SYSTEM_AUDIT.md` §16.1
-records that the Make build is byte-identical across clean rebuilds, so any
-difference would be a migration defect rather than acceptable build metadata.
+The kernel hash is the strongest single check: the Make build is byte-identical
+across clean rebuilds, so any difference would be a migration defect rather than
+acceptable build metadata.
 
 ### 1.2 Behaviour
 
@@ -110,14 +110,14 @@ tests/host/CMakeLists.txt         568   20 tests via CTest
 rust/CMakeLists.txt                94
 ```
 
-`BUILD_SYSTEM_AUDIT.md` §14.2 proposed this layout before the migration started.
-The realised version differs in three places, all noted in §7 below.
+The pre-migration audit proposed a layout; the realised version differs in
+three places, all noted in §7 below.
 
 ---
 
 ## 3. The hard rules
 
-`BUILD_SYSTEM_AUDIT.md` §14.1 lists the constraints. Each is satisfied:
+The migration's hard rules. Each is satisfied:
 
 | Rule | How |
 | --- | --- |
@@ -222,7 +222,7 @@ cosmetic for the linked ELFs but visible in the build tree.
 
 ## 5. Incremental correctness
 
-`BUILD_SYSTEM_AUDIT.md` §16.3 lists six checks. All pass.
+Six incremental checks. All pass.
 
 | # | Check | Result |
 | --- | --- | --- |
@@ -328,7 +328,7 @@ ninja -C build-cmake run-wd
 
 ### 6.2 Parity checks
 
-`BUILD_SYSTEM_AUDIT.md` §16.2 lists the checks. Results:
+The parity checks. Results:
 
 | Check | Tool | Result |
 | --- | --- | --- |

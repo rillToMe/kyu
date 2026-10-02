@@ -68,6 +68,8 @@ The big picture: how the pieces fit together.
 | Document | Description |
 | --- | --- |
 | [Building](development/building.md) | Toolchain setup, build targets, platform notes |
+| [Build System Audit](development/build-system-audit.md) | The Make build this project replaced: targets, flags, link order, object namespaces |
+| [CMake Migration](development/cmake-migration.md) | Migration from Make to CMake + Ninja: parity results, findings, verification |
 | [Running](development/running.md) | QEMU configuration, first boot, credentials |
 | [Testing](development/testing.md) | Host tests, QEMU probes, in-OS test suites |
 | [Debugging](development/debugging.md) | Serial logging, BSOD, crash reports, watchpoints |

@@ -1,7 +1,7 @@
 # ============================================================================
 # libs/c/CMakeLists.txt — LLVM libc (freestanding) + the Kyuzen C SDK stage.
 #
-# This is the most complex integration in the project (BUILD_SYSTEM_AUDIT.md
+# This is the most complex integration in the project (docs/development/build-system-audit.md
 # §8.1). It is a NESTED build: LLVM's `runtimes` superbuild is configured and
 # built as an external step with its own binary directory and its own
 # generator, then its output is wrapped into a small public SDK.
@@ -44,7 +44,7 @@ if(NOT EXISTS "${_libc_src}/runtimes/CMakeLists.txt")
     message(FATAL_ERROR
         "LLVM libc sources are missing at ${_libc_src}.\n"
         "third_party/stdlib/llvm-project is a gitlink WITHOUT a .gitmodules "
-        "entry (BUILD_SYSTEM_AUDIT.md §13.4), so a fresh clone cannot "
+        "entry (docs/development/build-system-audit.md §13.4), so a fresh clone cannot "
         "materialise it.\n"
         "Either populate that directory, or configure with "
         "-DKYUZEN_BUILD_LIBC_SDK=OFF.")

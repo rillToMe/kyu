@@ -1,7 +1,7 @@
 # ============================================================================
 # KyuzenQemu.cmake — QEMU run targets.
 #
-# Only the workflows that already existed (BUILD_SYSTEM_AUDIT.md §11). The
+# Only the workflows that already existed (docs/development/build-system-audit.md §11). The
 # hardware configuration is copied verbatim from the old Makefile: changing it
 # would silently change what is being tested.
 #

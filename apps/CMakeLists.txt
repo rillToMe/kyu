@@ -2,7 +2,7 @@
 # apps/CMakeLists.txt — user-space applications.
 #
 # Four groups, each matching one recipe from the old build
-# (BUILD_SYSTEM_AUDIT.md §6.2, §14.7). The grouping is by BUILD RECIPE, not by
+# (docs/development/build-system-audit.md §6.2, §14.7). The grouping is by BUILD RECIPE, not by
 # directory — that is how the old build organised them, and the recipes differ
 # in flags, linker script, entry point, and link inputs.
 #

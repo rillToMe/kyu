@@ -1,7 +1,7 @@
 # ============================================================================
 # third_party/CMakeLists.txt
 #
-# Third-party integration follows BUILD_SYSTEM_AUDIT.md §8. Each dependency is
+# Third-party integration follows docs/development/build-system-audit.md §8. Each dependency is
 # integrated the way the existing build already integrates it — no upstream
 # build system is forced onto the bare-metal target, and no new dependency is
 # introduced.

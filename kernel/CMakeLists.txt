@@ -4,7 +4,7 @@
 # The kernel is assembled from per-subsystem OBJECT libraries so that the
 # dependency graph is visible and per-subsystem flags stay local, but the final
 # executable links ONE flat object list in the exact order the old Makefile
-# used (BUILD_SYSTEM_AUDIT.md §7.2, risk R1).
+# used (docs/development/build-system-audit.md §7.2, risk R1).
 #
 # Link semantics preserved from the old build:
 #   ld.lld -flavor gnu -T linker.ld -m elf_x86_64 --build-id=none -nostdlib

@@ -195,7 +195,7 @@ target_compile_options(kyuzen-host-lexbor PRIVATE -O1 -w)
 
 # --- credential / process / fd / pipe / fork policy (header-only or mock) ---
 # These targets are among the ones whose sources are MISSING from the
-# repository (see BUILD_SYSTEM_AUDIT.md §13.1). They are declared with an
+# repository (see docs/development/build-system-audit.md §13.1). They are declared with an
 # EXISTS guard so the breakage is reported at configure time instead of
 # producing "No rule to make target" at build time.
 #
@@ -242,7 +242,7 @@ foreach(_i RANGE 0 ${_missing_last})
     if(NOT EXISTS "${KYUZEN_UNIT_DIR}/${_tsrc}")
         message(WARNING
             "${_tname}: SKIPPED — source ${_tsrc} is not in the repository.\n"
-            "  This target is dead in the Make build too (BUILD_SYSTEM_AUDIT.md "
+            "  This target is dead in the Make build too (docs/development/build-system-audit.md "
             "§13.1). Restore the source to re-enable it.")
     endif()
 endforeach()
@@ -528,7 +528,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Known-failing tests, recorded so the baseline is explicit.
 #
-# Both fail in the Make build too (BUILD_SYSTEM_AUDIT.md §10.3). They are
+# Both fail in the Make build too (docs/development/build-system-audit.md §10.3). They are
 # registered as DISABLED rather than removed: the failure stays visible in
 # `ctest` output as "not run", and fixing the underlying source issue will make
 # them pass without any build-system change.

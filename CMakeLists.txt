@@ -10,7 +10,10 @@
 #   cmake -S tests/host -B build/host -G Ninja
 #   ctest --test-dir build/host
 #
-# Design notes: BUILD_SYSTEM_AUDIT.md §14.  Migration report: CMAKE_MIGRATION.md.
+# Historical reference (the Make build this replaces):
+#   docs/development/build-system-audit.md
+# Migration report (what changed and why):
+#   docs/development/cmake-migration.md
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -47,8 +50,12 @@ project(KyuzenOS
 set(KYUZEN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
-# Options — each one corresponds to a real build variation. See
-# BUILD_SYSTEM_AUDIT.md §14.6 for why no others exist.
+# Options — each one corresponds to a real build variation.
+#
+# No further options are justified: KYUZEN_BUILD_BROWSER,
+# KYUZEN_BUILD_DEBUG_TOOLS and KYUZEN_ENABLE_VIRTIO_GPU are all deliberately
+# absent. Browser is part of the app set, the debug tools do not exist, and
+# virtio-gpu is always built. See docs/development/cmake-migration.md.
 # ---------------------------------------------------------------------------
 option(KYUZEN_BUILD_APPS     "Build user-space applications"           ON)
 option(KYUZEN_BUILD_ISO      "Build the bootable ISO image"            ON)

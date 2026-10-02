@@ -2,7 +2,7 @@
 # KyuzenApplication.cmake — helper functions for user-space ELF targets.
 #
 # The old build had THREE different application recipes spread across the root
-# Makefile and apps/Makefile (BUILD_SYSTEM_AUDIT.md §6.2, §14.7). Each helper
+# Makefile and apps/Makefile (docs/development/build-system-audit.md §6.2, §14.7). Each helper
 # below reproduces exactly one of them, including its linker script, entry
 # point, flag set, and link order.
 #

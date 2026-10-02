@@ -26,7 +26,7 @@ target_link_libraries(kyuzen-libdesktop PRIVATE kyuzen-flags-sdk-cpp)
 # than `-I include`: the repo's include/stdlib.h shim (stb_image) would
 # otherwise shadow libc++'s <cstdlib>, which libc++ headers pull in via
 # <new>/std::nothrow. All repo headers here are included with quotes, so
-# -iquote is sufficient (BUILD_SYSTEM_AUDIT.md §13.2, risk R3).
+# -iquote is sufficient (docs/development/build-system-audit.md §13.2, risk R3).
 target_include_directories(kyuzen-libdesktop PUBLIC
     ${_libdesktop_dir}/include
     ${KYUZEN_ROOT}/libs/gui/color/include

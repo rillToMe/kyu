@@ -9,7 +9,7 @@
 # and never touch global state. This is the single place where a flag set is
 # defined; no target re-declares flags inline.
 #
-# Mapping to the old Makefile (BUILD_SYSTEM_AUDIT.md §4, Appendix B):
+# Mapping to the old Makefile (docs/development/build-system-audit.md §4, Appendix B):
 #
 #   kyuzen-flags-kernel      <- CFLAGS
 #   kyuzen-flags-lwip        <- LWIP_CFLAGS
@@ -30,7 +30,7 @@
 #
 # NOTE on -mno-sse / -msoft-float: these are CORRECTNESS flags, not tuning.
 # The kernel never sets CR4.OSFXSR, so any SSE instruction faults. Every flag
-# set below must keep them (BUILD_SYSTEM_AUDIT.md §3.3).
+# set below must keep them (docs/development/build-system-audit.md §3.3).
 # ============================================================================
 
 include_guard(GLOBAL)
@@ -199,7 +199,7 @@ target_compile_definitions(kyuzen-flags-libc-port INTERFACE
 # The Makefile wraps the two FT_CONFIG_*_H macros in single quotes because a
 # shell would otherwise eat the angle brackets. CMake passes arguments
 # directly with no shell, so the quotes are dropped here (see
-# BUILD_SYSTEM_AUDIT.md §4.7 / risk R2).
+# docs/development/build-system-audit.md §4.7 / risk R2).
 # ===========================================================================
 add_library(kyuzen-flags-freetype INTERFACE)
 target_compile_options(kyuzen-flags-freetype INTERFACE

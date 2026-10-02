@@ -18,7 +18,7 @@
 #     -D'FT_CONFIG_STANDARD_LIBRARY_H=<ftkz_stdlib.h>'
 # with single quotes so the shell would not eat the angle brackets. CMake
 # passes arguments directly (no shell), so the quotes are dropped. See
-# BUILD_SYSTEM_AUDIT.md §4.7 and risk R2.
+# docs/development/build-system-audit.md §4.7 and risk R2.
 # ============================================================================
 
 set(_ft_dir "${KYUZEN_ROOT}/third_party/freetype")

@@ -17,8 +17,9 @@
 # verified by dumping the variable from Make itself:
 #   111 C sources + 12 ASM sources.
 # Source order is preserved: the kernel links in this order, and the old
-# Makefile's object order must be reproduced for binary parity
-# (BUILD_SYSTEM_AUDIT.md §16.2, risk R1).
+# Makefile's object order must be reproduced for binary parity. Object order
+# determines symbol layout, and it is the single highest-risk part of the
+# migration (docs/development/cmake-migration.md §4.1, §8 risk R1).
 # ============================================================================
 
 include_guard(GLOBAL)

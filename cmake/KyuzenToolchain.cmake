@@ -8,7 +8,7 @@
 # freestanding x86_64-pc-none-elf). Host tests use a SEPARATE CMake invocation
 # with the host toolchain — see tests/host/CMakeLists.txt.
 #
-# Verified against the existing Makefile (see BUILD_SYSTEM_AUDIT.md §3):
+# Verified against the existing Makefile (see docs/development/build-system-audit.md §3):
 #   CC = clang, LD = ld.lld, AS = nasm
 #   triple = x86_64-pc-none-elf
 # ============================================================================

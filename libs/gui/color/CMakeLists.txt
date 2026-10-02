@@ -2,7 +2,7 @@
 # libs/gui/color/CMakeLists.txt
 #
 # libs/gui/color is the ONLY source compiled into BOTH the kernel and
-# user-space (BUILD_SYSTEM_AUDIT.md §7.1). Two targets, two flag sets, two
+# user-space (docs/development/build-system-audit.md §7.1). Two targets, two flag sets, two
 # separate object files — they cannot share objects because the kernel copy
 # needs -mcmodel=kernel and the user-space copy must not have it.
 #

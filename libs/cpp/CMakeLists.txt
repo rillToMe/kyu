@@ -9,7 +9,7 @@
 #   - the public linker script + the kyuzen-c++ wrapper
 #
 # The header closure is COMPUTED at build time via `clang++ -M` for each public
-# header (BUILD_SYSTEM_AUDIT.md §8.2), not maintained as a manual list — so it
+# header (docs/development/build-system-audit.md §8.2), not maintained as a manual list — so it
 # follows the pinned LLVM tree automatically.
 #
 # WHY ONLY 2 libc++ SOURCES: string.cpp and algorithm.cpp cannot compile under
