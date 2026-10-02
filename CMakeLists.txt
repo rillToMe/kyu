@@ -108,6 +108,10 @@ include(${KYUZEN_ROOT}/cmake/KyuzenCompiler.cmake)
 include(${KYUZEN_ROOT}/cmake/KyuzenSources.cmake)
 include(${KYUZEN_ROOT}/cmake/KyuzenApplication.cmake)
 include(${KYUZEN_ROOT}/cmake/KyuzenImage.cmake)
+# UI deklaratif: file .xml nyata di ui/xml/ di-embed jadi header saat build
+# (lihat cmake/KyuzenUiXml.cmake). Harus tersedia sebelum apps/ mendefinisikan
+# target yang memakainya.
+include(${KYUZEN_ROOT}/cmake/KyuzenUiXml.cmake)
 
 # ---------------------------------------------------------------------------
 # Target build.

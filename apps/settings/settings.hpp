@@ -42,6 +42,7 @@ enum class SettingsPage : std::uint8_t {
 struct NavigationItem {
     SettingsPage page;
     const char* title;
+    int icon;          // UI_ICON_* — sidebar memakai sistem ikon libui
 };
 
 class SettingsApp {

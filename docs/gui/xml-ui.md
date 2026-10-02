@@ -88,24 +88,78 @@ ui_xml_bind(ctx, "submit", UI_XML_ON_CLICK, on_submit, userdata);
 The event-to-widget-type mapping is documented per widget; an unsupported
 pairing returns 0.
 
+## Where XML lives
+
+UI documents are **real `.xml` files** in `ui/xml/`, not string literals inside
+`.c`/`.cpp`. The build embeds them into a header:
+
+```cmake
+kyuzen_embed_xml(kyuzen-settings SOURCES settings_appearance.xml)
+```
+
+```cpp
+#include "ui_xml_data.h"   // generated
+ui_xml_doc_t* doc = ui_xml_parse(ui_xml_settings_appearance,
+                                 ui_xml_settings_appearance_len, &err);
+```
+
+Why: XML buried in source cannot be reviewed as a document, diffs poorly, and
+gets no syntax highlighting. Tests embed the same file, so the document and the
+test can never drift apart.
+
+See `cmake/KyuzenUiXml.cmake` and `cmake/embed_xml.cmake`.
+
+## What XML owns, and what it does not
+
+XML owns **structure and semantics**. The theme owns **appearance**.
+
+| Semantic attribute | Values | Meaning |
+| --- | --- | --- |
+| `variant` | `primary`, `secondary`, `tertiary`, `danger` | action role |
+| `icon` | icon name (`settings`, `check`, `chevron-down`, …) | semantic icon |
+| `spacing` | `xs`/`sm`/`md`/`lg`/`xl` or px | gap between children |
+| `size` | `sm`/`md`/`lg`/`xl` | icon optical size |
+| `theme-mode`, `theme-accent` | | user theme choice |
+
+Visual attributes (`padding`, `radius`, `color`, `shadow`, …) are **rejected**
+by the inflater with `UI_XML_UNKNOWN_ATTRIBUTE`. If a visual value cannot come
+from the theme, the theme needs a new token — not the schema a new attribute.
+
 ## Example
 
 ```xml
-<window title="Settings" width="640" height="480">
-  <vbox>
-    <label id="title" text="Appearance"/>
-    <checkbox id="dark" text="Dark mode"/>
-    <button id="submit" text="Apply"/>
+<window>
+  <vbox spacing="lg">
+    <label text="Appearance"/>
+
+    <section title="Mode" spacing="sm">
+      <radio id="mode_dark" text="Dark" group="mode" selected="true"/>
+      <radio id="mode_light" text="Light" group="mode"/>
+    </section>
+
+    <section title="Accent color" spacing="sm">
+      <hbox spacing="sm">
+        <button id="accent_neutral" text="Neutral"/>
+        <button id="accent_blue" text="Blue" variant="primary"/>
+      </hbox>
+      <label id="status" text="Ready"/>
+    </section>
   </vbox>
 </window>
 ```
 
-The element and attribute set is a fixed schema; unknown elements or
-attributes are rejected with `UI_XML_UNKNOWN_ELEMENT` /
-`UI_XML_UNKNOWN_ATTRIBUTE`.
+## Elements
+
+`window`, `vbox`, `hbox`, `grid`, `section`, `label`, `button`, `textbox`,
+`checkbox`, `switch`, `radio`, `combobox` (+ `item`), `slider`, `progressbar`,
+`separator`, `icon`, `image`, `listview` (+ `item`).
+
+The set is a fixed schema; unknown elements or attributes are rejected with
+`UI_XML_UNKNOWN_ELEMENT` / `UI_XML_UNKNOWN_ATTRIBUTE`.
 
 ## Related Documentation
 
 - [GUI Overview](README.md)
+- [Design System](../design/gui/libui-design-system.md) — XML rules in context
 - [Widget Toolkit](widget-toolkit.md)
 - [libdesktop](libdesktop.md)

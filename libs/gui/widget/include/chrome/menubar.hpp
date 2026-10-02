@@ -19,7 +19,7 @@ public:
     Window* win;
 
     MenuBar(Window* w, int width) : n(0), hover_idx(-1), win(w) {
-        this->w = width; h = 24;
+        this->w = width; h = chrome::MENUBAR_H;
     }
     virtual ~MenuBar() {
         for (int i = 0; i < n; i++) { _ui_free(titles[i].label); delete titles[i].menu; }
@@ -35,9 +35,11 @@ public:
     // Lebar judul mengikuti teksnya (gaya menu Windows), TIDAK dibagi rata
     // selebar window — dulu judul berjarak lebar sehingga terlihat seperti
     // tabel, bukan menu.
-    int title_w(int i) const { return _ui_strlen(titles[i].label) * 8 + 22; }
+    int title_w(int i) const {
+        return _ui_strlen(titles[i].label) * glyph::ADVANCE + 2 * space::MD;
+    }
     int title_x(int i) const {
-        int tx = x + 6;
+        int tx = x + space::SM;
         for (int j = 0; j < i; j++) tx += title_w(j);
         return tx;
     }

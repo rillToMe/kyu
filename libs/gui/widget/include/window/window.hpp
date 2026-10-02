@@ -336,13 +336,13 @@ public:
         focus_prev = focused;   // restore saat tutup (C11)
         set_focus(d);           // dialog = satu stop fokus modal (C9)
         hide_tip();             // Phase D: tooltip tak boleh di atas modal
-        damage_overlay(d);
+        damage_overlay(d, ELEV_DIALOG);
         render();
     }
     void close_dialog() {
         if (!dialog) return;
         if (hovered == dialog) hovered = 0;
-        damage_overlay(dialog);   // hapus dialog + shadow
+        damage_overlay(dialog, ELEV_DIALOG);   // hapus dialog + shadow
         Dialog* d = dialog;
         dialog = 0;
         // Restore sebelum delete: prev yang masih hidup + enabled dipakai,
@@ -597,10 +597,18 @@ public:
         else damage_full();
     }
     void damage_notify() { damage_rect((int)gw->width - 218, 8, 210, 28); }
-    // Overlay (popup/dialog) + drop-shadow libui (4 ring, offset +3, extend 4px).
-    void damage_overlay(Widget* ov) {
-        if (ov) damage_rect(ov->x - 4, ov->y - 1, ov->w + 8, ov->h + 8);
+    // Overlay (popup/dialog) + bayangannya. Margin diambil dari token elevasi
+    // (theme/elevation.hpp) supaya damage selalu menutup seluruh bayangan —
+    // kalau bayangan diperbesar, area damage ikut membesar otomatis. Ini yang
+    // mencegah "sisa bayangan" tertinggal saat popup ditutup.
+    void damage_overlay(Widget* ov, int level) {
+        if (!ov) return;
+        int m = elevation_shadow_margin(level);
+        // Bayangan digeser ke bawah (offset_y), jadi sisi atas tidak seluas
+        // sisi bawah; ambil margin seragam agar aman (over-report BOLEH).
+        damage_rect(ov->x - m, ov->y - m, ov->w + 2 * m, ov->h + 2 * m);
     }
+    void damage_overlay(Widget* ov) { damage_overlay(ov, ELEV_POPUP); }
     void damage_ghost(int gx, int gy) {
         int tw = drag_payload ? _ui_strlen(drag_payload) * 8 + 12 : 24;
         damage_rect(gx, gy, tw + 12, 26);
@@ -619,9 +627,9 @@ public:
         p.rect(0, 0, (int)gw->width, (int)gw->height, theme.bg);
         for (int i = 0; i < n_bars; i++) top_bars[i]->draw(p);
         if (root) root->draw(p);
-        if (popup) { p.shadow(popup->x, popup->y, popup->w, popup->h); popup->draw(p); }
+        if (popup) { p.shadow(popup->x, popup->y, popup->w, popup->h, ELEV_POPUP); popup->draw(p); }
         if (dialog) {                     // modal di atas popup
-            p.shadow(dialog->x, dialog->y, dialog->w, dialog->h);
+            p.shadow(dialog->x, dialog->y, dialog->w, dialog->h, ELEV_DIALOG);
             dialog->draw(p);
         }
         if (notify_text) draw_notify(p);  // toast paling atas
@@ -676,7 +684,7 @@ public:
                             // Modal: klik di luar dialog diabaikan (blok latar).
                             if (dialog->pick(mouse_x, mouse_y))
                                 dialog->on_click(mouse_x, mouse_y);   // bisa close
-                            if (dialog) damage_overlay(dialog);        // hover tombol
+                            if (dialog) damage_overlay(dialog, ELEV_DIALOG);   // hover tombol
                             render();
                         } else if (popup) {
                             Widget* old_pop = popup;
@@ -770,7 +778,7 @@ public:
                         // periksa dulu sebelum menyentuhnya lagi.
                         Dialog* d = dialog;
                         d->on_key((uint8_t)ev.param1, (uint32_t)ev.param3, (uint32_t)ev.param2);
-                        if (dialog == d) damage_overlay(d);
+                        if (dialog == d) damage_overlay(d, ELEV_DIALOG);
                         render();
                     } else {
                         // Shortcut registry dulu, baru dispatch ke widget fokus.

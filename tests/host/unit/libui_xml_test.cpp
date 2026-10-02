@@ -120,6 +120,9 @@ void png_free(uint32_t* b) { (void)b; }
 
 #include "libui.h"
 #include "libui_xml.h"
+// Dokumen XML demo yang di-embed build dari ui/xml/xml_demo.xml — test dan
+// aplikasi memakai file yang SAMA, jadi tidak ada salinan yang bisa drift.
+#include "ui_xml_data.h"
 // Internal untuk verifikasi struktur (test-only, bukan ABI).
 #include "core/theme.hpp"
 #include "core/widget.hpp"
@@ -844,34 +847,11 @@ int main(void) {
     // antrean sys_get_event — jalur yang men-crash-kan xml_demo di QEMU.
     // Memakai dokumen xml_demo VERBATIM (bukan DOC_SETTINGS).
     {
-        static const char* DEMO_DOC =
-            "<window theme-mode=\"dark\" theme-accent=\"purple\">"
-            "<vbox spacing=\"md\">"
-            "<label text=\"XML Settings\"/>"
-            "<grid rows=\"3\" cols=\"2\" gap=\"8\">"
-            "<label row=\"0\" col=\"0\" text=\"Theme\"/>"
-            "<combobox id=\"theme\" row=\"0\" col=\"1\" width=\"140\">"
-            "<item text=\"Dark\"/><item text=\"Light\"/>"
-            "</combobox>"
-            "<label row=\"1\" col=\"0\" text=\"Notify\"/>"
-            "<checkbox id=\"notif\" row=\"1\" col=\"1\" text=\"Enabled\"/>"
-            "<label row=\"2\" col=\"0\" text=\"Mode\"/>"
-            "<hbox row=\"2\" col=\"1\" spacing=\"sm\">"
-            "<radio id=\"m1\" text=\"Basic\" group=\"mode\" selected=\"true\"/>"
-            "<radio id=\"m2\" text=\"Advanced\" group=\"mode\"/>"
-            "</hbox>"
-            "</grid>"
-            "<separator/>"
-            "<textbox id=\"name\" width=\"200\" text=\"kyuzen\" tooltip=\"User name\"/>"
-            "<slider id=\"vol\" min=\"0\" max=\"10\" value=\"7\"/>"
-            "<hbox spacing=\"sm\">"
-            "<button id=\"apply\" text=\"Apply\" variant=\"primary\"/>"
-            "<button id=\"cancel\" text=\"Cancel\"/>"
-            "</hbox>"
-            "<label id=\"status\" text=\"Ready\"/>"
-            "</vbox>"
-            "</window>";
-        ui_xml_doc_t* d = pd(DEMO_DOC, &e);
+        // Memakai DOKUMEN XML SUNGGUHAN (ui/xml/xml_demo.xml) yang di-embed
+        // build — BUKAN salinan string di test. Salinan pernah jadi sumber
+        // drift: dokumen asli berubah, test tetap hijau karena menguji
+        // salinannya sendiri. Satu sumber kebenaran = file XML-nya.
+        ui_xml_doc_t* d = pd(ui_xml_xml_demo, &e);
         ui_window_t* win = ui_window_create(460, 380);
         ui_xml_ctx_t* cx = ui_xml_ctx_create(win);
         int r = ui_xml_inflate(cx, d, &e);
@@ -992,6 +972,63 @@ int main(void) {
         ui_xml_doc_destroy(d);
         ui_window_destroy(win);
         check(balanced(), "F16: tanpa release seimbang");
+    }
+
+    // ==========================================================
+    // G. Design system: elemen struktural & semantik baru
+    //    (<section>, <switch>, <icon>, icon= pada <button>).
+    //    Yang diuji: dokumen valid diterima, atribut visual DITOLAK
+    //    (tema yang memiliki tampilan, bukan XML).
+    // ==========================================================
+    {
+        ui_xml_doc_t* d = pd(
+            "<window>"
+            "<section title=\"Appearance\" spacing=\"md\">"
+            "<switch id=\"wifi\" text=\"Wi-Fi\" on=\"true\"/>"
+            "<icon id=\"ic\" icon=\"settings\" size=\"lg\"/>"
+            "<button id=\"b\" text=\"Apply\" variant=\"primary\" icon=\"check\"/>"
+            "<button text=\"Quiet\" variant=\"tertiary\"/>"
+            "</section>"
+            "</window>", &e);
+        check(d != 0, "G01: dokumen design-system diterima");
+        ui_window_t* win = ui_window_create(240, 200);
+        ui_xml_ctx_t* cx = ui_xml_ctx_create(win);
+        check(ui_xml_inflate(cx, d, &e) == 1, "G02: section/switch/icon terinflasi");
+        check(ui_xml_find(cx, "wifi") != 0, "G03: switch ditemukan via id");
+        check(ui_xml_find(cx, "ic") != 0, "G04: icon ditemukan via id");
+        check(ui_xml_find(cx, "b") != 0, "G05: tombol ber-ikon ditemukan");
+        ui_xml_ctx_destroy(cx);
+        ui_xml_doc_destroy(d);
+        ui_window_destroy(win);
+        check(balanced(), "G06: inflasi design-system seimbang");
+    }
+    {
+        // Atribut visual DITOLAK: tema yang memiliki tampilan. Ini yang
+        // menjaga XML tetap struktural dan mencegah app menyetel radius
+        // atau warna sendiri (sumber inkonsistensi visual).
+        const char* bad[] = {
+            "<window><section title=\"x\" padding=\"13\"/></window>",
+            "<window><button text=\"x\" radius=\"7\"/></window>",
+            "<window><button text=\"x\" color=\"0xFF0000\"/></window>",
+            "<window><switch text=\"x\" shadow=\"2\"/></window>",
+            "<window><icon icon=\"nope\"/></window>",
+            "<window><button text=\"x\" icon=\"nope\"/></window>",
+            "<window><section spacing=\"huge\"/></window>",
+        };
+        int all_rejected = 1;
+        for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            ui_xml_doc_t* d = pd(bad[i], &e);
+            if (!d) { all_rejected = 0; continue; }
+            ui_window_t* win = ui_window_create(200, 120);
+            ui_xml_ctx_t* cx = ui_xml_ctx_create(win);
+            if (ui_xml_inflate(cx, d, &e) != 0) all_rejected = 0;
+            ui_xml_ctx_destroy(cx);
+            ui_xml_doc_destroy(d);
+            ui_window_destroy(win);
+        }
+        check(all_rejected == 1,
+              "G07: atribut visual/nilai asing di XML ditolak");
+        check(balanced(), "G08: penolakan tidak membocorkan alokasi");
     }
 
     printf("XML: %d PASS, %d FAIL | allocs=%d frees=%d\n", PASS, FAIL, g_allocs, g_frees);

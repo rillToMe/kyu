@@ -20,6 +20,22 @@ reference desktop environment.
 | [libdesktop](libdesktop.md) | The framework API and replaceability contract |
 | [Desktop Environment](desktop.md) | The default desktop implementation |
 
+## Design system
+
+The visual language of KyuzenOS lives in `libs/gui/widget/include/theme/` and is
+owned centrally by `libui` — applications do not choose colours, spacing,
+radii, or type sizes themselves.
+
+| Document | Description |
+| --- | --- |
+| [Design System](../design/gui/libui-design-system.md) | **Start here.** Tokens, states, icons, XML rules, how to build a page |
+| [Redesign Audit & Report](../design/gui/libui-redesign-report.md) | What was wrong before, what changed, what was measured and validated |
+| [Theme System](../design/gui/ui-theme-system.md) | Mode × accent model and `settings.ui` persistence |
+
+The **UI Gallery** (`apps/uigallery`, ELF `uigallery.elf`) is the visual
+reference: it renders the production widgets in both themes, so it always shows
+the current, correct appearance.
+
 ## Layering
 
 ```text

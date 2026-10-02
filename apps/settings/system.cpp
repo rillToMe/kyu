@@ -63,21 +63,32 @@ std::string formatScreen() {
 }
 
 void SystemPage::build(ui_window_t* win) {
-    ui_widget_t* box = ui_vbox_create(win, 6);
+    // Halaman = judul + bagian. Hierarki dari tipografi: judul halaman (teks
+    // primer), lalu <section> per kelompok info. Nilai tiap baris dipisah dari
+    // labelnya oleh jarak, bukan oleh garis — garis hanya memisahkan BAGIAN.
+    ui_widget_t* box = ui_vbox_create(win, UI_SPACE_LG);
     ui_layout_add(box, ui_label_create(win, "System"));
     ui_layout_add(box, ui_label_create(win, "Device information"));
-    ui_layout_add(box, ui_label_create(win, "RAM"));
+
+    ui_widget_t* sec = ui_section_create(win, "Hardware", UI_SPACE_SM);
+
+    ui_layout_add(sec, ui_label_create(win, "Memory"));
     ram = ui_label_create(win, "-");
-    ui_layout_add(box, ram);
-    ui_layout_add(box, ui_label_create(win, "Processor"));
+    ui_layout_add(sec, ram);
+
+    ui_layout_add(sec, ui_label_create(win, "Processor"));
     cpu = ui_label_create(win, "-");
-    ui_layout_add(box, cpu);
-    ui_layout_add(box, ui_label_create(win, "Graphics"));
+    ui_layout_add(sec, cpu);
+
+    ui_layout_add(sec, ui_label_create(win, "Graphics"));
     gpu = ui_label_create(win, "-");
-    ui_layout_add(box, gpu);
-    ui_layout_add(box, ui_label_create(win, "Display"));
+    ui_layout_add(sec, gpu);
+
+    ui_layout_add(sec, ui_label_create(win, "Display"));
     screen = ui_label_create(win, "-");
-    ui_layout_add(box, screen);
+    ui_layout_add(sec, screen);
+
+    ui_layout_add(box, sec);
     root = box;
 }
 

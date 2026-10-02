@@ -4,6 +4,7 @@
 
 #include "core/widget.hpp"
 #include "core/painter.hpp"
+#include "core/state.hpp"
 #include "chrome/menu.hpp"
 
 namespace ui {
@@ -154,28 +155,32 @@ inline void ComboBox::on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) {
 }
 
 inline void ComboBox::draw(Painter& p) {
-    color_t txt = enabled ? p.theme.text : p.theme.text_disabled;
-    p.rect(x, y, w, h, p.theme.surface);
-    // Border 1px: subtle → hover → focus (terbuka = fokus logis).
-    color_t border = !enabled        ? p.theme.border_subtle
-                   : (has_focus || open) ? p.theme.focus
-                   : hover           ? p.theme.border
-                                     : p.theme.border_subtle;
-    p.rect(x, y, w, 1, border);
-    p.rect(x, y + h - 1, w, 1, border);
-    p.rect(x, y, 1, h, border);
-    p.rect(x + w - 1, y, 1, h, border);
-    // Label terpilih, dipotong sebelum panah (lebar panah 18px).
-    p.set_clip(x + 4, y, w - 22, h);
-    if (selected >= 0 && selected < n) p.text(items[selected], x + 4, y + 4, txt);
-    p.clear_clip();
-    // Panah bawah (segitiga piksel, gaya native).
-    int ax = x + w - 13, ay = y + (h - 4) / 2;
+    const Metrics& m = p.theme.metrics;
+    const TypeRole& role = p.theme.type.body;
+    StateInputs st;
+    st.hover = hover;
+    st.focused = has_focus || open;
+    st.enabled = enabled;
+
+    // Dropdown = permukaan TERBENAM (sama seperti input teks): keduanya
+    // "lubang" tempat nilai tinggal, berbeda dari tombol yang terangkat.
+    const int r = m.radius_control;
+    p.surface(x, y, w, h, p.theme.surface_variant, r);
+    p.rrect_border(x, y, w, h, r, state_border_quiet(p.theme, st), 255);
+    color_t txt = state_text(p.theme, st);
+    // Label terpilih, dipotong agar tidak menabrak chevron.
+    const int chev = m.icon_sm;
+    const int avail = w - 2 * m.sm - chev - m.sm;
+    if (selected >= 0 && selected < n) {
+        p.set_clip(x + m.sm, y, avail, h);
+        p.text_ellipsis(items[selected], x + m.sm, y + text_vcenter(h), avail,
+                        txt, role);
+        p.clear_clip();
+    }
+    // Chevron dari SISTEM IKON (bukan segitiga piksel ad-hoc) — bentuk dan
+    // ketebalannya sama dengan chevron di daftar/menu.
     color_t ac = enabled ? p.theme.text_secondary : p.theme.text_disabled;
-    p.rect(ax, ay, 7, 1, ac);
-    p.rect(ax + 1, ay + 1, 5, 1, ac);
-    p.rect(ax + 2, ay + 2, 3, 1, ac);
-    p.rect(ax + 3, ay + 3, 1, 1, ac);
+    p.icon(ICON_CHEVRON_DOWN, x + w - m.sm - chev / 2, y + h / 2, chev, ac);
 }
 
 } // namespace ui

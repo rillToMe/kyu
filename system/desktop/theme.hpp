@@ -62,20 +62,23 @@ const int LABEL_FONT_PX = 13;
 const int BOX_LBL_LINE_H = 18;  // jarak antar baris label (16px glyph + 2)
 // Dua baris muat dalam box: baris1 y+62..78, baris2 y+80..96 < BOX_H=100;
 // sel 104px menyisakan gap 8px ke box bawah (tak menutupi ikon berikut).
-const Color ICON_HOVER = rgb(0x2A, 0x38, 0x5E);  // latar hover (opaque;
-const Color ICON_SEL = rgb(0x2E, 0x4A, 0x8E);    // latar selected; fill_rect
-const Color ICON_SEL_EDGE = rgb(0x9C, 0xB8, 0xFF);  // outline putus-putus
-// backend tak menjamin alpha-blend, jadi highlight = warna solid)
+// Hover/seleksi ikon launcher memakai tangga netral libui, bukan biru navy:
+// seleksi dibedakan oleh permukaan + outline, bukan oleh warna yang berbeda
+// keluarga dari seluruh UI.
+const Color ICON_HOVER = rgb(0x2A, 0x2A, 0x2A);  // == libui surface_hover
+const Color ICON_SEL = rgb(0x33, 0x33, 0x33);    // == surface_hover + sedikit
+const Color ICON_SEL_EDGE = rgb(0xD0, 0xD0, 0xD0);  // outline seleksi
+// (backend tak menjamin alpha-blend, jadi highlight = warna solid)
 
 // ---- Context menu desktop/ikon (top-most, milik shell) ----
 const int MENU_W = 180;      // lebar menu
-const int MENU_ROW_H = 22;   // tinggi per baris item
+const int MENU_ROW_H = 24;   // tinggi per baris item (== libui chrome::MENU_ROW_H)
 const int MENU_PAD = 4;      // padding dalam menu
-const Color MENU_BG = rgb(0x12, 0x16, 0x2A);
-const Color MENU_EDGE = rgb(0x3A, 0x4C, 0x80);
-const Color MENU_HOVER = rgb(0x2E, 0x4A, 0x8E);
-const Color MENU_TXT = rgb(0xE8, 0xEC, 0xF8);
-const Color MENU_ACC = rgb(0x2E, 0xD8, 0x6E);  // centang "aktif"
+const Color MENU_BG = rgb(0x23, 0x23, 0x23);    // == libui panel/elevated
+const Color MENU_EDGE = rgb(0x30, 0x30, 0x30);  // == libui border
+const Color MENU_HOVER = rgb(0x2A, 0x2A, 0x2A); // == libui surface_hover
+const Color MENU_TXT = rgb(0xF2, 0xF2, 0xF2);   // == libui text
+const Color MENU_ACC = rgb(0x8B, 0x8B, 0x8B);   // centang "aktif" (netral)
 
 // ---- Ikon aplikasi (cache + fallback) ----
 const int ICON_CACHE_PX = 48;  // satu ukuran cache; taskbar/preview
@@ -106,28 +109,41 @@ const int PV_GAP = 8;   // jarak kartu di atas taskbar
 const int PV_PAD = 12;  // padding dalam kartu
 
 // ---- Palet ----
-const Color WALL_BG = rgb(0x14, 0x1A, 0x2E);
-const Color WALL_BG2 = rgb(0x1E, 0x28, 0x48);  // ujung gradasi prosedural
-const Color WALL_TXT = rgb(0x3A, 0x41, 0x60);
-const Color TASK_BG = rgb(0x0B, 0x0E, 0x1C);
-const Color TASK_EDGE = rgb(0x2A, 0x33, 0x55);
-const Color TASK_BTN = rgb(0x1A, 0x21, 0x38);
-const Color TASK_ACTIVE = rgb(0x2E, 0x4A, 0x8E);
-const Color TASK_HOVER = rgb(0x22, 0x2C, 0x4C);
-const Color TASK_TXT = rgb(0xE0, 0xE0, 0xE0);
-const Color SYS_TXT = rgb(0xE8, 0xEC, 0xF8);  // jam (baris utama)
-const Color SYS_DIM = rgb(0x90, 0x9C, 0xBC);  // tanggal (baris sekunder)
-const Color ICON_TXT = rgb(0xC0, 0xC8, 0xE0);
-const Color APP_DEFAULT = rgb(0x37, 0x47, 0x4F);  // tanpa manifest/ikon
-const Color PV_BG = rgb(0x12, 0x16, 0x2A);
-const Color PV_EDGE = rgb(0x3A, 0x4C, 0x80);
-const Color PV_TITLE = rgb(0xF0, 0xF2, 0xFA);
-const Color PV_DIM = rgb(0x90, 0x9C, 0xBC);
+// MIGRASI KE BAHASA VISUAL KYUZENOS
+// Palet desktop dulu biru-navy (TASK_BG 0x0B0E1C, TASK_EDGE 0x2A3355, ...)
+// sementara libui sudah memakai netral charcoal. Dua palet yang berbeda
+// membuat taskbar/launcher terasa seperti aplikasi lain yang menempel di
+// layar. Sekarang desktop memakai tangga netral YANG SAMA dengan tema libui
+// (surface 0x181818, elevated 0x232323, border 0x303030, teks 0xF2F2F2),
+// dengan aksen netral 0x8B8B8B — jadi shell dan aplikasi satu keluarga.
+//
+// Warna wallpaper tetap lebih dingin dari UI: wallpaper adalah LATAR, dan
+// sedikit perbedaan suhu membuat jendela aplikasi terbaca sebagai "di atas"
+// wallpaper tanpa perlu border tebal.
+const Color WALL_BG = rgb(0x12, 0x14, 0x18);
+const Color WALL_BG2 = rgb(0x1C, 0x20, 0x28);  // ujung gradasi prosedural
+const Color WALL_TXT = rgb(0x3A, 0x3E, 0x46);
+const Color TASK_BG = rgb(0x11, 0x11, 0x11);       // == libui bg (dark)
+const Color TASK_EDGE = rgb(0x30, 0x30, 0x30);     // == libui border
+const Color TASK_BTN = rgb(0x18, 0x18, 0x18);      // == libui surface
+const Color TASK_ACTIVE = rgb(0x2A, 0x2A, 0x2A);   // == libui surface_hover
+const Color TASK_HOVER = rgb(0x23, 0x23, 0x23);    // == libui surface_elevated
+const Color TASK_TXT = rgb(0xF2, 0xF2, 0xF2);      // == libui text
+const Color SYS_TXT = rgb(0xF2, 0xF2, 0xF2);       // jam (baris utama)
+const Color SYS_DIM = rgb(0xA8, 0xA8, 0xA8);       // tanggal (sekunder)
+const Color ICON_TXT = rgb(0xE8, 0xE8, 0xE8);
+const Color APP_DEFAULT = rgb(0x37, 0x47, 0x4F);   // tanpa manifest/ikon
+const Color PV_BG = rgb(0x1C, 0x1C, 0x1C);
+const Color PV_EDGE = rgb(0x3A, 0x3A, 0x3A);
+const Color PV_TITLE = rgb(0xF2, 0xF2, 0xF2);
+const Color PV_DIM = rgb(0xA8, 0xA8, 0xA8);
 
 const int NOTIF_W = 520;
 const int NOTIF_H = 100;
 const int NOTIF_MARGIN = 16;
 const int NOTIF_MS = 8000;  // 3–15 dtk (host test mengunci rentang)
+// Notifikasi crash tetap merah: ini satu-satunya tempat warna kuat dibenarkan
+// (peringatan keselamatan), dan justru kontras itulah yang membuatnya terbaca.
 const Color NOTIF_BG = rgb(0x3A, 0x12, 0x20);
 const Color NOTIF_EDGE = rgb(0xE0, 0x60, 0x60);
 const Color NOTIF_TITLE = rgb(0xFF, 0x80, 0x80);

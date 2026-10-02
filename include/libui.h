@@ -134,6 +134,49 @@ void ui_window_set_tick(ui_window_t* win, ui_tick_cb cb, void* userdata);
 // tutup bar cari dulu, baru keluar); bila tidak di-set, ESC menutup window.
 void ui_window_set_escape(ui_window_t* win, ui_click_cb cb, void* userdata);
 
+// --- Ikon (sistem ikon terpadu) ---
+// Ikon digambar toolkit dari geometri vektor sederhana (bukan font ikon, bukan
+// emoji, bukan aset). Satu gaya: goresan 1px pada grid 16px, sehingga ikon dari
+// widget berbeda terasa satu keluarga. Aplikasi memakai NAMA SEMANTIK ini,
+// bukan menggambar bentuknya sendiri.
+//
+// Nilai enum ini adalah kontrak ABI: JANGAN menyisipkan di tengah (tambahkan di
+// akhir sebelum UI_ICON_COUNT) supaya aplikasi lama tetap benar.
+enum {
+    UI_ICON_NONE = 0,
+    UI_ICON_CHEVRON_RIGHT = 1,
+    UI_ICON_CHEVRON_DOWN = 2,
+    UI_ICON_CHEVRON_LEFT = 3,
+    UI_ICON_CHEVRON_UP = 4,
+    UI_ICON_ARROW_RIGHT = 5,
+    UI_ICON_EXPAND = 6,
+    UI_ICON_COLLAPSE = 7,
+    UI_ICON_CLOSE = 8,
+    UI_ICON_CHECK = 9,
+    UI_ICON_PLUS = 10,
+    UI_ICON_MINUS = 11,
+    UI_ICON_SEARCH = 12,
+    UI_ICON_REFRESH = 13,
+    UI_ICON_MORE = 14,
+    UI_ICON_EDIT = 15,
+    UI_ICON_TRASH = 16,
+    UI_ICON_FOLDER = 17,
+    UI_ICON_FILE = 18,
+    UI_ICON_IMAGE = 19,
+    UI_ICON_HOME = 20,
+    UI_ICON_STAR = 21,
+    UI_ICON_SETTINGS = 22,
+    UI_ICON_DISPLAY = 23,
+    UI_ICON_PALETTE = 24,
+    UI_ICON_FONT = 25,
+    UI_ICON_NETWORK = 26,
+    UI_ICON_POWER = 27,
+    UI_ICON_INFO = 28,
+    UI_ICON_WARNING = 29,
+    UI_ICON_ERROR = 30,
+    UI_ICON_COUNT = 31
+};
+
 // --- Label ---
 // text di-copy oleh toolkit — caller boleh pakai stack buffer.
 ui_widget_t* ui_label_create(ui_window_t* win, const char* text);
@@ -160,9 +203,14 @@ ui_widget_t* ui_button_create(ui_window_t* win, const char* text);
 void ui_button_set_click(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 // Phase B: varian visual tombol (aditif, default SECONDARY bila tak dipanggil).
 // PRIMARY = isi aksen (aksi utama dialog), SECONDARY = permukaan + border,
-// DANGER = isi danger. Nilai di luar rentang = SECONDARY.
-enum { UI_BUTTON_SECONDARY = 0, UI_BUTTON_PRIMARY = 1, UI_BUTTON_DANGER = 2 };
+// DANGER = isi danger, TERTIARY = tanpa isi/border (aksi tenang: Batal,
+// Lewati, tautan tindakan). Nilai di luar rentang = SECONDARY.
+enum { UI_BUTTON_SECONDARY = 0, UI_BUTTON_PRIMARY = 1, UI_BUTTON_DANGER = 2,
+       UI_BUTTON_TERTIARY = 3 };
 void ui_button_set_variant(ui_widget_t* widget, int variant);
+// Ikon pada tombol (aditif). icon = nilai UI_ICON_* (libui.h). 0 = hapus ikon.
+// Tombol tanpa teks + berikon menjadi tombol ikon persegi (ukuran kontrol).
+void ui_button_set_icon(ui_widget_t* widget, int icon);
 // Phase B: enabled generik per-widget (aditif, default enabled). Disabled =
 // digambar redup + tak menerima hover/klik/fokus; fokus yang sedang dipegang
 // dilepas. Berlaku untuk Button/TextBox/CheckBox/Slider (widget lain
@@ -238,6 +286,30 @@ int ui_combobox_count(ui_widget_t* widget);
 int ui_combobox_selected(ui_widget_t* widget);
 void ui_combobox_set_selected(ui_widget_t* widget, int index);     // diam
 void ui_combobox_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- Switch (toggle on/off) ---
+// Beda dari CheckBox: CheckBox adalah bagian dari FORM (nilainya dikirim
+// bersama tombol Simpan), Switch adalah pengaturan yang BERLAKU SEGERA.
+// Bentuknya pun berbeda (track + knob) supaya perbedaannya terbaca.
+ui_widget_t* ui_switch_create(ui_window_t* win, const char* label);
+void ui_switch_set_on(ui_widget_t* widget, int on);   // programatik = tanpa callback
+int  ui_switch_on(ui_widget_t* widget);
+void ui_switch_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- Ikon: ukuran optik ---
+// Ukuran standar ikon supaya layout yang disusun app sejajar dengan widget
+// toolkit (ikon 16px = setinggi glyph teks).
+enum { UI_ICON_SIZE_SM = 0, UI_ICON_SIZE_MD = 1, UI_ICON_SIZE_LG = 2,
+       UI_ICON_SIZE_XL = 3 };
+int ui_icon_size(int role);
+
+// --- Section (bagian berjudul dalam halaman) ---
+// Judul bagian memakai peran tipografi `section` (huruf besar, tone sekunder)
+// diikuti garis tipis; isi disusun di bawahnya. Hierarki dibangun oleh
+// tipografi, bukan oleh kartu/box — ini primitif utama halaman pengaturan.
+// spacing = jarak antar anak (token UI_SPACE_*).
+ui_widget_t* ui_section_create(ui_window_t* win, const char* title, int spacing);
+void ui_section_set_title(ui_widget_t* widget, const char* title);
 
 // --- Separator (Phase D) ---
 // Garis visual non-interaktif (tebal 1px; panjang via ui_widget_set_size).
@@ -374,6 +446,15 @@ void ui_scrollview_set_scroll(ui_widget_t* widget, int pos);
 // Daftar item vertikal (row 20px); klik memilih & memanggil change_cb.
 ui_widget_t* ui_listview_create(ui_window_t* win, int w, int h);
 void ui_listview_add_item(ui_widget_t* widget, const char* label);
+// Baris daftar KAYA (aditif): judul + deskripsi + ikon depan + chevron.
+// Baris yang punya `description` menjadi dua baris tinggi. Teks disalin.
+// Return index, atau -1 bila daftar penuh.
+int  ui_listview_add_row(ui_widget_t* widget, const char* title,
+                         const char* description, int icon, int chevron);
+// Ikon/trailing/disabled per baris (aditif). icon = UI_ICON_*; 0 = kosong.
+void ui_listview_set_row_icon(ui_widget_t* widget, int index, int icon);
+void ui_listview_set_row_trailing(ui_widget_t* widget, int index, int icon);
+void ui_listview_set_row_disabled(ui_widget_t* widget, int index, int disabled);
 int ui_listview_selected(ui_widget_t* widget);   // index item terpilih, -1 = tak ada
 // Pilih item dari kode (mis. viewer membuka berkas dari Explorer); baris
 // bergulir ke dalam view bila di luar. Index di luar rentang → tanpa efek.
@@ -502,6 +583,10 @@ void ui_statusbar_set_text(ui_widget_t* widget, const char* left, const char* ri
 // Bar tombol full-width di bawah MenuBar.
 ui_widget_t* ui_toolbar_create(ui_window_t* win);
 void ui_toolbar_add_button(ui_widget_t* bar, const char* label, ui_click_cb cb, void* userdata);
+// Tombol toolbar ber-ikon (aditif). icon = UI_ICON_*; 0 = teks saja, dan
+// label "" menghasilkan tombol ikon rapat.
+void ui_toolbar_add_button_icon(ui_widget_t* bar, const char* label, int icon,
+                                ui_click_cb cb, void* userdata);
 
 // ============================================================
 // Phase 9 — Desktop Services (Clipboard, Dialog, Notification,

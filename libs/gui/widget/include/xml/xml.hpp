@@ -78,10 +78,15 @@ void free_doc(Document* doc);
 // --- Inflater (xml_inflate.cpp) ---
 // Context = milik pemanggil C; hidup selama window hasil inflasi.
 // Kind widget untuk binding bertipe (RTTI mati; kind dicatat saat inflasi).
+// NILAI LAMA TIDAK BOLEH BERGESER (dipakai binding bertipe oleh app):
+// tambahkan kind baru di AKHIR sebelum K_KIND_MAX.
 enum {
     K_LABEL = 1, K_BUTTON, K_TEXTBOX, K_CHECKBOX, K_RADIO, K_COMBO,
     K_SLIDER, K_PROGRESS, K_SEPARATOR, K_IMAGE, K_LISTVIEW, K_TAB,
-    K_SCROLLVIEW, K_VBOX, K_HBOX, K_GRID
+    K_SCROLLVIEW, K_VBOX, K_HBOX, K_GRID,
+    // Design system: elemen struktural & primitif baru.
+    K_SECTION, K_SWITCH, K_ICON,
+    K_KIND_MAX
 };
 
 struct IdEntry { char id[MAX_ID + 1]; Widget* w; int kind; };

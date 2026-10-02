@@ -79,15 +79,25 @@ public:
     }
     virtual void draw(Painter& p) override {
         Dialog::draw(p);
+        const Metrics& m = p.theme.metrics;
         int iy = input_row_y();
-        // Kolom input = kembali ke warna editor (paling gelap) + border halus.
-        p.rect(x + 16, iy, w - 32, 24, p.theme.editor);
-        p.rect(x + 16, iy, w - 32, 1, p.theme.mborder);
-        p.rect(x + 16, iy + 23, w - 32, 1, p.theme.mborder);
-        p.rect(x + 16, iy, 1, 24, p.theme.mborder);
-        p.rect(x + w - 17, iy, 1, 24, p.theme.mborder);
-        p.text(input, x + INPUT_PAD_X, iy + 4, p.theme.text);
-        p.rect(x + INPUT_PAD_X + cur * 8, iy + 4, 2, 16, p.theme.caret);   // caret cyan
+        int iw = w - 2 * m.lg;
+        // Kolom input = permukaan TERBENAM (sama seperti TextBox di halaman):
+        // input selalu terlihat sebagai "lubang", di dialog maupun tidak.
+        const int r = m.radius_control;
+        p.surface(x + m.lg, iy, iw, m.control_h, p.theme.surface_variant, r);
+        p.rrect_border(x + m.lg, iy, iw, m.control_h, r,
+                       has_focus ? p.theme.focus : p.theme.border_subtle, 255);
+        // Teks dipotong ke dalam kolom supaya nama berkas panjang tidak
+        // menabrak tombol.
+        p.set_clip(x + m.lg, iy, iw, m.control_h);
+        p.text(input, x + INPUT_PAD_X, iy + text_vcenter(m.control_h), p.theme.text);
+        p.clear_clip();
+        // Caret: warna fokus tema (bukan cyan hardcoded) supaya konsisten
+        // dengan caret TextBox.
+        p.rect(x + INPUT_PAD_X + cur * glyph::ADVANCE,
+               iy + (m.control_h - glyph::HEIGHT) / 2, 1, glyph::HEIGHT,
+               p.theme.caret);
     }
     // out-of-class: butuh Window lengkap (close_prompt / close_dialog)
     virtual void on_cancel() override;

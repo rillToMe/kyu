@@ -1,13 +1,20 @@
-// apps/xml_demo.c — konsumen nyata XML deklaratif (Phase E).
+// apps/xml_demo.c - konsumen nyata XML deklaratif (Phase E).
 //
-// Seluruh UI dideklarasikan sebagai string XML, diinflate ke widget NATIVE
-// lewat libui_xml (parse -> validate -> inflate -> libui biasa), lalu
-// callback diikat dari C (tanpa kode di XML). Bukti: XML = konsumen libui.
+// UI dideklarasikan sebagai DOKUMEN XML SUNGGUHAN di
+// `ui/xml/xml_demo.xml` (bukan string literal di file ini), lalu di-embed saat
+// build oleh cmake/KyuzenUiXml.cmake. Alasannya sederhana: XML yang tersembunyi
+// di dalam .c/.cpp tidak bisa di-review sebagai dokumen, tidak enak di-diff,
+// dan editor tidak memberinya penyorotan sintaks.
+//
+// Alurnya tetap: parse -> validate -> inflate -> libui biasa, dengan callback
+// diikat dari C (tanpa kode di XML). Bukti: XML = konsumen libui.
 //
 // Build: xml_demo.o + userlib + libgui + widget + png (GUI_APPS).
 #include "userlib.h"
 #include "libui.h"
 #include "libui_xml.h"
+
+#include "ui_xml_data.h"   // generated dari ui/xml/xml_demo.xml
 
 static ui_window_t* win;
 static ui_xml_ctx_t* xctx;
@@ -23,45 +30,18 @@ static void on_notif(void* u) { (void)u; set_status("Notifications toggled"); }
 static void on_mode(void* u) { (void)u; set_status("Mode changed"); }
 static void on_theme(void* u) { (void)u; set_status("Theme picked"); }
 
-// Layar settings-like (§53): tema + grid + radio grup + combo + checkbox +
-// textbox + slider + separator + tombol. Satu string, tanpa builder C.
-static const char UI_DOC[] =
-    "<window theme-mode=\"dark\" theme-accent=\"purple\">"
-    "<vbox spacing=\"md\">"
-    "<label text=\"XML Settings\"/>"
-    "<grid rows=\"3\" cols=\"2\" gap=\"8\">"
-    "<label row=\"0\" col=\"0\" text=\"Theme\"/>"
-    "<combobox id=\"theme\" row=\"0\" col=\"1\" width=\"140\">"
-    "<item text=\"Dark\"/><item text=\"Light\"/>"
-    "</combobox>"
-    "<label row=\"1\" col=\"0\" text=\"Notify\"/>"
-    "<checkbox id=\"notif\" row=\"1\" col=\"1\" text=\"Enabled\"/>"
-    "<label row=\"2\" col=\"0\" text=\"Mode\"/>"
-    "<hbox row=\"2\" col=\"1\" spacing=\"sm\">"
-    "<radio id=\"m1\" text=\"Basic\" group=\"mode\" selected=\"true\"/>"
-    "<radio id=\"m2\" text=\"Advanced\" group=\"mode\"/>"
-    "</hbox>"
-    "</grid>"
-    "<separator/>"
-    "<textbox id=\"name\" width=\"200\" text=\"kyuzen\" tooltip=\"User name\"/>"
-    "<slider id=\"vol\" min=\"0\" max=\"10\" value=\"7\"/>"
-    "<hbox spacing=\"sm\">"
-    "<button id=\"apply\" text=\"Apply\" variant=\"primary\"/>"
-    "<button id=\"cancel\" text=\"Cancel\"/>"
-    "</hbox>"
-    "<label id=\"status\" text=\"Ready\"/>"
-    "</vbox>"
-    "</window>";
-
-int main(void) {
-    win = ui_window_create(460, 380);
+// Kontrak ENTRY(main): fungsi ini TIDAK BOLEH kembali (ret = #GP). Karena
+// `sys_exit()` tidak ditandai noreturn oleh userlib.h, dipakai bentuk
+// `void main(void)` seperti widget_demo/notepad/terminal — dengan begitu
+// compiler tidak perlu membuktikan bahwa semua jalur keluar, dan tidak ada
+// peringatan -Wreturn-type yang menyembunyikan masalah nyata di masa depan.
+void main(void) {
+    win = ui_window_create(460, 400);
     if (!win) sys_exit_code(1);
     ui_window_set_title(win, "XML Demo");
 
-    unsigned n = 0;
-    while (UI_DOC[n]) n++;
     ui_xml_error_t err;
-    ui_xml_doc_t* doc = ui_xml_parse(UI_DOC, n, &err);
+    ui_xml_doc_t* doc = ui_xml_parse(ui_xml_xml_demo, ui_xml_xml_demo_len, &err);
     if (!doc) sys_exit_code(1);
     xctx = ui_xml_ctx_create(win);
     if (!xctx) { ui_xml_doc_destroy(doc); sys_exit_code(1); }

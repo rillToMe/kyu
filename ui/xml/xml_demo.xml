@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Demo XML deklaratif libui (apps/xml_demo.c).
+
+  Dokumen ini menunjukkan pemetaan XML -> widget NATIVE. Yang perlu diperhatikan:
+  tidak ada satu pun nilai VISUAL di sini (warna, radius, jarak px, font).
+  Yang ada hanya struktur dan semantik:
+    variant="primary"  = peran aksi
+    spacing="md"       = langkah jarak dari skala tema
+    group="mode"       = radio saling eksklusif
+  Tampilan ditentukan tema, jadi dokumen yang sama tampil benar di Dark maupun
+  Light dan mengikuti aksen pilihan pengguna.
+-->
+<window theme-mode="dark" theme-accent="purple">
+
+    <vbox spacing="md">
+
+        <label text="XML Settings"/>
+
+        <grid rows="3" cols="2" gap="8">
+            <label row="0" col="0" text="Theme"/>
+            <combobox id="theme" row="0" col="1" width="140">
+                <item text="Dark"/>
+                <item text="Light"/>
+            </combobox>
+
+            <label row="1" col="0" text="Notify"/>
+            <checkbox id="notif" row="1" col="1" text="Enabled"/>
+
+            <label row="2" col="0" text="Mode"/>
+            <hbox row="2" col="1" spacing="sm">
+                <radio id="m1" text="Basic" group="mode" selected="true"/>
+                <radio id="m2" text="Advanced" group="mode"/>
+            </hbox>
+        </grid>
+
+        <separator/>
+
+        <section title="Identity" spacing="sm">
+            <textbox id="name" width="200" text="kyuzen" tooltip="User name"/>
+            <slider id="vol" min="0" max="10" value="7"/>
+        </section>
+
+        <hbox spacing="sm">
+            <button id="apply" text="Apply" variant="primary"/>
+            <button id="cancel" text="Cancel"/>
+        </hbox>
+
+        <label id="status" text="Ready"/>
+
+    </vbox>
+</window>

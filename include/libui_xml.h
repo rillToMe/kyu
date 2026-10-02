@@ -18,6 +18,21 @@ extern "C" {
 // deterministik, error berposisi baris/kolom. Inflasi TRANSaksional:
 // gagal di tengah -> semua widget yang dibuat dihancurkan, window
 // tak tersentuh. Lihat docs/design/gui/ui-xml-phase-e.md.
+//
+// PEMBAGIAN TANGGUNG JAWAB (aturan desain, bukan sekadar konvensi):
+//   XML memuat STRUKTUR dan SEMANTIK: elemen apa, urutan apa, teks apa,
+//   peran apa ("primary", "chevron", "settings").
+//   TEMA memuat TAMPILAN: warna, radius, jarak, ukuran, tipografi.
+// Karena itu TIDAK ADA atribut `color=`, `radius=`, `padding=`, `shadow=`.
+// Kalau sebuah nilai visual tidak bisa diambil dari tema, itu tanda tokennya
+// perlu ditambah di libui — bukan tanda XML perlu atribut baru.
+//
+// Atribut yang memang SEMANTIK (bukan visual) dan karena itu ada:
+//   variant="primary|secondary|tertiary|danger"  — peran aksi
+//   icon="settings"                              — nama ikon semantik
+//   spacing="xs|sm|md|lg|xl"                     — jarak antar anak
+//   size="sm|md|lg|xl"                           — ukuran optik ikon
+//   theme-mode/theme-accent                      — pilihan tema pengguna
 // ============================================================
 
 typedef struct ui_xml_doc ui_xml_doc_t;   // pohon XML hasil parse (milik pemanggil)

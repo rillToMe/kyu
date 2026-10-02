@@ -1,48 +1,57 @@
-// libs/widget/include/primitives/textbox.hpp — dipindah apa adanya dari apps/libui.cpp.
+// libs/widget/include/primitives/textbox.hpp — input teks satu baris.
+//
+// Bahasa visual input KyuzenOS:
+//   * Permukaan TERBENAM (surface_variant) — input adalah "lubang" di halaman,
+//     bukan tombol. Ini pembeda utama dari tombol, dan alasannya kenapa input
+//     tidak butuh bayangan.
+//   * Border 1px: subtle → hover → focus. Fokus juga menambah caret, jadi
+//     posisi kursor selalu terlihat walau teks kosong.
+//   * Teks DIGESER (scroll horizontal) saat lebih panjang dari lebar kontrol.
+//     Tanpa ini, nama berkas panjang hilang begitu saja di luar kotak.
+//
+// Kontrak lama yang dipertahankan: `replace_next` (select-all untuk ganti-nama
+// inline), `enter_cb`, dan `set_error()`.
 #ifndef KWIDGET_PRIMITIVES_TEXTBOX_HPP
 #define KWIDGET_PRIMITIVES_TEXTBOX_HPP
 
 #include "core/widget.hpp"
 #include "core/painter.hpp"
+#include "core/state.hpp"
 #include "services/clipboard.hpp"
 
 namespace ui {
 
-// ------------------------------------------------------------
-// TextBox — input satu baris; fokus keyboard via klik (Phase 7)
-// ------------------------------------------------------------
 class TextBox : public Widget {
 public:
     enum { MAX_TEXT = 256 };
     char text[MAX_TEXT];
     int cur;                    // posisi kursor (indeks karakter)
-    bool hover;                 // Phase B: border menegas saat hover
-    // Phase C: error = border danger (+ tint background); validasi milik app.
+    bool hover;
     bool error;
     // Seluruh isi "terpilih": tombol pengubah teks berikutnya MENGGANTI isi
-    // alih-alih menambah (semantik ganti-nama Explorer). Hanya penanda visual
-    // (isi tetap digambar sebagai blok terpilih), bukan state editor: widget ini
-    // tidak punya seleksi/klip seperti TextEdit.
+    // alih-alih menambah (semantik ganti-nama Explorer).
     bool replace_next;
     ui_click_cb enter_cb;
     void* enter_data;
 
-    TextBox(int width) : cur(0), hover(false), error(false), replace_next(false),
-                         enter_cb(0), enter_data(0) {
-        w = width; h = 24;
+    TextBox(int width)
+        : cur(0), hover(false), error(false), replace_next(false),
+          enter_cb(0), enter_data(0) {
+        const Metrics m;
+        w = width;
+        h = m.control_h;
         text[0] = '\0';
         cursor_kind = UI_CURSOR_IBEAM;
     }
     void set_text(const char* t) {
-        int n = 0; while (t[n] && n < MAX_TEXT - 1) n++;
+        int n = 0;
+        if (t) while (t[n] && n < MAX_TEXT - 1) n++;
         for (int i = 0; i < n; i++) text[i] = t[i];
         text[n] = '\0';
         cur = n;
         replace_next = false;   // isi baru dari kode bukan target ganti
         mark_dirty();
     }
-    // Tandai seluruh isi terpilih (ganti-nama inline: nama lama langsung bisa
-    // ditimpa). Enter tetap memakai isi apa adanya.
     void select_all() {
         int n = 0; while (text[n]) n++;
         replace_next = (n > 0);
@@ -50,44 +59,76 @@ public:
         mark_dirty();
     }
     void drop_pending() { replace_next = false; }
-    // Phase C: error state (state + rendering saja; validasi milik aplikasi).
-    void set_error(bool on) {
-        if (error == on) return;
-        error = on;
+    void set_error(bool onv) {
+        if (error == onv) return;
+        error = onv;
         mark_dirty();
     }
     virtual bool focusable() override { return enabled; }
-    virtual void set_hover(bool on) override { hover = on; mark_dirty(); }
+    virtual void set_hover(bool onv) override {
+        if (hover == onv) return;
+        hover = onv;
+        mark_dirty();
+    }
     virtual void draw(Painter& p) override {
-        color_t txt = enabled ? p.theme.text : p.theme.text_disabled;
-        // Error: tint danger di background + border danger (unfocused).
-        // Fokus + error coexist: border tetap focus ring, tint tetap terlihat.
-        color_t bg = (enabled && error) ? theme_mix(p.theme.danger, p.theme.surface, 26)
-                                        : p.theme.surface;
-        p.rect(x, y, w, h, bg);
-        // Border 1px: subtle saat normal, menegas saat hover, danger saat
-        // error, focus saat fokus (prioritas tertinggi).
-        color_t border = !enabled      ? p.theme.border_subtle
-                       : has_focus     ? p.theme.focus
-                       : error         ? p.theme.danger
-                       : hover         ? p.theme.border
-                                       : p.theme.border_subtle;
-        p.rect(x, y, w, 1, border);
-        p.rect(x, y + h - 1, w, 1, border);
-        p.rect(x, y, 1, h, border);
-        p.rect(x + w - 1, y, 1, h, border);
+        const Metrics& m = p.theme.metrics;
+        const TypeRole& role = p.theme.type.body;
+        StateInputs st;
+        st.hover = hover;
+        st.focused = has_focus;
+        st.enabled = enabled;
+        st.invalid = error;
+
+        // Permukaan TERBENAM: input = "lubang" di halaman, bukan tombol.
+        // (Ini yang membedakan input dari Button tanpa perlu bayangan.)
+        color_t bg = p.theme.surface_variant;
+        if (enabled && error) bg = theme_mix(p.theme.danger, bg, 26);
+        const int r = m.radius_control;
+        p.surface(x, y, w, h, bg, r);
+        color_t bd = state_border_quiet(p.theme, st);
+        if (enabled && has_focus) bd = p.theme.focus;
+        p.rrect_border(x, y, w, h, r, bd, 255);
+
+        const int pad = m.sm + 2;          // 10px: sejajar optik dengan tombol
+        const int avail = w - 2 * pad;
+        if (avail <= 0) return;
+        const int adv = glyph::ADVANCE;
+        int visible = avail / adv;
+        if (visible < 1) visible = 1;
+
+        // Scroll horizontal: jaga caret tetap terlihat. `first` = indeks
+        // karakter pertama yang digambar.
+        int first = 0;
+        if (cur > visible) first = cur - visible;
+        if (first > 0 && text[first - 1] == '\0') first--;
+
+        int ty = y + text_vcenter(h);
+        // Blok "akan diganti" (select-all) — tinta seleksi, bukan kotak baru.
         if (has_focus && replace_next) {
-            int n = 0; while (text[n]) n++;          // blok terpilih = akan diganti
-            p.rect(x + 4, y + 4, n * 8, 16, p.theme.surface_elevated);
+            int n = 0; while (text[n]) n++;
+            int vn = n - first;
+            if (vn > visible) vn = visible;
+            if (vn > 0) p.rect(x + pad, y + (h - glyph::HEIGHT) / 2,
+                               vn * adv, glyph::HEIGHT, p.theme.selection);
         }
-        p.text(text, x + 4, y + 4, txt);
-        if (has_focus && enabled) p.rect(x + 4 + cur * 8, y + 4, 1, 16, p.theme.focus);
+        color_t txt = state_text(p.theme, st);
+        if (text[first]) {
+            p.set_clip(x + pad, y, avail, h);
+            p.text_role(text + first, x + pad, ty, txt, role);
+            p.clear_clip();
+        }
+        if (has_focus && enabled) {
+            int cx = x + pad + (cur - first) * adv;
+            if (cx >= x + pad && cx < x + pad + avail)
+                p.rect(cx, y + (h - glyph::HEIGHT) / 2, 1, glyph::HEIGHT,
+                       p.theme.caret);
+        }
     }
     virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
         if (!enabled) return;
         mark_dirty();   // teks/kursor/kotak fokus bisa berubah
-        // Phase 9: Ctrl+C/X/V = clipboard (salurkan via P1 dasar 'c'/'x'/'v',
-        // plus control-code variant 0x03/0x18/0x16 bila driver memetakannya).
+        // Ctrl+C/X/V = clipboard (P1 dasar 'c'/'x'/'v', plus control-code
+        // variant 0x03/0x18/0x16 bila driver memetakannya).
         if (mods & KEY_MOD_CTRL) {
             switch (ascii) {
             case 'c': case 'C': case 0x03: clipboard_set(text); break;

@@ -1,4 +1,9 @@
-// libs/widget/include/chrome/statusbar.hpp — dipindah apa adanya dari apps/libui.cpp.
+// libs/widget/include/chrome/statusbar.hpp — pita status di dasar window.
+//
+// Statusbar = pita chrome (sama dengan menubar) dengan garis 1px di ATASNYA
+// sebagai batas dari area isi. Isinya selalu dua kolom: teks kiri = posisi
+// (primer), teks kanan = info dokumen (sekunder). Hierarki lewat tone, bukan
+// lewat warna khusus.
 #ifndef KWIDGET_CHROME_STATUSBAR_HPP
 #define KWIDGET_CHROME_STATUSBAR_HPP
 
@@ -7,16 +12,15 @@
 
 namespace ui {
 
-// ------------------------------------------------------------
-// StatusBar — pita status di dasar window (gaya Notepad Windows):
-// garis pemisah 1px di atas, teks kiri (Ln/Col) + teks kanan (info dokumen).
-// ------------------------------------------------------------
 class StatusBar : public Widget {
 public:
     char* left;
     char* right;
 
-    StatusBar() : left(0), right(0) { w = 0; h = 20; }
+    StatusBar() : left(0), right(0) {
+        w = 0;
+        h = chrome::STATUSBAR_H;
+    }
     virtual ~StatusBar() { _ui_free(left); _ui_free(right); }
 
     void set_text(const char* l, const char* r) {
@@ -29,15 +33,18 @@ public:
         mark_dirty();
     }
     virtual void draw(Painter& p) override {
-        // Status bar = permukaan "chrome" (senada menubar) + divider 1px di
-        // atasnya sebagai batas dari area teks.
+        const Metrics& m = p.theme.metrics;
+        const TypeRole& role = p.theme.type.caption;
         p.rect(x, y, w, h, p.theme.chrome);
-        p.rect(x, y, w, 1, p.theme.divider);
-        // Kiri = posisi primer (teks), kanan = info dokumen (sekunder).
-        if (left) p.text(left, x + 8, y + (h - 16) / 2, p.theme.text);
+        p.rect(x, y, w, 1, p.theme.border_subtle);
+        int ty = y + text_vcenter(h);
+        if (left) {
+            p.text_ellipsis(left, x + m.sm, ty, w - 2 * m.sm, p.theme.text_secondary,
+                            role);
+        }
         if (right) {
-            int tw = _ui_strlen(right) * 8;
-            p.text(right, x + w - tw - 8, y + (h - 16) / 2, p.theme.text_secondary);
+            int tw = _ui_strlen(right) * glyph::ADVANCE;
+            p.text(right, x + w - tw - m.sm, ty, p.theme.text_tertiary);
         }
     }
 };

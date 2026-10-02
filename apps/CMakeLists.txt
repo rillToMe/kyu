@@ -58,13 +58,22 @@ set(_terminal_libs
 # Most GUI apps are compiled -O0 (CFLAGS_APP). Two exceptions:
 #   viewer  -O2  (it decodes images; deliberately optimised)
 #   clock        (uses the C SDK — built separately below)
-foreach(_app calc notepad widget_demo xml_demo)
+foreach(_app calc notepad widget_demo)
     kyuzen_add_plain_app(kyuzen-${_app}
         SOURCES "${_apps_dir}/${_app}.c"
         LIBS    ${_gui_libs}
     )
     list(APPEND KYUZEN_APP_TARGETS kyuzen-${_app})
 endforeach()
+
+# xml_demo memakai DOKUMEN XML nyata (ui/xml/xml_demo.xml) yang di-embed saat
+# build — bukan string literal di .c. Lihat cmake/KyuzenUiXml.cmake.
+kyuzen_add_plain_app(kyuzen-xml_demo
+    SOURCES "${_apps_dir}/xml_demo.c"
+    LIBS    ${_gui_libs}
+)
+kyuzen_embed_xml(kyuzen-xml_demo SOURCES xml_demo.xml)
+list(APPEND KYUZEN_APP_TARGETS kyuzen-xml_demo)
 
 # viewer is the one GUI app compiled with CFLAGS_LIB (-O2) because it decodes
 # images. Using the app flag set (-O0) here changes the generated code and
@@ -243,6 +252,19 @@ _kyuzen_add_cpp_toolkit_app(imageview
 )
 list(APPEND KYUZEN_APP_TARGETS kyuzen-imageview)
 
+# uigallery — Galeri UI libui (referensi visual design system KyuzenOS).
+#
+# Ini aplikasi REFERENSI, bukan demo sekali pakai: ia menampilkan seluruh
+# widget produksi beserta state-nya (normal/hover/pressed/focused/disabled),
+# di kedua mode tema, dan menjadi patokan visual untuk app baru. Dibangun
+# dengan resep C++ toolkit yang sama dengan gallery/imageview.
+_kyuzen_add_cpp_toolkit_app(uigallery
+    SOURCES
+        "${_apps_dir}/uigallery/main.cpp"
+        "${_apps_dir}/uigallery/gallery.cpp"
+)
+list(APPEND KYUZEN_APP_TARGETS kyuzen-uigallery)
+
 # ===========================================================================
 # D. Test ELFs — run inside QEMU, link userlib only.
 # ===========================================================================
@@ -352,6 +374,12 @@ kyuzen_add_sdk_app(kyuzen-settings
     INCLUDES "${KYUZEN_ROOT}/libs/text/include"
 )
 set_target_properties(kyuzen-settings PROPERTIES OUTPUT_NAME "settings")
+# Form deklaratif Settings hidup sebagai file .xml di ui/xml/ dan di-embed
+# saat build (bukan string literal di .cpp) — lihat cmake/KyuzenUiXml.cmake.
+kyuzen_embed_xml(kyuzen-settings
+    SOURCES settings_appearance.xml
+    CONSUMERS kyuzen-settings-objects
+)
 list(APPEND KYUZEN_APP_TARGETS kyuzen-settings)
 
 # --- taskmgr -----------------------------------------------------------------

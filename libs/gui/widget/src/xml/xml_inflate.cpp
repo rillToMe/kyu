@@ -14,6 +14,8 @@
 #include "primitives/button.hpp"
 #include "primitives/textbox.hpp"
 #include "primitives/checkbox.hpp"
+#include "primitives/switch.hpp"
+#include "primitives/iconview.hpp"
 #include "primitives/radio.hpp"
 #include "primitives/slider.hpp"
 #include "primitives/progressbar.hpp"
@@ -27,6 +29,7 @@
 #include "containers/tab.hpp"
 #include "containers/scrollview.hpp"
 #include "containers/grid.hpp"
+#include "containers/section.hpp"
 #include "window/window.hpp"
 
 namespace ui {
@@ -97,6 +100,51 @@ static int parse_variant(const char* s, int* out) {
     if (seq(s, "secondary")) { *out = UI_BUTTON_SECONDARY; return 1; }
     if (seq(s, "primary")) { *out = UI_BUTTON_PRIMARY; return 1; }
     if (seq(s, "danger")) { *out = UI_BUTTON_DANGER; return 1; }
+    if (seq(s, "tertiary")) { *out = UI_BUTTON_TERTIARY; return 1; }
+    return 0;
+}
+
+// Nama ikon -> UI_ICON_*. XML memakai NAMA SEMANTIK (bukan angka) supaya
+// dokumen tetap terbaca dan tahan terhadap penambahan ikon di masa depan.
+// Daftar ini harus sejajar dengan theme/icons.hpp.
+static int parse_icon(const char* s, int* out) {
+    struct Entry { const char* name; int id; };
+    static const Entry tab[] = {
+        { "none", UI_ICON_NONE },
+        { "chevron-right", UI_ICON_CHEVRON_RIGHT },
+        { "chevron-down", UI_ICON_CHEVRON_DOWN },
+        { "chevron-left", UI_ICON_CHEVRON_LEFT },
+        { "chevron-up", UI_ICON_CHEVRON_UP },
+        { "arrow-right", UI_ICON_ARROW_RIGHT },
+        { "expand", UI_ICON_EXPAND },
+        { "collapse", UI_ICON_COLLAPSE },
+        { "close", UI_ICON_CLOSE },
+        { "check", UI_ICON_CHECK },
+        { "plus", UI_ICON_PLUS },
+        { "minus", UI_ICON_MINUS },
+        { "search", UI_ICON_SEARCH },
+        { "refresh", UI_ICON_REFRESH },
+        { "more", UI_ICON_MORE },
+        { "edit", UI_ICON_EDIT },
+        { "trash", UI_ICON_TRASH },
+        { "folder", UI_ICON_FOLDER },
+        { "file", UI_ICON_FILE },
+        { "image", UI_ICON_IMAGE },
+        { "home", UI_ICON_HOME },
+        { "star", UI_ICON_STAR },
+        { "settings", UI_ICON_SETTINGS },
+        { "display", UI_ICON_DISPLAY },
+        { "palette", UI_ICON_PALETTE },
+        { "font", UI_ICON_FONT },
+        { "network", UI_ICON_NETWORK },
+        { "power", UI_ICON_POWER },
+        { "info", UI_ICON_INFO },
+        { "warning", UI_ICON_WARNING },
+        { "error", UI_ICON_ERROR },
+        { 0, 0 }
+    };
+    for (int i = 0; tab[i].name; i++)
+        if (seq(s, tab[i].name)) { *out = tab[i].id; return 1; }
     return 0;
 }
 static int parse_orient(const char* s, int* out) {
@@ -355,8 +403,19 @@ static Built make_button(Context* ctx, Node* nd, Error* err) {
         }
         w->set_variant(vv);
     }
+    // Ikon tombol (nama semantik, bukan angka).
+    const char* ic = getattr(nd, "icon");
+    if (ic) {
+        int iv = 0;
+        if (!parse_icon(ic, &iv)) {
+            set_error(err, INVALID_VALUE, nd->line, nd->column, nd->name, "icon");
+            delete w;
+            return fail_built();
+        }
+        w->set_icon(iv);
+    }
     if (!apply_generic(ctx, nd, w, K_BUTTON, 1, 1, err)) { delete w; return fail_built(); }
-    static const char* bkeep[] = { "text", "variant", 0 };
+    static const char* bkeep[] = { "text", "variant", "icon", 0 };
     if (!reject_extra(nd, bkeep, err)) { delete w; return fail_built(); }
     if (nd->nchild > 0) {
         set_error(err, BAD_CHILD, nd->children[0]->line, nd->children[0]->column,
@@ -436,6 +495,85 @@ static Built make_checkbox(Context* ctx, Node* nd, Error* err) {
     if (!apply_generic(ctx, nd, c, K_CHECKBOX, 1, 1, err)) { delete c; return fail_built(); }
     if (!no_children(nd, err)) { delete c; return fail_built(); }
     return make_built(c, K_CHECKBOX);
+}
+
+// Switch — toggle pengaturan (berlaku segera). Pasangan <checkbox> yang
+// merupakan bagian FORM: XML menyediakan keduanya karena keduanya primitif
+// berbeda dalam bahasa visual KyuzenOS.
+static Built make_switch(Context* ctx, Node* nd, Error* err) {
+    static const char* keep[] = { "text", "on", 0 };
+    const char* t = getattr(nd, "text");
+    Switch* s = new Switch(t ? t : "");
+    if (!s) { set_error(err, OOM, nd->line, nd->column, nd->name, 0); return fail_built(); }
+    const char* on = getattr(nd, "on");
+    if (on) {
+        int v = 0;
+        if (!parse_boolval(on, &v)) {
+            set_error(err, INVALID_VALUE, nd->line, nd->column, nd->name, "on");
+            delete s;
+            return fail_built();
+        }
+        s->set_on(v != 0, false);   // diam
+    }
+    if (!reject_extra(nd, keep, err)) { delete s; return fail_built(); }
+    if (!apply_generic(ctx, nd, s, K_SWITCH, 1, 1, err)) { delete s; return fail_built(); }
+    if (!no_children(nd, err)) { delete s; return fail_built(); }
+    return make_built(s, K_SWITCH);
+}
+
+// Icon — ikon mandiri (mis. penanda di dalam hbox). Ukuran dari atribut
+// `size` (token sm/md/lg/xl) atau px eksplisit.
+static Built make_icon(Context* ctx, Node* nd, Error* err) {
+    static const char* keep[] = { "icon", "size", 0 };
+    const char* ic = getattr(nd, "icon");
+    int iv = UI_ICON_NONE;
+    if (!ic || !parse_icon(ic, &iv)) {
+        set_error(err, ic ? INVALID_VALUE : MISSING_ATTRIBUTE, nd->line,
+                  nd->column, nd->name, "icon");
+        return fail_built();
+    }
+    int size = UI_ICON_SIZE_MD;
+    const char* sz = getattr(nd, "size");
+    if (sz) {
+        if (seq(sz, "sm")) size = UI_ICON_SIZE_SM;
+        else if (seq(sz, "md")) size = UI_ICON_SIZE_MD;
+        else if (seq(sz, "lg")) size = UI_ICON_SIZE_LG;
+        else if (seq(sz, "xl")) size = UI_ICON_SIZE_XL;
+        else {
+            set_error(err, INVALID_VALUE, nd->line, nd->column, nd->name, "size");
+            return fail_built();
+        }
+    }
+    IconView* w = new IconView(iv, size);
+    if (!w) { set_error(err, OOM, nd->line, nd->column, nd->name, 0); return fail_built(); }
+    if (!reject_extra(nd, keep, err)) { delete w; return fail_built(); }
+    if (!apply_generic(ctx, nd, w, K_ICON, 1, 1, err)) { delete w; return fail_built(); }
+    if (!no_children(nd, err)) { delete w; return fail_built(); }
+    return make_built(w, K_ICON);
+}
+
+// Section — bagian berjudul. Ini elemen STRUCTURAL paling penting untuk
+// halaman pengaturan: hierarki dibangun oleh tipografi (judul + garis),
+// bukan oleh kartu.
+static Built make_section(Context* ctx, Node* nd, Error* err) {
+    static const char* keep[] = { "title", "spacing", 0 };
+    const char* t = getattr(nd, "title");
+    if (!t) {
+        set_error(err, MISSING_ATTRIBUTE, nd->line, nd->column, nd->name, "title");
+        return fail_built();
+    }
+    int sp = UI_SPACE_SM;
+    const char* sps = getattr(nd, "spacing");
+    if (sps && !parse_spacing(sps, &sp)) {
+        set_error(err, INVALID_VALUE, nd->line, nd->column, nd->name, "spacing");
+        return fail_built();
+    }
+    Section* s = new Section(t, sp);
+    if (!s) { set_error(err, OOM, nd->line, nd->column, nd->name, 0); return fail_built(); }
+    if (!inflate_list_children(ctx, nd, s, err)) { delete s; return fail_built(); }
+    if (!reject_extra(nd, keep, err)) { delete s; return fail_built(); }
+    if (!apply_generic(ctx, nd, s, K_SECTION, 1, 1, err)) { delete s; return fail_built(); }
+    return make_built(s, K_SECTION);
 }
 
 static Built make_radio(Context* ctx, Node* nd, Error* err) {
@@ -964,6 +1102,9 @@ static Built inflate_widget(Context* ctx, Node* nd, Error* err) {
     if (seq(n, "button")) return make_button(ctx, nd, err);
     if (seq(n, "textbox")) return make_textbox(ctx, nd, err);
     if (seq(n, "checkbox")) return make_checkbox(ctx, nd, err);
+    if (seq(n, "switch")) return make_switch(ctx, nd, err);
+    if (seq(n, "icon")) return make_icon(ctx, nd, err);
+    if (seq(n, "section")) return make_section(ctx, nd, err);
     if (seq(n, "radio")) return make_radio(ctx, nd, err);
     if (seq(n, "combobox")) return make_combo(ctx, nd, err);
     if (seq(n, "slider")) return make_slider(ctx, nd, err);

@@ -1,24 +1,31 @@
-// libs/widget/include/chrome/menu.hpp — dipindah apa adanya dari apps/libui.cpp.
+// libs/widget/include/chrome/menu.hpp — Menu (popup) + MenuBar.
+//
+// BAHASA VISUAL MENU
+//   * Permukaan popup = `panel` (satu level lebih terang dari halaman) +
+//     border 1px + radius CONTAINER. Bayangan datang dari level elevasi
+//     POPUP di Window::render — menu tidak menggambar bayangannya sendiri.
+//   * Baris 24px, hover memakai surface_hover (bukan aksen penuh): menu
+//     adalah daftar pilihan, bukan tombol.
+//   * Kolom aksen kiri (gutter) hanya muncul saat ada item ber-centang,
+//     supaya menu tanpa centang tidak punya ruang kosong menggantung.
+//   * Accelerator ("Ctrl+S") memakai text_tertiary — lebih tenang dari label,
+//     bukan warna kuning yang bersaing dengan isi menu.
+//   * Ikon centang dari SISTEM IKON, bukan kotak aksen.
 #ifndef KWIDGET_CHROME_MENU_HPP
 #define KWIDGET_CHROME_MENU_HPP
 
 #include "core/widget.hpp"
 #include "core/painter.hpp"
 #include "core/theme.hpp"
+#include "core/state.hpp"
 
 namespace ui {
 
 class Window;   // fwd: Menu pegang Window* — TIDAK include window.hpp
 
-// ------------------------------------------------------------
-// Menu (popup) + MenuBar (bar title full-width).
-// Menu::on_click & MenuBar::on_click/draw butuh Window lengkap
-// (popup handling) → didefinisikan setelah class Window.
-// ------------------------------------------------------------
-
 class Menu : public Widget {
 public:
-    // Item gaya menu Windows: label kiri, accelerator rata kanan, garis
+    // Item gaya menu desktop: label kiri, accelerator rata kanan, garis
     // pemisah, tanda centang, dan status enabled/disabled (redup).
     struct Item {
         char* label;
@@ -29,41 +36,51 @@ public:
         bool checked;
         bool disabled;
     };
-    enum { MAX_ITEMS = 20, ROW_H = 22, SEP_H = 9 };
+    enum { MAX_ITEMS = 20 };
     Item items[MAX_ITEMS];
     int n, hover_idx;
     Window* win;
 
     Menu(Window* w) : n(0), hover_idx(-1), win(w) {
-        this->w = 150; h = 4;
+        this->w = 150;
+        h = 4;
     }
     virtual ~Menu() {
         for (int i = 0; i < n; i++) { _ui_free(items[i].label); _ui_free(items[i].acc); }
     }
-    int row_h(int i) const { return items[i].sep ? SEP_H : ROW_H; }
-    // Y layar baris ke-i — dijumlah dari baris sebelumnya, jadi baris pemisah
-    // (tinggi berbeda) tidak merusak hit-test seperti rumus i*20.
+    int row_h(int i) const {
+        return items[i].sep ? chrome::MENU_SEP_H : chrome::MENU_ROW_H;
+    }
+    // Y baris ke-i — dijumlah dari baris sebelumnya, jadi baris pemisah
+    // (tinggi berbeda) tidak merusak hit-test.
     int row_y(int i) const {
         int o = 2;
         for (int j = 0; j < i; j++) o += row_h(j);
         return y + o;
     }
+    // Apakah menu ini punya item ber-centang? Menentukan kolom gutter.
+    bool any_checked() const {
+        for (int i = 0; i < n; i++)
+            if (!items[i].sep && items[i].checked) return true;
+        return false;
+    }
     // Ukuran dari isi: baris terpanjang + kolom accelerator + gutter centang.
     void relayout() {
-        int hh = 4, need = 130;
+        const Metrics m;
+        int hh = 2 * m.xs, need = 140;
+        bool gutter = any_checked();
         for (int i = 0; i < n; i++) {
             hh += row_h(i);
             if (items[i].sep) continue;
-            int t = _ui_strlen(items[i].label) * 8 + 40;
-            if (items[i].acc) t += _ui_strlen(items[i].acc) * 8 + 24;
+            int t = _ui_strlen(items[i].label) * glyph::ADVANCE + 2 * m.md;
+            if (gutter) t += m.icon_md + m.sm;
+            if (items[i].acc) t += _ui_strlen(items[i].acc) * glyph::ADVANCE + m.lg;
             if (t > need) need = t;
         }
         // Menu bisa MENGCIL setelah relayout (w awal 150 → 130 untuk item
         // pendek). Tandai dulu bounds LAMA, baru bounds BARU: tanpa itu area
         // bekas menu yang lebih besar tak pernah diminta digambar ulang dan
-        // sisa render lama (ghosting) tetap kelihatan. mark_area() sendiri
-        // sudah meng-union rect yang di-mark (lihat Widget::mark_area), jadi
-        // dua panggilan ini menghasilkan union lama∪baru.
+        // sisa render lama (ghosting) tetap kelihatan.
         mark_area(x, y, w, h);
         h = hh;
         w = need;
@@ -89,14 +106,15 @@ public:
         relayout();
         mark_dirty();
     }
-    void set_checked(int i, int on) {
+    void set_checked(int i, int onv) {
         if (i < 0 || i >= n) return;
-        items[i].checked = (on != 0);
-        mark_item(i);
+        items[i].checked = (onv != 0);
+        relayout();          // gutter bisa muncul/hilang
+        mark_dirty();
     }
-    void set_enabled(int i, int on) {
+    void set_enabled(int i, int onv) {
         if (i < 0 || i >= n) return;
-        items[i].disabled = (on == 0);
+        items[i].disabled = (onv == 0);
         mark_item(i);
     }
     // Baris di (mx,my); -1 bila di luar, baris pemisah, atau disabled.
@@ -113,7 +131,9 @@ public:
         if (i < 0 || i >= n) return;
         mark_area(x, row_y(i), w, row_h(i));
     }
-    virtual void set_hover(bool on) override { if (!on && hover_idx >= 0) { mark_item(hover_idx); hover_idx = -1; } }
+    virtual void set_hover(bool onv) override {
+        if (!onv && hover_idx >= 0) { mark_item(hover_idx); hover_idx = -1; }
+    }
     virtual bool track_hover(int mx, int my) override {
         int i = -1;
         for (int k = 0; k < n; k++) {
@@ -130,31 +150,44 @@ public:
         return true;
     }
     virtual void draw(Painter& p) override {
-        // Popup menu = permukaan "panel" (lebih terang dari editor, senada
-        // modal) + border halus, bukan kotak putih kontras.
-        p.rect(x, y, w, h, p.theme.panel);
-        p.rect(x, y, w, 1, p.theme.mborder);
-        p.rect(x, y + h - 1, w, 1, p.theme.mborder);
-        p.rect(x, y, 1, h, p.theme.mborder);
-        p.rect(x + w - 1, y, 1, h, p.theme.mborder);
+        const Metrics& m = p.theme.metrics;
+        const TypeRole& role = p.theme.type.label;
+        const int r = m.radius_container;
+        // Permukaan popup + border 1px. Bayangan digambar Window (elevasi).
+        p.surface(x, y, w, h, p.theme.panel, r);
+        p.rrect_border(x, y, w, h, r, p.theme.border, 255);
+        const bool gutter = any_checked();
         for (int i = 0; i < n; i++) {
             int ry = row_y(i);
             if (items[i].sep) {
-                p.rect(x + 8, ry + SEP_H / 2, w - 16, 1, p.theme.divider);
+                p.rect(x + m.md, ry + chrome::MENU_SEP_H / 2, w - 2 * m.md, 1,
+                       p.theme.border_subtle);
                 continue;
             }
-            if (i == hover_idx) p.rect(x + 1, ry, w - 2, ROW_H, p.theme.surface_elevated);
-            // Kolom centang (View > Word Wrap) — kotak accent, bukan glyph,
-            // karena font bitmap toolkit hanya punya ASCII.
-            if (items[i].checked) p.rect(x + 8, ry + (ROW_H - 8) / 2, 8, 8, p.theme.accent);
+            // Hover: inset 2px dari tepi supaya tidak menabrak border popup.
+            if (i == hover_idx)
+                p.rect(x + 2, ry, w - 4, chrome::MENU_ROW_H, p.theme.surface_hover);
+            int tx = x + m.md;
+            if (gutter) {
+                if (items[i].checked) {
+                    color_t ck = items[i].disabled ? p.theme.text_disabled
+                                                   : p.theme.accent;
+                    p.icon(ICON_CHECK, x + m.md + m.icon_md / 2, ry + chrome::MENU_ROW_H / 2,
+                           m.icon_md, ck);
+                }
+                tx += m.icon_md + m.sm;
+            }
             color_t fg = items[i].disabled ? p.theme.text_disabled : p.theme.text;
-            p.text(items[i].label, x + 24, ry + (ROW_H - 16) / 2, fg);
+            int ty = ry + text_vcenter(chrome::MENU_ROW_H);
             if (items[i].acc) {
-                // Shortcut ("Ctrl+S") pakai warna aksen khusus agar menonjol
-                // dari deskripsi fungsinya (gaya hint kuning VS Code).
-                int aw = _ui_strlen(items[i].acc) * 8;
-                p.text(items[i].acc, x + w - aw - 12, ry + (ROW_H - 16) / 2,
-                       items[i].disabled ? fg : p.theme.acc_text);
+                int aw = _ui_strlen(items[i].acc) * glyph::ADVANCE;
+                // Accelerator dipotong agar tidak menabrak label.
+                int lw = w - (tx - x) - aw - 2 * m.md;
+                p.text_ellipsis(items[i].label, tx, ty, lw, fg, role);
+                p.text(items[i].acc, x + w - aw - m.md, ty,
+                       items[i].disabled ? p.theme.text_disabled : p.theme.text_tertiary);
+            } else {
+                p.text_ellipsis(items[i].label, tx, ty, w - (tx - x) - m.md, fg, role);
             }
         }
     }

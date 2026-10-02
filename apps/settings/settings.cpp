@@ -1,4 +1,13 @@
 // apps/settings/settings.cpp — SettingsApp: window, sidebar, page switching.
+//
+// MIGRASI UI (design system KyuzenOS): logika bisnis TIDAK disentuh. Yang
+// berubah hanya lapisan presentasi:
+//   * sidebar memakai ListView baris KAYA (ikon + judul) dengan padding
+//     konten yang sama dengan halaman, jadi navigasi terbaca sebagai daftar
+//     yang sama dengan isi halaman;
+//   * halaman memakai <section> (judul + garis) alih-alih deretan label
+//     telanjang, sehingga hierarki datang dari tipografi;
+//   * jarak memakai token UI_SPACE_* (bukan angka yang dipilih per baris).
 #include "settings.hpp"
 
 namespace settings {
@@ -6,20 +15,22 @@ namespace settings {
 namespace {
 
 // Sidebar digenerate dari satu koleksi (satu callback generik, bukan satu
-// callback per tombol).
+// callback per tombol). Ikon memakai sistem ikon libui — semantik, bukan
+// glyph: System/Personalization/Appearance/Fonts/About.
 const NavigationItem kNav[] = {
-    {SettingsPage::System, "System"},
-    {SettingsPage::Personalization, "Personalization"},
-    {SettingsPage::Appearance, "Appearance"},
-    {SettingsPage::Fonts, "Fonts"},
-    {SettingsPage::About, "About"},
+    {SettingsPage::System, "System", UI_ICON_DISPLAY},
+    {SettingsPage::Personalization, "Personalization", UI_ICON_IMAGE},
+    {SettingsPage::Appearance, "Appearance", UI_ICON_PALETTE},
+    {SettingsPage::Fonts, "Fonts", UI_ICON_FONT},
+    {SettingsPage::About, "About", UI_ICON_INFO},
 };
 constexpr int kNavCount = 5;
 
-constexpr int kWinW = 720;
-constexpr int kWinH = 520;
-constexpr int kSidebarW = 150;
-constexpr int kGap = 8;
+constexpr int kWinW = 780;
+constexpr int kWinH = 560;
+constexpr int kSidebarW = 190;
+// Jarak antara sidebar dan konten, dan margin tepi konten.
+constexpr int kGap = UI_SPACE_LG;
 
 void onSidebar(void* ud) { SettingsApp::self(ud)->onSidebarChanged(); }
 
@@ -73,21 +84,36 @@ int SettingsApp::run() {
 }
 
 void SettingsApp::buildUi() {
-    const int content_h = 520 - 60;
+    const int content_h = 560 - 60;
     const int content_w = 720 - kSidebarW - kGap * 3;
+
+    // MenuBar + StatusBar: chrome yang sama dengan aplikasi lain. Tanpa ini
+    // Settings terasa seperti dialog, bukan aplikasi.
+    ui_widget_t* bar = ui_menubar_create(win_);
+    ui_menubar_add_menu(bar, "File");
+    ui_menubar_add_menu(bar, "View");
+    ui_menubar_add_menu(bar, "Help");
+    ui_window_add_bar(win_, bar);
+
+    ui_widget_t* sb = ui_statusbar_create(win_);
+    ui_statusbar_set_text(sb, "Settings", "Changes are saved immediately");
+    ui_widget_set_size(sb, 720, UI_SPACE_XL);
+    ui_window_add_bar(win_, sb);
 
     ui_widget_t* root = ui_hbox_create(win_, kGap);
 
+    // Sidebar = daftar bernavigasi: ikon + judul. Barisnya memakai tinggi
+    // daftar standar sehingga sidebar dan halaman sejajar.
     sidebar_ = ui_listview_create(win_, kSidebarW, content_h);
     for (int i = 0; i < kNavCount; i++)
-        ui_listview_add_item(sidebar_, kNav[i].title);
+        ui_listview_add_row(sidebar_, kNav[i].title, 0, kNav[i].icon, 0);
     ui_listview_set_change(sidebar_, onSidebar, this);
     ui_layout_add(root, sidebar_);
 
     // Satu ScrollView menampung semua page; page non-aktif disembunyikan
     // (layout melewati anak tersembunyi — pola bar cari Notepad).
     ui_widget_t* scroll = ui_scrollview_create(win_, content_w, content_h);
-    ui_widget_t* pages = ui_vbox_create(win_, 8);
+    ui_widget_t* pages = ui_vbox_create(win_, UI_SPACE_XL);
 
     system_.build(win_);
     personalization_.build(win_);

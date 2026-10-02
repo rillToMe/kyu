@@ -177,6 +177,23 @@ static void check(int cond, const char* what) {
 }
 
 static uint32_t at(int x, int y) { return g_canvas[y * GW_W + x] & 0xFFFFFFu; }
+
+// Apakah sebuah rect memuat pixel berwarna `c`? Dipakai test yang ingin
+// menyatakan "indikator memakai warna X" tanpa terikat koordinat tetap —
+// geometri widget boleh berubah (dan memang berubah saat redesign) selama
+// warnanya masih benar. Lebih tahan daripada probe satu pixel.
+static int has_color(int x, int y, int w, int h, color_t c) {
+    uint32_t want = color_to_u32(color_opaque(c), FORMAT_ARGB) & 0xFFFFFFu;
+    // Clip ke canvas: pemanggil boleh memberi rect yang menempel tepi.
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > GW_W) w = GW_W - x;
+    if (y + h > GW_H) h = GW_H - y;
+    for (int j = y; j < y + h; j++)
+        for (int i = x; i < x + w; i++)
+            if (at(i, j) == want) return 1;
+    return 0;
+}
 // Piksel eksak peran tema (canvas stub selalu opaque seperti libgui asli).
 static uint32_t role(color_t c) {
     return color_to_u32(color_opaque(c), FORMAT_ARGB) & 0xFFFFFFu;
@@ -655,17 +672,20 @@ int main(void) {
         ui::Painter p(&g_win, t);
 
         // Button secondary: normal/hover/pressed/focused/disabled.
+        // Hover/pressed sekarang dibaca dari TOKEN (surface_hover /
+        // surface_pressed), bukan rumus campuran yang ditulis di test: itulah
+        // kontrak baru — state datang dari tema, bukan dari angka di widget.
         ui::Button sb("OK");
         sb.x = 10; sb.y = 10;
         int sx = sb.x + 3, sy = sb.y + sb.h / 2;
         wipe(); sb.draw(p);
         check(at(sx, sy) == role(t.surface_elevated), "pb: secondary = elevated");
         sb.set_hover(true); wipe(); sb.draw(p);
-        check(at(sx, sy) == role(ui::theme_mix(t.text, t.surface_elevated, 28)) &&
-              at(sx, sy) != role(t.surface_elevated), "pb: hover menegas");
+        check(at(sx, sy) == role(t.surface_hover) &&
+              at(sx, sy) != role(t.surface_elevated), "pb: hover pakai surface_hover");
         sb.on_click(0, 0); wipe(); sb.draw(p);
-        check(at(sx, sy) == role(color_darken(t.surface_elevated, 30)),
-              "pb: pressed menggelap");
+        check(at(sx, sy) == role(t.surface_pressed) &&
+              at(sx, sy) != role(t.surface_hover), "pb: pressed pakai surface_pressed");
         sb.on_release(); sb.set_hover(false); sb.set_focus(true);
         wipe(); sb.draw(p);
         check(at(sb.x + sb.w / 2, sb.y) == role(t.focus), "pb: focus ring terlihat");
@@ -676,6 +696,32 @@ int main(void) {
         check(!sb.pressed && sb.pick(sx, sy) == 0, "pb: disabled tak merespons");
         wipe(); sb.draw(p);
         check(at(sx, sy) == role(t.surface), "pb: disabled stabil saat hover/klik");
+
+        // Button tertiary: tanpa isi/border saat normal → hover yang membuatnya
+        // terlihat. Ini yang mencegah UI penuh kotak; dikunci di sini.
+        {
+            ui::Button tb("Batal");
+            tb.set_variant(UI_BUTTON_TERTIARY);
+            tb.x = 100; tb.y = 100;
+            int tx = tb.x + 3, ty = tb.y + tb.h / 2;
+            wipe(); tb.draw(p);
+            check(at(tx, ty) == role(t.bg) && at(tb.x + tb.w / 2, tb.y) == role(t.bg),
+                  "pb: tertiary tanpa isi & tanpa border");
+            tb.set_hover(true); wipe(); tb.draw(p);
+            check(at(tx, ty) == role(t.surface_hover), "pb: tertiary hover = surface_hover");
+        }
+
+        // Button icon: persegi (lebar == tinggi) dan ikonnya benar-benar
+        // tergambar (ada pixel warna teks di dalam bounds).
+        {
+            ui::Button ib("");
+            ib.set_icon(UI_ICON_CLOSE);
+            ib.x = 10; ib.y = 100;
+            check(ib.w == ib.h && ib.h > 0, "pb: tombol ikon persegi");
+            wipe(); ib.draw(p);
+            check(has_color(ib.x, ib.y, ib.w, ib.h, t.text),
+                  "pb: ikon tombol tergambar (pixel teks ada)");
+        }
 
         // Button primary + danger + keyboard.
         ui::Button pr("Simpan");
@@ -715,33 +761,52 @@ int main(void) {
         tbx.set_enabled(false); wipe(); tbx.draw(p);
         check(at(tbx.x + 40, tbx.y) == role(t.border_subtle), "pb: input disabled stabil");
 
-        // CheckBox: unchecked → checked (isi aksen + centang kontras).
+        // CheckBox: kotak 16px sejajar glyph. Pemeriksaan memakai `has_color`
+        // di dalam kotak (bukan koordinat tetap) supaya geometri boleh
+        // disesuaikan design system tanpa membuat test rapuh.
         ui::CheckBox cbx("Ingat");
         cbx.x = 100; cbx.y = 44;
+        const int BOX = t.metrics.icon_md;
+        const int bby = cbx.y + (cbx.h - BOX) / 2;
         wipe(); cbx.draw(p);
-        check(at(cbx.x + 2, cbx.y + 2) == role(t.surface), "pb: checkbox kosong = surface");
+        check(at(cbx.x + 2, bby + 2) == role(t.surface), "pb: checkbox kosong = surface");
         cbx.set_checked(true); wipe(); cbx.draw(p);
-        check(at(cbx.x + 2, cbx.y + 2) == role(t.accent), "pb: checkbox isi = accent");
-        check(at(cbx.x + 2, cbx.y + 6) == role(t.accent_contrast),
+        check(has_color(cbx.x, bby, BOX, BOX, t.accent), "pb: checkbox isi = accent");
+        check(has_color(cbx.x, bby, BOX, BOX, t.accent_contrast),
               "pb: centang kontras terbaca");
         cbx.set_focus(true); wipe(); cbx.draw(p);
-        check(at(cbx.x, cbx.y + 6) == role(t.focus), "pb: checkbox focus terlihat");
+        check(has_color(cbx.x, bby, BOX, BOX, t.focus), "pb: checkbox focus terlihat");
 
-        // Slider: thumb aksen, track ber-outline, keyboard, disabled.
+        // Slider: handle di kiri saat nilai 0, track terbenam, keyboard,
+        // disabled. Handle kini BULAT (radius pill) — probe titik tengahnya.
         ui::Slider sl(0, 100);
         sl.x = 100; sl.y = 70; sl.w = 100;
         sl.set_value(0);
         int scy = sl.y + sl.h / 2;
+        int shx = sl.x + ui::Slider::HANDLE_W / 2;      // pusat handle di nilai 0
         wipe(); sl.draw(p);
-        check(at(sl.x + 4, scy) == role(t.accent), "pb: slider thumb = accent");
-        check(at(sl.x + 80, scy) == role(t.surface_elevated), "pb: slider track");
-        check(at(sl.x + 80, scy - 3) == role(t.border_subtle), "pb: slider outline");
+        // Outline handle harus UTUH: pixel paling kiri DAN paling kanan
+        // tergambar (regresi yang pernah ada: rrect_border melewatkan tepi
+        // lingkaran, jadi handle/cincin tampak terbuka di sisinya).
+        check(at(sl.x, scy) == role(t.border) &&
+              at(sl.x + ui::Slider::HANDLE_W - 1, scy) == role(t.border),
+              "pb: slider handle ber-outline utuh (kiri+kanan)");
+        check(at(shx, scy) == role(t.surface), "pb: slider handle = permukaan");
+        check(at(sl.x + 80, scy) == role(t.surface_variant), "pb: slider track terbenam");
         sl.set_value(50);
         sl.on_key(0, 0x4B, 0);
         check(sl.val == 49, "pb: slider panah kiri -1");
+        // Fill aksen harus ada di kiri track saat nilai > 0.
+        wipe(); sl.draw(p);
+        check(has_color(sl.x + 2, scy - 1, sl.w / 3, 2, t.accent),
+              "pb: slider fill aksen di kiri");
         sl.set_value(0);
         sl.set_enabled(false); wipe(); sl.draw(p);
-        check(at(sl.x + 4, scy) == role(t.text_disabled), "pb: slider disabled");
+        // Disabled: handle memakai surface_variant + border_subtle (redup),
+        // bukan text_disabled — bentuk kontrol tetap terbaca.
+        check(at(shx, scy) == role(t.surface_variant) &&
+              at(sl.x, scy) == role(t.border_subtle),
+              "pb: slider disabled redup");
 
         // ProgressBar: outline + isi aksen (terlihat di Light).
         ui::ProgressBar pb2(100);
@@ -751,20 +816,32 @@ int main(void) {
         check(at(pb2.x, pb2.y + 8) == role(t.border_subtle), "pb: progress outline");
         check(at(pb2.x + 2, pb2.y + 8) == role(t.accent), "pb: progress isi = accent");
 
-        // Tab: aktif (surface + underline aksen + teks primer) vs
-        // inaktif (teks sekunder).
+        // Tab: strip TENANG — aktif ditandai underline aksen + teks primer,
+        // tidak aktif = latar halaman tanpa kotak. Lebar tab mengikuti judul
+        // (padding token), jadi posisi X dihitung dari API tab, bukan angka.
         ui::Tab tab(160, 60);
         tab.x = 10; tab.y = 50;
         tab.add("Satu", new ui::Label("p1"));
         tab.add("Dua", new ui::Label("p2"));
         wipe(); tab.draw(p);
-        check(at(tab.x + 40, tab.y + ui::Tab::STRIP_H - 1) == role(t.accent),
+        // Underline aksen tab aktif, dicari di seluruh lebar tab 0.
+        check(has_color(tab.title_x(0), tab.y + ui::Tab::STRIP_H - 3,
+                        tab.title_w(0), 3, t.accent),
               "pb: tab aktif underline aksen");
-        check(at(tab.x + 40, tab.y + 4) == role(t.surface), "pb: tab aktif surface");
-        check(at(tab.x + 120, tab.y + 4) == role(t.bg), "pb: tab inaktif = bg");
-        check(tab.track_hover(tab.x + 120, tab.y + 5), "pb: tab hover terlacak");
+        // Tab 1 (tidak aktif) tidak boleh punya underline aksen.
+        check(!has_color(tab.title_x(1), tab.y + ui::Tab::STRIP_H - 3,
+                         tab.title_w(1), 3, t.accent),
+              "pb: tab inaktif tanpa underline");
+        // Latar strip = latar halaman (tab adalah bagian halaman).
+        int strip_mid = tab.y + ui::Tab::STRIP_H / 2 - 8;
+        check(at(tab.title_x(1) + 2, strip_mid) == role(t.bg),
+              "pb: tab inaktif = bg");
+        check(tab.track_hover(tab.title_x(1) + 2, tab.y + 5),
+              "pb: tab hover terlacak");
         wipe(); tab.draw(p);
-        check(at(tab.x + 120, tab.y + 4) == role(t.surface), "pb: tab hover surface");
+        check(has_color(tab.title_x(1), tab.y + 2, tab.title_w(1),
+                        ui::Tab::STRIP_H - 4, t.surface_hover),
+              "pb: tab hover surface_hover");
 
         // Menu: hover subtle + kotak centang aksen.
         // (Canvas stub 240 lebar: paksa dims penuh — stub menulis stride
@@ -779,13 +856,18 @@ int main(void) {
         mm.set_checked(0, 1);
         mm.track_hover(mm.x + 4, mm.row_y(0) + 2);
         wipe(); mm.draw(pm);
-        check(at(mm.x + 2, mm.row_y(0) + 2) == role(mww->theme.surface_elevated),
+        // Hover menu memakai surface_hover (token state), bukan surface_elevated
+        // — elevated sekarang dipakai untuk PERMUKAAN, hover untuk STATE.
+        check(at(mm.x + 2, mm.row_y(0) + 2) == role(mww->theme.surface_hover),
               "pb: menu hover subtle");
-        check(at(mm.x + 10, mm.row_y(0) + 8) == role(mww->theme.accent),
+        // Centang digambar oleh SISTEM IKON, jadi dicari di dalam kolom
+        // gutter (bukan koordinat piksel tetap).
+        check(has_color(mm.x, mm.row_y(0), 24, ui::chrome::MENU_ROW_H,
+                        mww->theme.accent),
               "pb: menu centang = accent");
         ui_window_destroy(mw);
 
-        // Dialog: divider judul + tombol primer/ sekunder.
+        // Dialog: divider judul + tombol primer/sekunder.
         ui_window_t* dw = ui_window_create(200, 120);
         g_win.width = GW_W; g_win.height = GW_H;
         ui::Window* dww = reinterpret_cast<ui::Window*>(dw);
@@ -794,12 +876,20 @@ int main(void) {
         ui::Dialog dg(dww, "Judul", "Isi", btns, 2, 0, 0);
         dg.x = 10; dg.y = 10;
         wipe(); dg.draw(pd);
-        check(at(dg.x + dg.w / 2, dg.y + 32) == role(dww->theme.border_subtle),
-              "pb: dialog divider judul");
+        // Pemisah judul: dicari pada baris tempat pemisah memang digambar
+        // (turunan metrik, bukan angka 32 yang di-hardcode di test).
+        {
+            int div_y = dg.y + dww->theme.metrics.md +
+                        dww->theme.type.title.bitmap_line_h - 2;
+            check(has_color(dg.x, div_y - 1, dg.w, 3,
+                            dww->theme.border_subtle),
+                  "pb: dialog divider judul");
+        }
         check(at(dg.btn_x(0) + 2, dg.btn_row_y() + 2) == role(dww->theme.accent),
               "pb: dialog aksi primer = accent");
-        check(at(dg.btn_x(1) + 2, dg.btn_row_y() + 2) == role(dww->theme.btnfill),
-              "pb: dialog aksi sekunder = btnfill");
+        check(at(dg.btn_x(1) + 2, dg.btn_row_y() + 2) ==
+                  role(dww->theme.surface_elevated),
+              "pb: dialog aksi sekunder = surface_elevated");
         ui_window_destroy(dw);
 
         // List selection memakai selection (bukan warna tombol).
@@ -968,13 +1058,16 @@ int main(void) {
         ui_textbox_set_error(wbox, 1);
         wipe(); tbx.draw(p);
         check(at(ex, ey) == role(t.danger), "C14: error = border danger");
-        check(at(ex, eg) == role(ui::theme_mix(t.danger, t.surface, 26)),
+        // Tint = danger di atas permukaan INPUT (surface_variant), bukan di
+        // atas surface: input adalah permukaan terbenam sejak redesign.
+        color_t err_tint = ui::theme_mix(t.danger, t.surface_variant, 26);
+        check(at(ex, eg) == role(err_tint),
               "C14: error = tint danger di background");
-        check(at(ex, eg) != role(t.surface), "C22px: error != normal (piksel)");
+        check(at(ex, eg) != role(t.surface_variant), "C22px: error != normal (piksel)");
         tbx.set_focus(true);
         wipe(); tbx.draw(p);
         check(at(ex, ey) == role(t.focus), "C15: error + fokus = focus ring");
-        check(at(ex, eg) == role(ui::theme_mix(t.danger, t.surface, 26)),
+        check(at(ex, eg) == role(err_tint),
               "C15: error + fokus = tint tetap terlihat");
         ui_textbox_set_error(wbox, 0);
         tbx.set_focus(false);
@@ -1034,12 +1127,39 @@ int main(void) {
         mm.on_click(mm.x + 4, mm.row_y(0) + 2);
         check(mfire == 1, "C20: item enabled tetap jalan");
         ui_window_destroy(mw);
-        // C21: scrollbar = mouse-only, bukan stop fokus; scroll tetap jalan.
+        // C21: scroll tetap jalan lewat roda; scrollbar sendiri tetap
+        // mouse-only (tidak ada stop fokus untuk track).
+        // CATATAN: ListView SEKARANG focusable — daftar adalah primitif
+        // navigasi utama, jadi panah atas/bawah harus bekerja setelah Tab
+        // masuk ke daftar (lihat C25 di bawah). Yang tidak berubah: track
+        // scrollbar tidak pernah menjadi stop fokus tersendiri.
         ui::ListView lv(120, 40);
-        check(!lv.focusable(), "C21: list/scrollbar bukan stop fokus");
         for (int i = 0; i < 5; i++) lv.add_item("r");
         int s0 = lv.scroll;
         check(lv.on_scroll(1) && lv.scroll != s0, "C21: scroll roda tetap jalan");
+
+        // C25: navigasi keyboard daftar — panah pindah + memilih + menggelinding.
+        lv.set_scroll_max(lv.content_height());
+        lv.scroll = 0;
+        lv.selected = -1;
+        lv.focus_row = -1;
+        lv.on_key(0, 0x50, 0);            // Down
+        check(lv.selected == 0, "C25: panah bawah memilih baris pertama");
+        lv.on_key(0, 0x50, 0);
+        lv.on_key(0, 0x50, 0);
+        check(lv.selected == 2, "C25: panah bawah menambah seleksi");
+        lv.on_key(0, 0x48, 0);            // Up
+        check(lv.selected == 1, "C25: panah atas mundur");
+        lv.on_key(0, 0x4F, 0);            // End
+        check(lv.selected == 4 && lv.scroll > 0,
+              "C25: End memilih baris terakhir + menggulir ke dalam view");
+        lv.on_key(0, 0x47, 0);            // Home
+        check(lv.selected == 0 && lv.scroll == 0, "C25: Home kembali ke awal");
+        // Enter = aktivasi (change_cb), bukan sekadar pindah.
+        int lvfire = 0;
+        lv.set_change([](void* u) { *(int*)u = 1; }, &lvfire);
+        lv.on_key(0, 0x1C, 0);
+        check(lvfire == 1, "C25: Enter mengaktifkan baris terpilih");
     }
 
     // --- 17. Phase C: aktivasi keyboard (C23–C24) --------------------------
@@ -1063,7 +1183,11 @@ int main(void) {
     {
         ui::RadioGroup g;
         ui::Radio a("A"), b("B"), c("C");
-        check(!a.is_selected() && a.w > 0 && a.h == 20, "D1: radio lahir unselected");
+        // Tinggi = token control_h_sm (bukan konstanta 20): radio dan checkbox
+        // harus punya tinggi yang SAMA supaya sejajar dalam satu form.
+        check(!a.is_selected() && a.w > 0 &&
+              a.h == ui::Metrics().control_h_sm &&
+              a.h == ui::CheckBox("x").h, "D1: radio lahir unselected");
         a.set_group(&g); b.set_group(&g); c.set_group(&g);
         a.set_selected(true);
         check(a.is_selected() && !b.is_selected() && !c.is_selected(),
@@ -1189,13 +1313,15 @@ int main(void) {
         cb.on_click(0, 0);
         check(!cb.open, "D15: disabled tak membuka");
         cb.set_enabled(true);
-        // Piksel: kotak + panah.
+        // Piksel: kotak (permukaan terbenam, sama seperti input) + chevron.
         ui::Painter pc(cww->gw, cww->theme);
         wipe(); cb.draw(pc);
-        check(at(cb.x + 2, cb.y + 12) == role(cww->theme.surface),
-              "D: combo box = surface");
-        check(at(cb.x + cb.w - 10, cb.y + 12) == role(cww->theme.text_secondary),
-              "D: combo panah sekunder");
+        check(at(cb.x + 2, cb.y + cb.h / 2) == role(cww->theme.surface_variant),
+              "D: combo box = surface_variant (terbenam seperti input)");
+        // Chevron digambar dari sistem ikon di sisi kanan.
+        check(has_color(cb.x + cb.w - 24, cb.y + cb.h / 2 - 8, 24, 16,
+                        cww->theme.text_secondary),
+              "D: combo chevron sekunder");
         // D16: hancur saat popup terbuka → popup tertutup, tak dangling.
         ui::ComboBox* hp = new ui::ComboBox();
         hp->set_owner(cww);
@@ -1492,7 +1618,14 @@ int main(void) {
         rp.x = 10; rp.y = 10;
         rp.set_selected(true);
         wipe(); rp.draw(pp);
-        check(at(15, 15) == role(color_hex(0xA371F7)), "D: dark+purple dot aksen");
+        // Dot aksen dicari di dalam kotak indikator (geometri boleh berubah,
+        // warna aksennya yang dikunci).
+        {
+            const int BOX = tp.metrics.icon_md;
+            const int by = rp.y + (rp.h - BOX) / 2;
+            check(has_color(rp.x, by, BOX, BOX, color_hex(0xA371F7)),
+                  "D: dark+purple dot aksen");
+        }
         pc.mode = UI_THEME_LIGHT; pc.accent = UI_ACCENT_NEUTRAL;
         ui::Theme tl;
         tl.apply_config(&pc);
@@ -1500,7 +1633,14 @@ int main(void) {
         ui::Radio rl("R");
         rl.x = 10; rl.y = 40;
         wipe(); rl.draw(pl);
-        check(at(10, 45) == role(color_hex(0xD6D6D6)), "D: light ring border");
+        {
+            const int BOX = tl.metrics.icon_md;
+            const int by = rl.y + (rl.h - BOX) / 2;
+            // Cincin radio: outline utuh (tepi kiri & kanan tergambar).
+            check(at(rl.x, by + BOX / 2) == role(color_hex(0xD6D6D6)) &&
+                  at(rl.x + BOX - 1, by + BOX / 2) == role(color_hex(0xD6D6D6)),
+                  "D: light ring border utuh");
+        }
         pc.mode = UI_THEME_DARK; pc.accent = UI_ACCENT_GREEN;
         ui::Theme tg;
         tg.apply_config(&pc);
@@ -1509,7 +1649,53 @@ int main(void) {
         rg.x = 10; rg.y = 70;
         rg.set_selected(true);
         wipe(); rg.draw(pg);
-        check(at(15, 75) == role(color_hex(0x3FB950)), "D: green dot (aksen ekstra)");
+        {
+            const int BOX = tg.metrics.icon_md;
+            const int by = rg.y + (rg.h - BOX) / 2;
+            check(has_color(rg.x, by, BOX, BOX, color_hex(0x3FB950)),
+                  "D: green dot (aksen ekstra)");
+        }
+    }
+
+    // --- 24. Kedalaman permukaan: tiga level HARUS berbeda ----------------
+    // Regresi nyata: surface_variant dulu dicampur ke arah TEKS seperti hover,
+    // dan di mode gelap hasilnya 0x232323 — PERSIS surface_elevated. Akibatnya
+    // input (well/terbenam) dan tombol (terangkat) tampil identik, sehingga
+    // seluruh pembeda "terbenam vs terangkat" hilang di mode gelap. Test ini
+    // mengunci ketiganya berbeda di KEDUA mode.
+    {
+        for (int m = 0; m < 2; m++) {
+            ui_theme_config_t cfg;
+            cfg.mode = m ? UI_THEME_LIGHT : UI_THEME_DARK;
+            cfg.accent = UI_ACCENT_NEUTRAL;
+            cfg.custom = COLOR_RGB(0, 0, 0);
+            ui::Theme t;
+            t.apply_config(&cfg);
+            const char* mn = m ? "light" : "dark";
+            check(!color_eq(t.surface_variant, t.surface),
+                  m ? "depth light: variant != surface"
+                    : "depth dark: variant != surface");
+            check(!color_eq(t.surface_variant, t.surface_elevated),
+                  m ? "depth light: variant != elevated"
+                    : "depth dark: variant != elevated");
+            check(!color_eq(t.surface, t.surface_elevated),
+                  m ? "depth light: surface != elevated"
+                    : "depth dark: surface != elevated");
+            (void)mn;
+            // Arah harus benar: variant lebih dekat ke bg, elevated lebih jauh.
+            int dv = 0, de = 0;
+            for (int k = 0; k < 3; k++) {
+                uint8_t b = k == 0 ? t.bg.r : (k == 1 ? t.bg.g : t.bg.b);
+                uint8_t v = k == 0 ? t.surface_variant.r
+                          : (k == 1 ? t.surface_variant.g : t.surface_variant.b);
+                uint8_t e = k == 0 ? t.surface_elevated.r
+                          : (k == 1 ? t.surface_elevated.g : t.surface_elevated.b);
+                dv += (int)(v > b ? v - b : b - v);
+                de += (int)(e > b ? e - b : b - e);
+            }
+            check(dv < de, m ? "depth light: variant lebih dekat ke bg"
+                             : "depth dark: variant lebih dekat ke bg");
+        }
     }
 
     printf("\n%d PASS, %d FAIL\n", PASS, FAIL);

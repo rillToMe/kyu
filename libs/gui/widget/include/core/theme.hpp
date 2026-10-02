@@ -1,108 +1,87 @@
-// libs/widget/include/core/theme.hpp — sistem tema Phase A.
+// libs/widget/include/core/theme.hpp — palet tema aktif (mode × aksen).
 //
-// Model:
+// ARSITEKTUR (dipertahankan, bukan diganti):
 //   ThemeConfig (ui_theme_config_t: mode × aksen) → palet semantik → widget.
-//   Jalur legacy (ui_theme_t 6 warna) tetap didukung: 6 field lama diisi
-//   persis seperti dulu + role semantik dipetakan 1:1 dari nilainya, sehingga
-//   aplikasi legacy tampil identik piksel-per-piksel.
+//   Jalur legacy (ui_theme_t 6 warna) tetap didukung: 6 field lama diisi persis
+//   seperti dulu + role semantik dipetakan 1:1 dari nilainya, sehingga aplikasi
+//   legacy tampil identik piksel-per-piksel.
+//
+// YANG BARU (design system KyuzenOS):
+//   * `struct Theme` kini juga membawa `Metrics` dan `Typography` — jadi satu
+//     objek tema memuat SELURUH bahasa visual (warna + jarak + tipografi).
+//     Widget membacanya lewat `p.theme`, tidak ada lagi angka ajaib di widget.
+//   * Role permukaan diperluas: surface_variant / surface_hover /
+//     surface_pressed / surface_selected. Widget memilih STATE, bukan warna.
+//   * `tone()` menerjemahkan peran tipografi → warna teks, sehingga hirarki
+//     teks konsisten di semua widget dan semua mode.
 //
 // Semua color_t (libs/color), integer-only (app dibangun -mno-sse -msoft-float).
 #ifndef KWIDGET_CORE_THEME_HPP
 #define KWIDGET_CORE_THEME_HPP
 
 #include "runtime/platform.hpp"
+#include "theme/theme.hpp"
 
 namespace ui {
 
 // ------------------------------------------------------------
-// Persen shade lama (aa_shade) → skala 0..255 untuk color_darken/color_lighten.
-// Dua rumus tidak identik (aa_shade memakai persen dengan truncate, library
-// memakai skala 255 dengan pembulatan); faktor di bawah dipilih supaya hasilnya
-// SAMA PERSIS dengan aa_shade untuk palet charcoal tema bawaan
-// (#1E1E1E button_bg, #D4D4D4 fg) → tidak ada regresi satu piksel pun di UI.
-// Contoh: darken(#1E1E1E, 42) == aa_shade(#1E1E1E, -18) == #191919.
-constexpr uint8_t SHADE_5  = 13;    // +5%  (terang)  — lighten(#1E1E1E) = #292929
-constexpr uint8_t SHADE_10 = 25;    // ±10% (gradien tombol) — #343434 → #1B1B1B
-constexpr uint8_t SHADE_18 = 42;    // -18% (tombol ditekan) — #191919
-constexpr uint8_t SHADE_55 = 139;   // -55% (item menu nonaktif) — #606060
-
-// ------------------------------------------------------------
-// Base aksen (0xRRGGBB). Satu warna per aksen; state (hover/pressed/
-// subtle/contrast) DITURUNKAN deterministik di apply_config(), bukan
-// di-hardcode per kombinasi mode × aksen.
-// ------------------------------------------------------------
-static inline color_t theme_accent_base(ui_theme_accent_t a, color_t custom) {
-    switch (a) {
-    case UI_ACCENT_BLUE:   return color_hex(0x2F81F7);
-    case UI_ACCENT_PURPLE: return color_hex(0xA371F7);
-    case UI_ACCENT_GREEN:  return color_hex(0x3FB950);
-    case UI_ACCENT_ORANGE: return color_hex(0xE8912D);
-    case UI_ACCENT_RED:    return color_hex(0xF85149);
-    case UI_ACCENT_CUSTOM: {
-        color_t c = color_opaque(custom);
-        // Hitam pekat = aksen degenerat (hover/pressed tak terlihat);
-        // jatuhkan ke netral. Warna custom lain dipakai apa adanya.
-        if (c.r == 0 && c.g == 0 && c.b == 0) break;
-        return c;
-    }
-    case UI_ACCENT_NEUTRAL:
-    default: break;
-    }
-    return color_hex(0x8B8B8B);   // NEUTRAL (default)
-}
-
-// Campuran opaque: t/255 bobot fg di atas bg. Tinta seleksi/subtle di atas
-// permukaan (painter rect opaque — tanpa alpha blending di sini).
-static inline color_t theme_mix(color_t fg, color_t bg, uint8_t t) {
-    color_t out;
-    out.r = (uint8_t)(((uint32_t)fg.r * t + (uint32_t)bg.r * (255u - t)) / 255u);
-    out.g = (uint8_t)(((uint32_t)fg.g * t + (uint32_t)bg.g * (255u - t)) / 255u);
-    out.b = (uint8_t)(((uint32_t)fg.b * t + (uint32_t)bg.b * (255u - t)) / 255u);
-    out.a = 255;
-    return out;
-}
-
-// ------------------------------------------------------------
-// Theme — field legacy (6 + 8, NAMA DAN MAKNA TAK BERUBAH) + peran
-// semantik Phase A. Widget membaca peran semantik; field legacy
-// dipertahankan untuk ABI ui_theme_t + file settings.ui v1/v0.
+// Theme — field legacy (6 + 8, NAMA DAN MAKNA TAK BERUBAH) + peran semantik
+// + token design system (Metrics/Typography).
 //
-// Peran semantik dan pemiliknya (Phase A):
-//   surface / surface_elevated — tombol, input, track, header, hover baris
-//   text / text_secondary / text_disabled — teks (primer, sekunder, redup)
-//   border / border_subtle — garis tepi / pemisah halus
-//   accent* — aksen + turunannya (slider, progress, scrollbar, tab, fokus)
-//   selection — baris terpilih (tinta aksen di atas background)
-//   focus — border/caret fokus (== accent)
-//   success / warning / danger — diagnostik (dicadangkan Phase B)
+// Peran semantik dan pemiliknya:
+//   surface / surface_variant / surface_elevated — permukaan diam
+//   surface_hover / surface_pressed              — state interaktif
+//   surface_selected                             — baris terpilih
+//   text / text_secondary / text_tertiary / text_disabled — teks
+//   border / border_subtle                       — garis tepi / pemisah
+//   accent* — aksen + turunannya (aksi primer, slider, fokus)
+//   success / warning / danger / info            — diagnostik
 // ------------------------------------------------------------
 struct Theme {
     // Legacy: 6 warna dasar ui_theme_t + 8 lapisan turunan.
     color_t bg, fg, accent, button_bg, button_fg, button_hover;
     color_t editor, chrome, panel, btnfill, divider, mborder, acc_text, caret;
-    // Semantik Phase A.
-    color_t surface, surface_elevated;
-    color_t text, text_secondary, text_disabled;
+    // Semantik — permukaan.
+    //   surface         permukaan diam (tombol, input, panel)
+    //   surface_variant permukaan TERBENAM (well/track: slider, progress,
+    //                   gutter, area kosong) — kebalikan arah dari elevated
+    //   surface_elevated permukaan TERANGKAT (hover, header, tab aktif)
+    //   surface_hover / surface_pressed — state interaktif, diturunkan
+    //   selection       latar baris terpilih (nama lama dipertahankan;
+    //                   inilah token "surface_selected")
+    color_t surface, surface_elevated, surface_variant;
+    color_t surface_hover, surface_pressed;
+    // Semantik — teks.
+    color_t text, text_secondary, text_tertiary, text_disabled;
+    // Semantik — garis.
     color_t border, border_subtle;
-    color_t accent_hover, accent_pressed, accent_subtle, accent_contrast;
+    // Semantik — aksen.
+    color_t accent_hover, accent_pressed, accent_subtle, accent_contrast,
+            accent_text;
     color_t selection, focus;
-    color_t success, warning, danger;
+    // Semantik — status.
+    color_t success, warning, danger, info;
 
-    // Default = Dark + Neutral. TIDAK ada lagi ketergantungan biru
-    // (0x0F3460/0x2A4A7E) di tema bawaan.
+    // Design system: jarak/radius/ukuran + peran tipografi.
+    Metrics metrics;
+    Typography type;
+
+    // Default = Dark + Neutral. TIDAK ada ketergantungan biru di tema bawaan.
     Theme() {
         static const ui_theme_config_t def = { UI_THEME_DARK, UI_ACCENT_NEUTRAL,
                                                { 0, 0, 0, 255 } };
         apply_config(&def);
     }
+
+    // --------------------------------------------------------
     // Jalur legacy: 6 warna eksplisit aplikasi. Field legacy diisi persis
     // seperti dulu (derive_legacy); peran semantik dipetakan 1:1 dari nilai
     // yang sama sehingga widget tampil identik.
+    // --------------------------------------------------------
     void set(const ui_theme_t* t) {
         // ABI app = color_t; alpha dipaksa opaque. Wajib: warna tema dipakai
         // sebagai dst/latar pencampuran, dan color_blend_alpha membaca
-        // dst.a == 0 sebagai "kanvas kosong" sehingga gradien tombol
-        // (@rrect_grad) akan rata dengan warna bawahnya.
+        // dst.a == 0 sebagai "kanvas kosong".
         bg = color_opaque(t->bg);
         fg = color_opaque(t->fg);
         accent = color_opaque(t->accent);
@@ -119,55 +98,53 @@ struct Theme {
         // Campuran terikat-teks (bukan konstanta) agar tema terang/gelap
         // legacy tetap terbaca.
         text_secondary = theme_mix(fg, bg, 165);
+        text_tertiary = theme_mix(fg, bg, ratio::TERTIARY_MIX);
         // Sama persis dengan rumus menu-disabled lama (piksel-identik).
         text_disabled = color_darken(fg, SHADE_55);
         border = mborder;
         border_subtle = divider;
         derive_accent_family(accent, false);
-        // Status: belum dipakai widget Phase A (dicadangkan Phase B).
+        // Status: tetap seperti semula (tidak dipakai widget legacy).
         success = color_hex(0x3FB950);
         warning = color_hex(0xD29922);
         danger = color_hex(0xF85149);
+        info = color_hex(0x58A6FF);
+        derive_states(false);
     }
-    // Jalur Phase A: mode × aksen → palet semantik penuh; field legacy
+
+    // --------------------------------------------------------
+    // Jalur config: mode × aksen → palet semantik penuh; field legacy
     // diisi DARI peran semantik (kompatibel dibaca/ditulis format lama).
+    // --------------------------------------------------------
     void apply_config(const ui_theme_config_t* c) {
         bool light = c && c->mode == UI_THEME_LIGHT;
         ui_theme_accent_t a = c ? c->accent : UI_ACCENT_NEUTRAL;
         color_t custom = c ? c->custom : color_hex(0x000000);
         color_t abase = theme_accent_base(a, custom);
 
-        if (light) {
-            bg = color_hex(0xF5F5F5);
-            surface = color_hex(0xFFFFFF);
-            surface_elevated = color_hex(0xEAEAEA);
-            text = color_hex(0x181818);
-            text_secondary = color_hex(0x666666);
-            text_disabled = theme_mix(text, bg, 115);
-            border = color_hex(0xD6D6D6);
-            border_subtle = color_hex(0xE3E3E3);
-            success = color_hex(0x1A7F37);
-            warning = color_hex(0x9A6700);
-            danger = color_hex(0xCF222E);
-        } else {
-            bg = color_hex(0x111111);
-            surface = color_hex(0x181818);
-            surface_elevated = color_hex(0x232323);
-            text = color_hex(0xF2F2F2);
-            text_secondary = color_hex(0xA8A8A8);
-            text_disabled = theme_mix(text, bg, 115);
-            border = color_hex(0x303030);
-            border_subtle = color_hex(0x262626);
-            success = color_hex(0x3FB950);
-            warning = color_hex(0xD29922);
-            danger = color_hex(0xF85149);
-        }
+        NeutralBase nb = theme_neutral_base(light);
+        bg = nb.bg;
+        surface = nb.surface;
+        surface_elevated = nb.surface_elevated;
+        text = nb.text;
+        text_secondary = nb.text_secondary;
+        text_tertiary = theme_mix(text, bg, ratio::TERTIARY_MIX);
+        text_disabled = theme_mix(text, bg, ratio::DISABLED_MIX);
+        border = nb.border;
+        border_subtle = nb.border_subtle;
+        success = nb.success;
+        warning = nb.warning;
+        danger = nb.danger;
+        info = nb.info;
+
         accent = abase;
         derive_accent_family(abase, light);
         focus = accent;
         // Tinta seleksi: aksen di atas background (terbaca di kedua mode,
         // berbeda dari permukaan tombol).
-        selection = theme_mix(accent, bg, light ? 51 : 77);
+        selection = theme_mix(accent, bg,
+                              light ? ratio::SELECT_LIGHT : ratio::SELECT_DARK);
+        derive_states(light);
 
         // Field legacy ← peran semantik (arsitektur lama tetap jalan).
         fg = text;
@@ -183,19 +160,36 @@ struct Theme {
         acc_text = text_secondary;
         caret = accent;
     }
-    // Keluarga aksen dari satu base + mode. Dipakai kedua jalur (legacy =
-    // gaya dark) agar custom accent konsisten di mana pun dimuat.
+
+    // --------------------------------------------------------
+    // State permukaan diturunkan dari (surface, bg, text) — bukan dari mode.
+    // Dipakai KEDUA jalur (config & legacy) supaya widget tidak pernah
+    // bergantung pada jalur mana yang aktif.
+    // --------------------------------------------------------
+    void derive_states(bool light) {
+        (void)light;
+        surface_variant = theme_surface_variant(surface, bg);
+        surface_hover   = theme_surface_hover(surface, text);
+        surface_pressed = theme_surface_pressed(surface, bg);
+    }
+
+    // Keluarga aksen dari satu base + mode.
     void derive_accent_family(color_t abase, bool light) {
         if (light) {
-            accent_hover = color_darken(abase, 22);
-            accent_pressed = color_darken(abase, 42);
+            accent_hover = color_darken(abase, ratio::ACCENT_HOVER_DARKEN_LIGHT);
+            accent_pressed = color_darken(abase, ratio::ACCENT_PRESS_DARKEN_LIGHT);
         } else {
-            accent_hover = color_lighten(abase, 32);
-            accent_pressed = color_darken(abase, 36);
+            accent_hover = color_lighten(abase, ratio::ACCENT_HOVER_LIGHTEN_DARK);
+            accent_pressed = color_darken(abase, ratio::ACCENT_PRESS_DARKEN_DARK);
         }
-        accent_subtle = theme_mix(abase, bg, 38);
+        accent_subtle = theme_mix(abase, bg, ratio::ACCENT_SUBTLE_MIX);
         accent_contrast = color_get_contrast_text(abase);
+        // Teks beraksen di atas permukaan (bukan di atas aksen) — mis. label
+        // "aktif" atau nilai yang ditonjolkan. Dipilih agar tetap terbaca
+        // tanpa perlu tahu mode.
+        accent_text = light ? color_darken(abase, 30) : color_lighten(abase, 30);
     }
+
     // 6 warna dasar → struct ABI (color_t), untuk disimpan ke settings.ui.
     void to_abi(ui_theme_t* t) const {
         t->bg = bg;
@@ -205,9 +199,9 @@ struct Theme {
         t->button_fg = button_fg;
         t->button_hover = button_hover;
     }
+
     // Turunan legacy: konstanta charcoal/amber/cyan. HANYA dipakai jalur
-    // set() (tema 6-warna eksplisit) sebagai shim kompatibilitas — aplikasi
-    // legacy tampil identik. Jalur config TIDAK menyentuhnya.
+    // set() sebagai shim kompatibilitas — aplikasi legacy tampil identik.
     void derive_legacy() {
         editor = button_bg;                        // "kertas" paling gelap
         panel = COLOR_HEX(0x252526);       // isi modal + popup menu
@@ -221,13 +215,43 @@ struct Theme {
         acc_text = COLOR_HEX(0xDCDCAA);
         caret = COLOR_HEX(0x00E5FF);
     }
-};
 
-// ------------------------------------------------------------
-// Warna: color_t + palet libs/color. Campuran lewat color_blend_alpha,
-// state tombol lewat color_darken/color_lighten; coverage sudut tetap aa_cov.
-// Semua integer — app dibangun -mno-sse -msoft-float.
-// ------------------------------------------------------------
+    // --------------------------------------------------------
+    // Design system — pembacaan token. Widget memanggil ini, bukan memilih
+    // warna sendiri.
+    // --------------------------------------------------------
+
+    // Permukaan berdasarkan level kedalaman (theme/elevation.hpp).
+    color_t surface_for(int level) const {
+        switch (level) {
+        case ELEV_BASE:    return bg;
+        case ELEV_POPUP:   return panel;
+        case ELEV_DIALOG:  return panel;
+        case ELEV_RAISED:  return surface_elevated;
+        case ELEV_SURFACE:
+        default:           return surface;
+        }
+    }
+
+    // Warna teks untuk sebuah peran tipografi (TypeRole::tone).
+    color_t tone(int t) const {
+        switch (t) {
+        case TONE_SECONDARY: return text_secondary;
+        case TONE_TERTIARY:  return text_tertiary;
+        case TONE_DISABLED:  return text_disabled;
+        case TONE_ACCENT:    return accent_contrast;
+        case TONE_DANGER:    return danger;
+        case TONE_PRIMARY:
+        default:             return text;
+        }
+    }
+
+    // Teks untuk peran + state disabled (satu jalur untuk semua widget:
+    // disabled SELALU menang atas tone peran).
+    color_t tone_for(const TypeRole& r, bool enabled) const {
+        return enabled ? tone(r.tone) : text_disabled;
+    }
+};
 
 } // namespace ui
 

@@ -233,13 +233,22 @@ int main(void) {
     ui_window_add(win, tbl);
     w->render();
     check(tm->x == 8 && tm->y == 8, "table: root VBox menaruh anak di (8,8)");
-    check(at_px(tm->x + 2 + 8, tm->y + hdr + 2 + 8) == 0xE53935u,
+    // Ikon digambar di awal baris, tergeser `scroll` — dan scroll awal BUKAN
+    // nol setelah widget punya scrollbar (view menyusut → konten 4 baris
+    // melebihi view → offset di-clamp). Probe dihitung dari `scroll` supaya
+    // tidak rapuh terhadap perubahan lebar scrollbar/tinggi baris.
+    const int icon_x = tm->x + 2 + 8;
+    const int row0_y = tm->y + hdr + 2 + 8 - tm->scroll;
+    const int row1_y = row0_y + rh;
+    const int row2_y = row0_y + 2 * rh;
+    check(at_px(icon_x, row0_y) == 0xE53935u,
           "table: ikon baris 0 digambar di kolom pertama (blit nyata)");
-    check(at_px(tm->x + 2 + 8, tm->y + hdr + rh + 2 + 8) == 0x1E88E5u,
+    check(at_px(icon_x, row1_y) == 0x1E88E5u,
           "table: baris 1 memakai ikonnya sendiri");
-    check(at_px(tm->x + 2 + 8, tm->y + hdr + 2 * rh + 2 + 8) != 0xE53935u &&
-          at_px(tm->x + 2 + 8, tm->y + hdr + 2 * rh + 2 + 8) != 0x1E88E5u,
+    check(at_px(icon_x, row2_y) != 0xE53935u &&
+          at_px(icon_x, row2_y) != 0x1E88E5u,
           "table: baris tanpa ikon tidak mewarisi ikon baris lain");
+
 
     ui_table_clear(tbl);
     check(tm->icon[0] == 0 && tm->icon[1] == 0 && tm->nrows == 0,

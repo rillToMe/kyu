@@ -12,6 +12,7 @@ extern "C" {
 #include "libgui.h"
 }
 #include "libui.h"         // toolkit widget (ABI C, sudah extern "C")
+#include "libui_xml.h"     // XML deklaratif -> widget native (form Settings)
 #include "color_utils.h"   // palet + COLOR_HEX (libs/gui/color)
 #include "kzfont.h"        // teks FreeType (preview font)
 #include "kzfonts.h"       // registry font UI (single source of truth)

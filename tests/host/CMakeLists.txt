@@ -51,6 +51,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/KyuzenCompilerWrapper.cmake")
 kyuzen_install_compiler_wrapper("${KYUZEN_HOST_CLANG}" "${KYUZEN_HOST_CLANGXX}"
                                  "${CMAKE_BINARY_DIR}/tools")
 
+# UI XML embedding (file .xml -> header) — dipakai test-libui-xml supaya test
+# dan aplikasi menguji DOKUMEN YANG SAMA (tanpa salinan string yang bisa drift).
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/KyuzenUiXml.cmake")
+
 set(CMAKE_C_COMPILER   "${KYUZEN_WRAPPED_CC}")
 set(CMAKE_CXX_COMPILER "${KYUZEN_WRAPPED_CXX}")
 
@@ -452,6 +456,7 @@ endif()
 
 # --- libui toolkit: theme / XML / fileman widgets / owner propagation ---
 # All four link the REAL toolkit sources and stub the syscall layer.
+# --- libui toolkit: theme / XML / fileman widgets / owner propagation ---
 set(_widget_srcs "")
 kyuzen_glob(_widget_srcs "${KYUZEN_ROOT}/libs/gui/widget/src/*/*.cpp")
 list(APPEND _widget_srcs "${KYUZEN_ROOT}/libs/gui/widget/abi/libui_abi.cpp")
@@ -475,8 +480,71 @@ foreach(_t IN ITEMS theme xml fileman_widgets owner)
                 "$<$<COMPILE_LANGUAGE:CXX>:-std=c++17>"
                 -O1 -Wall
         )
+        # Test XML memakai DOKUMEN SUNGGUHAN dari ui/xml/, bukan salinan
+        # string di dalam test — supaya dokumen asli dan test tidak bisa
+        # berbeda diam-diam (drift).
+        if(_t STREQUAL "xml")
+            kyuzen_embed_xml(test-libui-xml SOURCES xml_demo.xml)
+        endif()
     endif()
 endforeach()
+
+# ---------------------------------------------------------------------------
+# libui visual QA — MERENDER widget produksi ke PPM.
+#
+# Bukan test perilaku: ini alat untuk memeriksa KOMPOSISI (ritme jarak,
+# kontras, state permukaan) pada 1280x720 dan 1920x1080, di mode terang dan
+# gelap, tanpa boot QEMU. Keluarannya PPM di direktori kerja test; konversi ke
+# PNG opsional di luar (bukan dependensi build).
+#
+# Didaftarkan sebagai test supaya ikut dijalankan `ctest`, tapi yang
+# diperiksa hanyalah "render selesai tanpa crash / tanpa overflow" — nilai
+# visualnya dinilai mata, bukan assertion.
+# ---------------------------------------------------------------------------
+if(EXISTS "${KYUZEN_UNIT_DIR}/libui_visual_qa.cpp")
+    kyuzen_host_test(test-libui-visual-qa
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/libui_visual_qa.cpp"
+            ${_widget_srcs}
+            "${KYUZEN_ROOT}/libs/gui/color/src/color_utils.c"
+        IQUOTE "${KYUZEN_ROOT}" "${KYUZEN_ROOT}/include"
+        INCLUDES
+            "${KYUZEN_ROOT}/libs/gui/widget/include"
+            "${KYUZEN_ROOT}/libs/gui/color/include"
+        COMPILE_OPTIONS
+            "$<$<COMPILE_LANGUAGE:CXX>:-std=c++17>"
+            -O1 -Wall
+    )
+    set_tests_properties(test-libui-visual-qa PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/visual-qa")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/visual-qa")
+endif()
+
+# ---------------------------------------------------------------------------
+# libui performance QA — ANGGARAN render (regresi guard).
+#
+# Mengukur berapa banyak pixel kanvas yang disentuh satu draw() widget, dalam
+# satuan "layar 1280x720". Metrik ini stabil lintas mesin (bukan pengukuran
+# waktu yang goyah) dan langsung menangkap regresi kelas besar: widget yang
+# tiba-tiba menggambar seluruh layar, atau lapisan penuh yang ditambahkan ke
+# jalur panas. KyuzenOS adalah OS tanpa akselerasi — biaya render adalah
+# properti yang harus dijaga, bukan diasumsikan.
+# ---------------------------------------------------------------------------
+if(EXISTS "${KYUZEN_UNIT_DIR}/libui_perf_qa.cpp")
+    kyuzen_host_test(test-libui-perf-qa
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/libui_perf_qa.cpp"
+            ${_widget_srcs}
+            "${KYUZEN_ROOT}/libs/gui/color/src/color_utils.c"
+        IQUOTE "${KYUZEN_ROOT}" "${KYUZEN_ROOT}/include"
+        INCLUDES
+            "${KYUZEN_ROOT}/libs/gui/widget/include"
+            "${KYUZEN_ROOT}/libs/gui/color/include"
+        COMPILE_OPTIONS
+            "$<$<COMPILE_LANGUAGE:CXX>:-std=c++17>"
+            -O1 -Wall
+    )
+endif()
 
 # --- desktop framework: system/desktop modules + libdesktop backend ---
 if(EXISTS "${KYUZEN_UNIT_DIR}/desktop_manifest_test.cpp")

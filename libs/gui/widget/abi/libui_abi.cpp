@@ -11,6 +11,7 @@
 #include "primitives/checkbox.hpp"
 #include "primitives/radio.hpp"
 #include "primitives/slider.hpp"
+#include "primitives/switch.hpp"
 #include "primitives/progressbar.hpp"
 #include "primitives/combobox.hpp"
 #include "primitives/separator.hpp"
@@ -27,6 +28,7 @@
 #include "containers/treeview.hpp"
 #include "containers/tab.hpp"
 #include "containers/grid.hpp"
+#include "containers/section.hpp"
 #include "chrome/toolbar.hpp"
 #include "chrome/menu.hpp"
 #include "chrome/menubar.hpp"
@@ -141,6 +143,11 @@ void ui_button_set_click(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
 void ui_button_set_variant(ui_widget_t* widget, int variant) {
     ui::Button* b = reinterpret_cast<ui::Button*>(widget);
     if (b) b->set_variant(variant);
+}
+
+void ui_button_set_icon(ui_widget_t* widget, int icon) {
+    ui::Button* b = reinterpret_cast<ui::Button*>(widget);
+    if (b) b->set_icon(icon);
 }
 
 void ui_widget_set_enabled(ui_widget_t* widget, int enabled) {
@@ -314,6 +321,18 @@ ui_widget_t* ui_separator_create(ui_window_t* win, int orientation) {
     (void)win;
     return reinterpret_cast<ui_widget_t*>(
         new ui::Separator(orientation == UI_SEP_VERTICAL));
+}
+
+// --- Section: bagian berjudul dalam halaman ---
+// Primitif yang membuat halaman pengaturan/form terbaca tanpa kartu: judul
+// memakai peran tipografi `section` + garis tipis, isi disusun di bawahnya.
+ui_widget_t* ui_section_create(ui_window_t* win, const char* title, int spacing) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::Section(title, spacing));
+}
+void ui_section_set_title(ui_widget_t* widget, const char* title) {
+    ui::Section* s = reinterpret_cast<ui::Section*>(widget);
+    if (s) s->set_title(title);
 }
 
 // --- Tooltip (Phase D) ---
@@ -722,6 +741,29 @@ void ui_listview_add_item(ui_widget_t* widget, const char* label) {
     reinterpret_cast<ui::ListView*>(widget)->add_item(label);
 }
 
+// Baris daftar KAYA (aditif): judul + deskripsi + ikon depan + chevron.
+// Ini yang membuat baris pengaturan/navigasi bisa dibangun dari primitif
+// daftar alih-alih setiap app merakit sendiri dari label + tombol.
+// Return index, atau -1 bila daftar penuh.
+int ui_listview_add_row(ui_widget_t* widget, const char* title,
+                        const char* description, int icon, int chevron) {
+    ui::ListView* lv = reinterpret_cast<ui::ListView*>(widget);
+    if (!lv) return -1;
+    return lv->add_row(title, description, icon, chevron != 0);
+}
+void ui_listview_set_row_icon(ui_widget_t* widget, int index, int icon) {
+    ui::ListView* lv = reinterpret_cast<ui::ListView*>(widget);
+    if (lv) lv->set_row_icon(index, icon);
+}
+void ui_listview_set_row_trailing(ui_widget_t* widget, int index, int icon) {
+    ui::ListView* lv = reinterpret_cast<ui::ListView*>(widget);
+    if (lv) lv->set_row_trailing(index, icon);
+}
+void ui_listview_set_row_disabled(ui_widget_t* widget, int index, int disabled) {
+    ui::ListView* lv = reinterpret_cast<ui::ListView*>(widget);
+    if (lv) lv->set_row_disabled(index, disabled != 0);
+}
+
 int ui_listview_selected(ui_widget_t* widget) {
     return reinterpret_cast<ui::ListView*>(widget)->selected;
 }
@@ -920,6 +962,46 @@ ui_widget_t* ui_toolbar_create(ui_window_t* win) {
 
 void ui_toolbar_add_button(ui_widget_t* bar, const char* label, ui_click_cb cb, void* userdata) {
     reinterpret_cast<ui::Toolbar*>(bar)->add_button(label, cb, userdata);
+}
+
+// Tombol toolbar ber-ikon (aditif). icon = UI_ICON_*; 0 = teks saja.
+void ui_toolbar_add_button_icon(ui_widget_t* bar, const char* label, int icon,
+                                ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::Toolbar*>(bar)->add_button_icon(label, icon, cb, userdata);
+}
+
+// --- Switch (toggle on/off) ---
+// Checkbox = bagian dari form (dikirim bersama tombol simpan).
+// Switch  = pengaturan yang berlaku SEGERA (nyala/mati tanpa tombol).
+ui_widget_t* ui_switch_create(ui_window_t* win, const char* label) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::Switch(label));
+}
+void ui_switch_set_on(ui_widget_t* widget, int on) {
+    ui::Switch* s = reinterpret_cast<ui::Switch*>(widget);
+    if (s) s->set_on(on != 0, false);   // programatik = diam
+}
+int ui_switch_on(ui_widget_t* widget) {
+    ui::Switch* s = reinterpret_cast<ui::Switch*>(widget);
+    return s ? (s->is_on() ? 1 : 0) : 0;
+}
+void ui_switch_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    ui::Switch* s = reinterpret_cast<ui::Switch*>(widget);
+    if (s) s->set_change(cb, userdata);
+}
+
+// --- Ikon (pengukuran) ---
+// Ukuran optik standar ikon pada peran tertentu, supaya app bisa menyusun
+// layout yang sejajar dengan widget toolkit.
+int ui_icon_size(int role) {
+    const ui::Metrics m;
+    switch (role) {
+    case UI_ICON_SIZE_SM: return m.icon_sm;
+    case UI_ICON_SIZE_LG: return m.icon_lg;
+    case UI_ICON_SIZE_XL: return m.icon_xl;
+    case UI_ICON_SIZE_MD:
+    default: return m.icon_md;
+    }
 }
 
 // ============================================================

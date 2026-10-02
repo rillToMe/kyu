@@ -1,19 +1,23 @@
-// libs/widget/include/primitives/radio.hpp — Radio + RadioGroup (Phase D).
+// libs/widget/include/primitives/radio.hpp — Radio + RadioGroup.
+//
+// Geometri SELARAS CheckBox: indikator 16px + gap SM + label, tinggi kontrol
+// sama. Dua kontrol yang berdampingan dalam satu form harus punya garis dasar
+// dan kolom label yang identik — itu bagian dari "strong alignment".
+//
+// Indikator digambar sebagai dua permukaan (cincin + dot) alih-alih loop
+// piksel per-piksel: lebih murah, dan hasilnya konsisten dengan kontrol lain
+// yang memakai radius token.
 #ifndef KWIDGET_PRIMITIVES_RADIO_HPP
 #define KWIDGET_PRIMITIVES_RADIO_HPP
 
 #include "core/widget.hpp"
 #include "core/painter.hpp"
+#include "core/state.hpp"
 
 namespace ui {
 
 class RadioGroup;   // fwd: Radio pegang grup — definisi di bawah (butuh Radio lengkap)
 
-// ------------------------------------------------------------
-// Radio — lingkaran 12px + label; tepat satu terpilih dalam grup.
-// Geometri selaras CheckBox (12px + label +20px, h=20) supaya sejajar
-// dalam daftar. Lingkaran digambar piksel (bukan rrect) agar bundar penuh.
-// ------------------------------------------------------------
 class Radio : public Widget {
 public:
     char* label;
@@ -33,7 +37,11 @@ public:
     void set_selected(bool on);
     void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
     virtual bool focusable() override { return enabled; }
-    virtual void set_hover(bool on) override { hover = on; mark_dirty(); }
+    virtual void set_hover(bool on) override {
+        if (hover == on) return;
+        hover = on;
+        mark_dirty();
+    }
     virtual void on_click(int mx, int my) override;
     // Keyboard: panah pindah + pilih dalam grup (skip disabled),
     // Enter/Spasi pilih yang fokus. Definisi di radio.cpp (butuh Window
@@ -101,7 +109,9 @@ public:
 inline Radio::Radio(const char* t)
     : label(_ui_strdup(t)), group(0), hover(false), checked_self(false),
       change_cb(0), change_data(0) {
-    w = _ui_strlen(label) * 8 + 20; h = 20;
+    const Metrics m;
+    h = m.control_h_sm;
+    w = text_width(label, Typography().label) + m.control_h_sm + m.sm;
 }
 
 inline Radio::~Radio() {
@@ -155,22 +165,38 @@ inline Radio* Radio::sibling(int dir) {
 }
 
 inline void Radio::draw(Painter& p) {
-    // Lingkaran d=12: ring 1px + dot aksen bila terpilih.
-    bool sel = is_selected();
-    color_t ring = !enabled      ? p.theme.border_subtle
-                 : has_focus     ? p.theme.focus
-                 : hover         ? p.theme.text
-                                 : p.theme.border;
-    color_t dot = !enabled ? p.theme.text_disabled : p.theme.accent;
-    for (int dy = 0; dy < 12; dy++) {
-        for (int dx = 0; dx < 12; dx++) {
-            int ox = dx - 5, oy = dy - 5;   // pusat di antara 4 piksel tengah
-            int d2 = ox * ox + oy * oy;
-            if (d2 > 16 && d2 <= 30) p.rect(x + dx, y + dy, 1, 1, ring);
-            else if (sel && d2 <= 9) p.rect(x + dx, y + dy, 1, 1, dot);
-        }
+    const Metrics& m = p.theme.metrics;
+    const TypeRole& role = p.theme.type.body;
+    StateInputs st;
+    st.hover = hover;
+    st.focused = has_focus;
+    st.enabled = enabled;
+    const bool sel = is_selected();
+
+    const int box = m.icon_md;                 // 16px — selaras CheckBox
+    const int by = y + (h - box) / 2;
+    // Cincin: radius PILL supaya benar-benar bulat (satu-satunya tempat
+    // radius pill dipakai untuk kontrol — bentuknya memang bulat).
+    color_t ring = !enabled  ? p.theme.border_subtle
+                 : has_focus ? p.theme.focus
+                 : hover     ? p.theme.text_secondary
+                             : p.theme.border;
+    color_t fill = !enabled ? p.theme.surface_variant : p.theme.surface;
+    p.surface(x, by, box, box, fill, radius::PILL);
+    p.rrect_border(x, by, box, box, radius::PILL, ring, 255);
+    if (sel) {
+        // Dot = permukaan kedua di tengah, bukan gambar piksel: konsisten
+        // dengan cincin dan tetap tajam pada semua ukuran.
+        const int d = box / 2 + 1;
+        color_t dot = enabled ? p.theme.accent : p.theme.text_disabled;
+        p.surface(x + (box - d) / 2, by + (box - d) / 2, d, d, dot, radius::PILL);
     }
-    p.text(label, x + 20, y + 2, enabled ? p.theme.text : p.theme.text_disabled);
+    if (label && label[0]) {
+        int tx = x + box + m.sm;
+        int avail = w - box - m.sm;
+        p.text_ellipsis(label, tx, y + text_vcenter(h), avail,
+                        state_text(p.theme, st), role);
+    }
 }
 
 } // namespace ui

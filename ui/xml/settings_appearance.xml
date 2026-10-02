@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Settings > Appearance.
+
+  Struktur halaman sebagai DOKUMEN, bukan string literal di dalam .cpp:
+  bisa di-review, di-diff, dan disorot editor.
+
+  Yang dimiliki XML di sini = STRUKTUR + SEMANTIK:
+    - bagian apa saja (section),
+    - kontrol apa (radio untuk pilihan eksklusif, tombol untuk aksi),
+    - id untuk binding callback dari C++.
+
+  Yang TIDAK ada di sini (dan memang tidak boleh): warna, radius, jarak px,
+  ukuran font. Semua itu milik tema libui. Kalau butuh nilai visual baru,
+  tambahkan token di libui — bukan atribut di XML.
+-->
+<window>
+    <vbox spacing="lg" id="appearance_root">
+
+        <label text="Appearance"/>
+        <label text="Choose how KyuzenOS looks."/>
+
+        <!-- Mode: dua pilihan eksklusif → radio (bentuk pilihan, bukan aksi). -->
+        <section title="Mode" spacing="sm">
+            <radio id="mode_dark" text="Dark" group="mode" selected="true"/>
+            <radio id="mode_light" text="Light" group="mode"/>
+        </section>
+
+        <!-- Aksen: 6 pilihan dari satu enum tema libui. -->
+        <section title="Accent color" spacing="sm">
+            <hbox spacing="sm">
+                <button id="accent_neutral" text="Neutral"/>
+                <button id="accent_blue" text="Blue"/>
+                <button id="accent_purple" text="Purple"/>
+                <button id="accent_green" text="Green"/>
+                <button id="accent_orange" text="Orange"/>
+                <button id="accent_red" text="Red"/>
+            </hbox>
+            <label id="appearance_status" text="Theme: (from settings.ui)"/>
+        </section>
+
+    </vbox>
+</window>
