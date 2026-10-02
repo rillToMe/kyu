@@ -30,16 +30,29 @@ set(CMAKE_SYSTEM_PROCESSOR x86_64)
 # `clang64/bin` (MINGW) toolchain are DIFFERENT LLVM versions. The project's
 # documented setup and its verified baseline build use the MSYS one, so the
 # baseline hash comparison depends on resolving the same compiler.
+#
+# The easiest way to get the right combination is ./build.sh, which sets PATH
+# up correctly regardless of which MSYS2 shell you started in.
 # ---------------------------------------------------------------------------
 find_program(KYUZEN_CLANG    NAMES clang    REQUIRED)
 find_program(KYUZEN_CLANGXX  NAMES clang++  REQUIRED)
 find_program(KYUZEN_LD_LLD   NAMES ld.lld   REQUIRED)
 find_program(KYUZEN_NASM     NAMES nasm     REQUIRED)
 
-# Warn if the selected clang is not the version the baseline was measured
-# with. Not fatal: a different LLVM may still produce equivalent output, but
-# any binary difference must then be attributed to the toolchain, not to the
-# migration.
+# Warn if the selected clang is not the version the baseline was measured with.
+#
+# This is the single easiest way to produce a wrong-but-successful build: a
+# Clang 22 kernel compiles and links perfectly, it just is not the baseline
+# binary. The check is worth being loud about — once.
+#
+# REPORTING IT ONLY ONCE IS AWKWARD. A toolchain file is re-read for every
+# language (C, CXX, ASM_NASM), and CMake's compiler-ABI probe runs try_compile,
+# which is a SEPARATE CMake instance with its OWN cache. A cache-variable latch
+# therefore does not survive: the warning fired three times per configure.
+#
+# A marker file does survive, because every one of those instances resolves the
+# same path here. It lives in build-tools/ (already generated and gitignored),
+# keyed by the detected version so that upgrading the compiler re-arms it.
 set(KYUZEN_EXPECTED_CLANG_MAJOR "21" CACHE STRING
     "LLVM major version the parity baseline was produced with")
 
@@ -50,13 +63,41 @@ execute_process(
     ERROR_QUIET
 )
 string(REGEX MATCH "clang version ([0-9]+)" _ "${_clang_version_out}")
+
 if(CMAKE_MATCH_1 AND NOT CMAKE_MATCH_1 STREQUAL KYUZEN_EXPECTED_CLANG_MAJOR)
-    message(WARNING
-        "Selected C compiler is Clang ${CMAKE_MATCH_1} (${KYUZEN_CLANG}) but the "
-        "parity baseline was produced with Clang ${KYUZEN_EXPECTED_CLANG_MAJOR}.\n"
-        "Binary parity checks may differ because of the toolchain, not the build "
-        "system. Put the expected toolchain first on PATH, or set "
-        "-DKYUZEN_EXPECTED_CLANG_MAJOR=${CMAKE_MATCH_1} to acknowledge.")
+    set(_warn_dir  "${CMAKE_CURRENT_LIST_DIR}/../build-tools")
+    set(_warn_mark "${_warn_dir}/.clang${CMAKE_MATCH_1}-mismatch-reported")
+
+    if(NOT EXISTS "${_warn_mark}")
+        file(MAKE_DIRECTORY "${_warn_dir}")
+        file(WRITE "${_warn_mark}" "reported\n")
+
+        # The advice deliberately does NOT suggest setting
+        # KYUZEN_EXPECTED_CLANG_MAJOR to the detected version. That would
+        # silence the warning while keeping the wrong compiler — the opposite
+        # of useful.
+        message(WARNING
+            "Wrong C compiler: found Clang ${CMAKE_MATCH_1}, expected Clang "
+            "${KYUZEN_EXPECTED_CLANG_MAJOR}.\n"
+            "  detected : ${KYUZEN_CLANG}\n"
+            "\n"
+            "The build will SUCCEED, but the kernel will NOT be byte-identical to "
+            "the verified baseline (sha256 96b79a92...e827cb).\n"
+            "\n"
+            "Cause: MSYS2 has two clang builds and the wrong one is winning on "
+            "PATH. This project needs usr/bin (LLVM ${KYUZEN_EXPECTED_CLANG_MAJOR}), "
+            "not clang64/bin (LLVM ${CMAKE_MATCH_1}).\n"
+            "\n"
+            "Fix: run the build through ./build.sh, which puts usr/bin first and "
+            "invokes cmake from clang64/bin by absolute path. Doing it by hand "
+            "needs BOTH, because /usr/bin/cmake generates POSIX paths that native "
+            "Ninja cannot read:\n"
+            "    export PATH=\"\$MSYS_ROOT/usr/bin:\$MSYS_ROOT/clang64/bin:\$PATH\"\n"
+            "    \$MSYS_ROOT/clang64/bin/cmake -S . -B build-cmake -G Ninja\n"
+            "\n"
+            "Only override KYUZEN_EXPECTED_CLANG_MAJOR if you intend to move the "
+            "baseline to LLVM ${CMAKE_MATCH_1} on purpose.")
+    endif()
 endif()
 
 # Binary-inspection tools used by the post-build ELF verification steps
