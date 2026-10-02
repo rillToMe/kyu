@@ -36,8 +36,13 @@ target_compile_options(kyuzen-libdesktop PRIVATE
     -iquote ${KYUZEN_ROOT}/include
 )
 
+# OUTPUT_NAME is "desktop", NOT "libdesktop": CMake prepends the platform
+# archive prefix ("lib" on this toolchain) automatically, so "libdesktop" here
+# would produce liblibdesktop.a. The Makefile's archive was
+# build/desktop/libdesktop.a (Makefile line 1489), so the basename must stay
+# "desktop" to land on the same name.
 set_target_properties(kyuzen-libdesktop PROPERTIES
-    OUTPUT_NAME "libdesktop"
+    OUTPUT_NAME "desktop"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/desktop"
 )
 
