@@ -14,6 +14,28 @@
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
+# ---------------------------------------------------------------------------
+# Toolchain: install KyuzenToolchain.cmake automatically.
+#
+# CMAKE_TOOLCHAIN_FILE is read by project() below, so it has to be set BEFORE
+# that call — and it is only ever read from the cache. Setting it here means
+# the documented `cmake -S . -B build -G Ninja` works on a clean tree.
+#
+# This is not just convenience. Without it, a FRESH configure silently picked
+# the host compiler (project() ran with no toolchain, found c++.exe, and only
+# failed later in an unrelated place — BearSSL's host-triple probe). Existing
+# build directories kept working only because CMakeCache.txt had recorded the
+# toolchain path during the very first configure, so the breakage was invisible
+# to every incremental reconfigure and appeared only under `rm -rf build`.
+#
+# An explicit -DCMAKE_TOOLCHAIN_FILE=... still wins (the guard tests for it),
+# and a non-empty cached value from an earlier configure is left untouched.
+# ---------------------------------------------------------------------------
+if(NOT CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/KyuzenToolchain.cmake"
+        CACHE FILEPATH "Toolchain file for the KyuzenOS bare-metal target")
+endif()
+
 project(KyuzenOS
     VERSION     0.1.0
     DESCRIPTION "KyuzenOS — x86_64 higher-half bare-metal operating system"

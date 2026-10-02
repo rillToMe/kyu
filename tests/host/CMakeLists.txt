@@ -44,6 +44,18 @@ project(KyuzenHostTests LANGUAGES C CXX)
 get_filename_component(KYUZEN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(KYUZEN_UNIT_DIR "${KYUZEN_ROOT}/tests/host/unit")
 
+# ---------------------------------------------------------------------------
+# kyuzen_glob() — shared with the target build.
+#
+# This is a SEPARATE CMake invocation, so it does not inherit anything the
+# top-level CMakeLists.txt includes; the helper must be pulled in explicitly
+# or every kyuzen_glob() call below fails with "Unknown CMake command".
+#
+# Only the glob helper is shared. KyuzenToolchain.cmake deliberately is NOT
+# (it would switch these tests to the bare-metal triple — see the header).
+# ---------------------------------------------------------------------------
+include("${KYUZEN_ROOT}/cmake/KyuzenGlob.cmake")
+
 enable_testing()
 
 # ---------------------------------------------------------------------------
@@ -500,9 +512,22 @@ endif()
 #                       INSTRUCTION) with no output.
 #   test-libc-heap      fails to COMPILE: LLVM libc's internal API drift
 #                       (no member 'write_to_stderr' in the libc namespace).
+#
+# DISABLED alone is NOT enough for test-libc-heap. CTest's DISABLED property
+# only skips the test at RUN time; Ninja still builds the target as part of
+# `all`, the compile fails, and Ninja stops there — so ten unrelated test
+# binaries downstream never linked and `ctest` reported them "Not Run" for no
+# reason of their own. The target is therefore excluded from the default build
+# as well. It can still be built on demand (`ninja test-libc-heap`) to watch
+# the compile error, which is the point of keeping it.
+#
+# test-kyuzenfs-tree compiles cleanly and only fails at run time, so it stays
+# in the default build — that way `ninja` still proves the test's own code
+# compiles, which is real coverage even while the test is disabled.
 # ---------------------------------------------------------------------------
 if(TARGET test-libc-heap)
     set_tests_properties(test-libc-heap PROPERTIES DISABLED TRUE)
+    set_target_properties(test-libc-heap PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 if(TARGET test-kyuzenfs-tree)
     set_tests_properties(test-kyuzenfs-tree PROPERTIES DISABLED TRUE)
