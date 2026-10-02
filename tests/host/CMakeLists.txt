@@ -56,6 +56,13 @@ set(CMAKE_CXX_COMPILER "${KYUZEN_WRAPPED_CXX}")
 
 project(KyuzenHostTests LANGUAGES C CXX)
 
+# Compilation database for IntelliSense. The target build sets this in the
+# top-level CMakeLists.txt; this is a separate invocation, so it needs its own.
+# The two databases describe different flag sets (host vs bare-metal) and are
+# not interchangeable — an IDE pointed at the wrong one will show phantom
+# errors on every include.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # ---------------------------------------------------------------------------
 # Paths back to the repository root. tests/host/CMakeLists.txt is two levels
 # down, so the root is ../.. relative to this file.
@@ -557,6 +564,51 @@ if(TARGET test-libc-heap)
 endif()
 if(TARGET test-kyuzenfs-tree)
     set_tests_properties(test-kyuzenfs-tree PROPERTIES DISABLED TRUE)
+endif()
+
+# ---------------------------------------------------------------------------
+# Host tool: KyuzenFS V4 disk formatter.
+#
+#   cmake --build build/host --target mkfs.kyuzenfs
+#   ./mkfs.kyuzenfs disk.img
+#
+# This is a HOST program, not a bare-metal target: it formats a disk image on
+# the build machine before boot. It therefore belongs in this build tree, not
+# in the target tree — and it must NOT go through the global ld.lld link rule,
+# which skips the platform startup code and C runtime.
+#
+# The Make build had a `mkfs` target for this. It was missed in the migration,
+# so the tool was unreachable from CMake even though tools/mkfs.kyuzenfs.c was
+# always present.
+#
+# NO INCLUDE DIRECTORY, deliberately — not even the repo's include/.
+#
+# The old recipe passed `-iquote include`, but the tool does not need it: it
+# includes only <stdint.h>, <stdio.h>, <stdlib.h> and <string.h>, all with
+# angle brackets, which -iquote would not resolve anyway. What it DOES need is
+# the host's real <stdlib.h>, and the repo's include/stdlib.h is a freestanding
+# shim that defines only `abs()` — no malloc, free or strtoull.
+#
+# Adding include/ as an include directory therefore breaks the tool outright:
+#
+#   mkfs.kyuzenfs.c:171:30: error: call to undeclared library function 'malloc'
+#   mkfs.kyuzenfs.c:215:5:  error: call to undeclared library function 'free'
+#   mkfs.kyuzenfs.c:104:48: error: call to undeclared library function 'strtoull'
+#
+# This is the same stdlib.h shadowing documented throughout this file, reached
+# from the opposite direction: the tests need -iquote so the shim does NOT win,
+# and this tool needs no path at all so the host header DOES.
+# ---------------------------------------------------------------------------
+if(EXISTS "${KYUZEN_ROOT}/tools/mkfs.kyuzenfs.c")
+    add_executable(mkfs.kyuzenfs "${KYUZEN_ROOT}/tools/mkfs.kyuzenfs.c")
+    target_compile_options(mkfs.kyuzenfs PRIVATE -O2 -Wall -Wextra)
+    set_target_properties(mkfs.kyuzenfs PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+else()
+    message(WARNING
+        "mkfs.kyuzenfs: tools/mkfs.kyuzenfs.c is not in the repository, so the "
+        "KyuzenFS disk formatter cannot be built.")
 endif()
 
 # ---------------------------------------------------------------------------

@@ -88,12 +88,12 @@ Full details: [Architecture Overview](docs/architecture/overview.md).
 
 ### Requirements
 
-- **Clang/LLVM** (`clang`, `ld.lld`), version 14+
+- **Clang/LLVM** (`clang`, `ld.lld`)
 - **NASM**
-- **GNU Make**
+- **CMake** ≥ 3.20 and **Ninja**
 - **xorriso** (hybrid ISO)
 - **QEMU** (`qemu-system-x86_64`)
-- **CMake** and **Python 3** (for the LLVM libc build)
+- **Python 3** (for the LLVM libc build)
 - **Rust toolchain** (optional, for Rust applications)
 
 Full platform setup (Windows/MSYS2 and Linux) is in
@@ -102,11 +102,14 @@ Full platform setup (Windows/MSYS2 and Linux) is in
 ### Build and run
 
 ```sh
-make                # 1. compile the kernel → build/bin/myos.bin
-make apps           # 2. build the SDKs and userspace applications
-make boot_image.iso # 3. package the hybrid BIOS+UEFI ISO
-make run            # 4. boot in QEMU (virtio-vga 1920×1080, 8 CPUs)
+./build.sh            # 1. compile the kernel and libraries → build/target/bin/myos.bin
+./build.sh iso        # 2. build the SDKs, apps, Rust apps, and the ISO
+./build.sh run        # 3. boot in QEMU (virtio-vga 1920×1080, 8 CPUs)
 ```
+
+`./build.sh` sets up the toolchain PATH for you — on MSYS2 this matters, because
+the project needs tools from two different clang installations. See
+[Building](docs/development/building.md#why-the-script-exists).
 
 See [Running](docs/development/running.md) for QEMU options and first-boot
 details.
@@ -115,12 +118,16 @@ details.
 
 | Target | Purpose |
 | --- | --- |
-| `make` | Compile the kernel |
-| `make apps` | Build SDKs, libraries, and applications |
-| `make boot_image.iso` | Build the bootable ISO |
-| `make run` | Build and boot in QEMU |
-| `make mkfs` | Build the host-side KyuzenFS formatter |
-| `make test-*` | Run host-side tests (see [Testing](docs/development/testing.md)) |
+| `./build.sh` | Compile the kernel, libraries, and applications |
+| `./build.sh iso` | Build the bootable ISO |
+| `./build.sh run` | Build and boot in QEMU |
+| `./build.sh test` | Run the host-side test suite |
+| `./build.sh mkfs` | Build the host-side KyuzenFS formatter |
+| `./build.sh <target>` | Any Ninja target (`kyuzen-kernel`, `kyuzen-desktop`, …) |
+
+Everything generated goes under `build/` (gitignored); nothing is written into
+the source tree, so `rm -rf build` is a complete reset. See
+[Testing](docs/development/testing.md) for the test suite.
 
 ## First Boot
 

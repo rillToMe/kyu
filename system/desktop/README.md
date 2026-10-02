@@ -49,7 +49,7 @@ Konsekuensi yang perlu diingat:
   heap user-space tumbuh on-demand (arena tambahan lewat `sys_alloc` #9), jadi
   permintaan 8 MB tidak lagi `NULL` seperti pada insiden BSOD INT 6. Detail:
   `libs/c/libc-port/src/kyuzen_heap.hpp` + `test/libc_heap_test.cpp`
-  (`make test-libc-heap`).
+  (lihat `docs/development/testing.md`).
 
 ## Perilaku yang dipertahankan dari desktop generasi C
 
@@ -64,6 +64,6 @@ Konsekuensi yang perlu diingat:
 
 ## Build
 
-`make desktop` (Lewat `apps/` → ISO juga). Ganti implementasi:
-`make desktop DESKTOP_APP=test-desktop`. Guard: `make desktop-isolation`,
-host test: `make test-desktop`.
+`./build.sh kyuzen-desktop` (lewat `apps/` → ISO juga). Ganti implementasi:
+`cmake -S . -B build/target -DKYUZEN_DESKTOP_APP=test-desktop`.
+Host test: `./build.sh test && ctest --test-dir build/host -R test-desktop`.

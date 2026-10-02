@@ -11,18 +11,17 @@ This document covers toolchain setup and the build targets for KyuzenOS.
 | `clang` | Compile kernel, apps, host tests | Target `x86_64-pc-none-elf` |
 | `nasm` | Assemble ISR stubs, GDT/TSS | ELF64 output |
 | `ld.lld` | Link the kernel and user ELFs | GNU flavor |
+| `cmake` + `ninja` | Build orchestration | CMake ≥ 3.20 |
 | `qemu-system-x86_64` | Run the system | |
 | `xorriso` | Build the hybrid BIOS+UEFI ISO | `xorriso -as mkisofs` |
 | `git` | Version control | |
-| GNU `make` | Build orchestration | |
 
 ### Optional tools
 
 | Tool | Purpose |
 | --- | --- |
-| `rustup` + `rustc` | Build Rust applications |
-| `cmake` + `python3` | Cross-compile LLVM libc (the C SDK) |
-| `python` + `pip install compiledb` | Generate `compile_commands.json` for IntelliSense |
+| `rustup` + `rustc` | Build Rust applications (`./build.sh iso` needs cargo) |
+| `python3` | Used by the nested LLVM libc build |
 
 ### Already in the repository
 
@@ -38,85 +37,97 @@ This document covers toolchain setup and the build targets for KyuzenOS.
 
 ### Windows (MSYS2)
 
-1. Install [MSYS2](https://www.msys2.org/) (for example, to `E:\Tools\msys2`).
-2. Open the **UCRT64** terminal (not MINGW64 or MSYS).
-3. Install packages:
-
-   ```sh
-   pacman -Suy
-   pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-nasm \
-             mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-cmake \
-             mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-qemu \
-             mingw-w64-ucrt-x86_64-xorriso mingw-w64-ucrt-x86_64-python-pip \
-             make git
-   ```
-
-4. Add `E:\Tools\msys2\ucrt64\bin` to `PATH`.
-5. Optionally install `compiledb` (`pip install compiledb`) and Rust
-   (`rustup target add x86_64-unknown-none`).
-
-### Linux (Ubuntu/Debian)
+The project needs tools from **three** MSYS2 environments, so the package list
+spans more than one. Install everything from a single shell:
 
 ```sh
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y clang nasm lld qemu-system-x86 \
-    xorriso git make cmake python3 python3-pip ovmf
+pacman -Suy
+# MSYS toolchain — clang 21 (the parity baseline), nasm, xorriso
+pacman -S clang nasm xorriso make git python
+# Native Windows toolchain — cmake and ninja
+pacman -S mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
+# QEMU
+pacman -S mingw-w64-x86_64-qemu
 ```
 
-Clang 14 or newer is recommended.
+You do **not** need to pick the right shell or edit PATH by hand: `./build.sh`
+finds the MSYS2 root, puts `usr/bin` first (so clang 21 wins) and calls
+`cmake`/`ctest` from `clang64/bin` by absolute path. See
+[Why the script exists](#why-the-script-exists) for what goes wrong otherwise.
 
-### Linux (Arch)
+Verify with:
 
 ```sh
-sudo pacman -S clang nasm lld qemu-full xorriso git make cmake python python-pip
+./build.sh setup     # prints the resolved MSYS2 root, cmake and clang version
 ```
 
-> **Platform note:** the root `Makefile` hardcodes the Windows binary names
-> `qemu-system-x86_64.exe` and `./limine/limine.exe`. Building on Linux
-> requires adjusting those names.
+Optionally install Rust (`rustup target add x86_64-unknown-none`) — the `iso`
+target needs `cargo` on PATH, and skips the Rust apps without it.
+
+### Linux
+
+```sh
+# Ubuntu / Debian
+sudo apt update && sudo apt install -y clang nasm lld cmake ninja-build \
+    qemu-system-x86 xorriso git python3 ovmf
+```
+
+```sh
+# Arch
+sudo pacman -S clang nasm lld cmake ninja qemu-full xorriso git python
+```
+
+`./build.sh` is written for MSYS2 and expects `usr/bin`, `clang64/bin` and
+`mingw64/bin` under one root. On Linux those paths do not exist, so configure
+CMake directly instead — the two-clang problem it works around is MSYS2-specific:
+
+```sh
+cmake -S . -B build/target -G Ninja
+cmake --build build/target
+```
 
 ## Build Targets
 
 Run all commands from the repository root.
 
+> **Use `./build.sh`.** It locates the MSYS2 installation and sets PATH
+> correctly no matter which shell you started in. Building with plain
+> `cmake`/`ninja` works too, but needs a specific PATH setup — see
+> [Why the script exists](#why-the-script-exists) below.
+
 ### Kernel
 
 ```sh
-make                 # → build/bin/myos.bin
+./build.sh           # → build/target/bin/myos.bin
 ```
 
-`make` (the default target) builds only the kernel. It also writes a
-byte-identical copy at `build/myos.bin`.
+This builds the kernel and its libraries. It also writes a byte-identical copy
+at `build/target/myos.bin`.
 
 ### Applications
 
 ```sh
-make apps            # SDK (C + C++) + libdesktop + all applications
-make desktop         # only desktop.elf
-make rust-apps       # Rust applications
+./build.sh           # kernel + libraries + every application
+./build.sh kyuzen-desktop   # only desktop.elf
 ```
+
+Individual targets are Ninja targets; `./build.sh <target>` forwards to Ninja.
+Useful ones: `kyuzen-kernel`, `kyuzen-desktop`, `kyuzen-browser`,
+`kyuzen-rust-apps`, `kyuzen-sdk-c`, `kyuzen-sdk-cpp`.
 
 ### Full ISO
 
 ```sh
-make boot_image.iso  # kernel + apps + Rust + assets + Limine → build/boot_image.iso
-```
-
-### SDKs
-
-```sh
-make sdk-c           # stage the C SDK to build/sdk/c
-make sdk-cpp         # stage the C++ SDK to build/sdk/cpp
-make libdesktop      # build build/desktop/libdesktop.a
+./build.sh iso       # kernel + apps + Rust + assets + Limine → build/target/boot_image.iso
 ```
 
 ### Utilities
 
 ```sh
-make mkfs               # build the KyuzenFS host format tool
-make compile_commands   # regenerate compile_commands.json (IntelliSense)
-make clean              # remove build/ and stray objects
-make clean-apps         # clean only application output
+./build.sh clean           # remove build/ entirely (a complete reset)
+./build.sh run             # boot in QEMU, serial → serial.log
+./build.sh run-serial      # boot in QEMU, serial → terminal
+./build.sh run-wd          # boot in QEMU, serial → serial.log (reliable on Windows)
 ```
 
 ## Build Architecture
@@ -124,13 +135,58 @@ make clean-apps         # clean only application output
 ```text
 Sources (kernel/*.c, apps/*.cpp, libs/**, system/**)
     ↓ clang / clang++ / rustc
-Objects (build/obj/**, build/obj/user/**)
+Objects (build/target/**/CMakeFiles/**)
     ↓ ld.lld / rust-lld
-Binaries (build/bin/myos.bin, build/apps/*.elf)
+Binaries (build/target/bin/myos.bin, build/target/apps/*.elf)
     ↓ xorriso + limine
-ISO (build/boot_image.iso)
+ISO (build/target/boot_image.iso)
     ↓ QEMU
 Running system
+```
+
+### Output layout
+
+Everything generated lives under `build/`, and **nothing is written into the
+source tree**, so `rm -rf build` is a complete reset:
+
+```text
+build/target/        kernel + libs + apps + ISO
+  bin/myos.bin       the kernel
+  apps/*.elf         user-space ELFs
+  iso_root/          ISO staging
+  boot_image.iso     the hybrid BIOS+UEFI image
+  tools/             generated compiler wrappers
+build/host/          host-side unit tests (separate build tree)
+```
+
+### Why the script exists
+
+MSYS2 ships **two** complete clang toolchains, and this project needs tools from
+both — in a combination no single PATH ordering produces:
+
+| Tool | Must come from | Why |
+| --- | --- | --- |
+| `clang`, `nasm`, `xorriso`, `ld.lld` | `usr/bin` | LLVM **21** — the parity baseline |
+| `cmake`, `ninja`, `ctest` | `clang64/bin` | native Windows binaries |
+| `qemu-system-x86_64` | `mingw64/bin` | — |
+
+Getting this wrong fails in two very different ways:
+
+- **`/usr/bin/cmake`** is a Cygwin binary. It writes POSIX paths into the Ninja
+  files it generates, and native Ninja cannot resolve them — the build dies with
+  `'.../CMakeScratch/TryCompile-.../testCCompiler.c' ... missing and no known
+  rule to make it`, which looks like a broken source tree.
+- **`clang64/bin/clang`** is LLVM 22. It builds successfully and produces a
+  **byte-different kernel** with no error at all, silently breaking parity with
+  the verified baseline.
+
+`./build.sh` puts `usr/bin` first and invokes `cmake`/`ctest` by absolute path
+from `clang64/bin`. Doing it by hand requires both:
+
+```sh
+export PATH="$MSYS_ROOT/usr/bin:$MSYS_ROOT/clang64/bin:$MSYS_ROOT/mingw64/bin:$PATH"
+"$MSYS_ROOT/clang64/bin/cmake" -S . -B build/target -G Ninja
+"$MSYS_ROOT/clang64/bin/cmake" --build build/target
 ```
 
 ### Object layout
@@ -162,17 +218,21 @@ Kernel:
 
 ## IntelliSense / `compile_commands.json`
 
-VS Code does not read the Makefile, so IntelliSense needs a compilation
-database:
+CMake generates a compilation database automatically — no extra tooling:
 
-1. `pip install compiledb` (once).
-2. `make compile_commands` — runs a dry-run build and captures the exact flags.
-3. Point `.vscode/c_cpp_properties.json` at the generated
-   `compile_commands.json`.
+| Database | Covers |
+| --- | --- |
+| `build/target/compile_commands.json` | the target build (kernel, libs, apps) |
+| `build/host/compile_commands.json` | the host tests |
 
-`compile_commands.json` and `.vscode/` are machine-specific and gitignored;
-regenerate them locally. You must re-run `make compile_commands` after adding a
-source file or changing an include path.
+Point `.vscode/c_cpp_properties.json` at whichever one you are working in. They
+describe **different flag sets** (bare-metal vs host) and are not
+interchangeable — an IDE pointed at the wrong one shows phantom errors on every
+include.
+
+Both are rewritten on every configure, so they stay current when you add a
+source file or change an include path. `compile_commands.json` and `.vscode/`
+are machine-specific and gitignored.
 
 ## Related Documentation
 

@@ -1,5 +1,12 @@
 # Desain: Pemecahan Toolkit Widget `libs/gui/widget/`
 
+> **Catatan (pasca-migrasi CMake).** Dokumen ini ditulis saat proyek masih
+> dibangun dengan Makefile, jadi perintah `make ...` di dalamnya merujuk build
+> lama. Makefile sudah dihapus; padanan CMake-nya ada di
+> [Building](../development/building.md). Hasil verifikasi yang tercatat di sini
+> sengaja tidak diubah — itu catatan apa yang benar-benar dijalankan saat itu.
+
+
 > **Status**: SELESAI (2026-09-19).
 > **Konteks**: `apps/libui.cpp` adalah satu file C++ 3.798 baris berisi seluruh
 > toolkit widget (namespace `ui`) + runtime shim + wrapper C ABI. Dokumen ini

@@ -1,5 +1,12 @@
 # Desain: Library Warna Modular `libs/gui/color/`
 
+> **Catatan (pasca-migrasi CMake).** Dokumen ini ditulis saat proyek masih
+> dibangun dengan Makefile, jadi perintah `make ...` di dalamnya merujuk build
+> lama. Makefile sudah dihapus; padanan CMake-nya ada di
+> [Building](../development/building.md). Hasil verifikasi yang tercatat di sini
+> sengaja tidak diubah — itu catatan apa yang benar-benar dijalankan saat itu.
+
+
 > **Status**: SELESAI (2026-09-19) — library + wiring build + host test +
 > migrasi `kernel/gfx/compositor.c`, `libs/core/libgui.c` (ABI gambar),
 > konstanta dekorasi KWM (`kernel/gfx/kwm_internal.h`), toolkit `libs/gui/widget/`

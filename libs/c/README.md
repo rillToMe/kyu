@@ -11,7 +11,7 @@ libs/c/                     # COMMITTED: sumber boundary (bukan artifact)
 ├── linker/app.ld           # linker script kanonis (ENTRY _start, 2 PT_LOAD)
 └── README.md               # file ini
 
-build/sdk/c/                # GENERATED (gitignored): hasil `make sdk-c`
+build/target/sdk/c/         # GENERATED (gitignored): hasil `./build.sh sdk-c`
 ├── include/                # header publik LLVM libc (disalin dari hasil hdrgen)
 ├── lib/libc.a              # archive terverifikasi Phase 0–4
 ├── crt/crt.o               # startup + port layer (_start, exit/errno/heap/stdio/time)
@@ -22,7 +22,7 @@ Keputusan staging (jangan di-commit ke `libs/c/`):
 
 - `include/` + `lib/libc.a` + `crt/crt.o` adalah **artifact build** —
   repo meng-gitignore `build/`, jadi SDK selalu di-stage ulang dari sumber
-  LLVM yang di-pin (`llvmorg-22.1.8`) lewat `make sdk-c`. Tidak ada header
+  LLVM yang di-pin (`llvmorg-22.1.8`) lewat `./build.sh sdk-c`. Tidak ada header
   yang diduplikasi manual; tidak ada source LLVM yang disalin ke SDK.
 - Satu-satunya sumber port adalah `libs/c/libc-port/src/kyuzen_libc_port.cpp`
   (di luar tree LLVM); SDK mengompilasinya menjadi `crt/crt.o`.
@@ -31,13 +31,13 @@ Keputusan staging (jangan di-commit ke `libs/c/`):
 
 ```text
 clang source.c
-    ↓  -isystem build/sdk/c/include   (SATU-SATUNYA include libc)
+    ↓  -isystem build/target/sdk/c/include   (SATU-SATUNYA include libc)
 Kyuzen SDK headers
-    ↓  build/sdk/c/crt/crt.o          (otomatis, jangan ditambah manual)
+    ↓  build/target/sdk/c/crt/crt.o          (otomatis, jangan ditambah manual)
 Kyuzen CRT (_start → main → exit)
-    ↓  build/sdk/c/lib/libc.a
+    ↓  build/target/sdk/c/lib/libc.a
 libc.a
-    ↓  -T build/sdk/c/linker/app.ld
+    ↓  -T build/target/sdk/c/linker/app.ld
 app.elf  (statis, entry _start, 0 undefined symbol)
 ```
 
@@ -73,7 +73,9 @@ setelah `_start` melayani `.init_array` C++ via weak symbol).
 ## Perintah
 
 ```sh
-make sdk-c             # stage SDK ke build/sdk/c (+assert anti-stale)
-make sdk-c-smoke       # bangun app uji tools/libc-phase3 (murni via SDK)
-make sdk-c-smoke-qemu  # jalankan app uji di QEMU (harap [phase3] PASS)
+./build.sh sdk-c       # stage SDK ke build/target/sdk/c (+assert anti-stale)
+
+> Target lama `sdk-c-smoke` dan `sdk-c-smoke-qemu` belum dipetakan ke CMake,
+> dan Makefile-nya sudah dihapus. Sumber contohnya masih ada di
+> `tools/libc-phase3/`.
 ```

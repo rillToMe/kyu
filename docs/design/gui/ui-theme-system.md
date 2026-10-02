@@ -1,5 +1,12 @@
 # KyuzenOS UI Theme System (Phase A)
 
+> **Catatan (pasca-migrasi CMake).** Dokumen ini ditulis saat proyek masih
+> dibangun dengan Makefile, jadi perintah `make ...` di dalamnya merujuk build
+> lama. Makefile sudah dihapus; padanan CMake-nya ada di
+> [Building](../../development/building.md). Hasil verifikasi yang tercatat di sini
+> sengaja tidak diubah — itu catatan apa yang benar-benar dijalankan saat itu.
+
+
 > Fondasi: mode × aksen → palet semantik → widget. Bukan redesign visual.
 > Detail audit latar: `docs/design/gui/ui-color-widget-audit.md`.
 

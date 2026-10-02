@@ -1,5 +1,12 @@
 # Audit: LLVM libc 22.1.8 (baremetal x86_64) untuk KyuzenOS
 
+> **Catatan (pasca-migrasi CMake).** Dokumen ini ditulis saat proyek masih
+> dibangun dengan Makefile, jadi perintah `make ...` di dalamnya merujuk build
+> lama. Makefile sudah dihapus; padanan CMake-nya ada di
+> [Building](../development/building.md). Hasil verifikasi yang tercatat di sini
+> sengaja tidak diubah — itu catatan apa yang benar-benar dijalankan saat itu.
+
+
 > **Status**: audit only — tidak ada implementasi, tidak ada perubahan kernel/syscall ABI.
 > **Sumber**: `third_party/stdlib/llvm-project/` @ tag **`llvmorg-22.1.8`** (commit `ca7933e47`,
 > diverifikasi via `cmake/Modules/LLVMVersion.cmake`: major 22, minor 1, patch 8, suffix kosong).

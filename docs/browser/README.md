@@ -71,12 +71,15 @@ comes from the kernel's `RDRAND`-backed entropy syscall (87).
 
 The browser engine has host-side tests that run without QEMU:
 
-| Target | Coverage |
+| Test | Coverage |
 | --- | --- |
-| `make test-browser-url-http` | URL parsing and HTTP framing |
-| `make test-browser-html` | HTML parsing and DOM recovery |
-| `make test-browser-css-layout` | CSS cascade and block/inline layout |
-| `make test-tls` | BearSSL with the prebuilt trust anchors |
+| `test-browser-url-http` | URL parsing and HTTP framing |
+| `test-browser-html` | HTML parsing and DOM recovery |
+| `test-browser-css-layout` | CSS cascade + block/inline layout |
+| `test-tls` | BearSSL with the prebuilt trust anchors |
+
+Run one with `ctest --test-dir build/host -R <name>`, or all of them with
+`./build.sh test`.
 
 See [Testing](../development/testing.md).
 

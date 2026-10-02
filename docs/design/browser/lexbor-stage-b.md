@@ -1,5 +1,12 @@
 # Lexbor Stage B — HTML Parser Integration (Production `html::parse()`)
 
+> **Catatan (pasca-migrasi CMake).** Dokumen ini ditulis saat proyek masih
+> dibangun dengan Makefile, jadi perintah `make ...` di dalamnya merujuk build
+> lama. Makefile sudah dihapus; padanan CMake-nya ada di
+> [Building](../../development/building.md). Hasil verifikasi yang tercatat di sini
+> sengaja tidak diubah — itu catatan apa yang benar-benar dijalankan saat itu.
+
+
 > **Status**: Stage B **selesai** (integrasi + verifikasi).
 > **Tanggal**: 2026-09-27.
 > **Revisi Lexbor**: **3.0.0** (stable terbaru).

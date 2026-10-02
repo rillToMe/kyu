@@ -13,7 +13,7 @@ libs/c/                    # COMMITTED: boundary source (not an artifact)
 ├── libc-port/src/         # the port layer (see below)
 └── README.md
 
-build/sdk/c/               # GENERATED (gitignored): from `make sdk-c`
+build/target/sdk/c/        # GENERATED (gitignored): from `./build.sh sdk-c`
 ├── include/               # public LLVM libc headers
 ├── lib/libc.a             # libc archive
 ├── crt/crt.o              # startup + port layer
@@ -21,7 +21,7 @@ build/sdk/c/               # GENERATED (gitignored): from `make sdk-c`
 ```
 
 SDK artifacts are generated, never committed: `include/`, `lib/libc.a`, and
-`crt/crt.o` are produced by `make sdk-c` from the pinned LLVM sources
+`crt/crt.o` are produced by `./build.sh sdk-c` from the pinned LLVM sources
 (`llvmorg-22.1.8`). The only hand-written port source is
 `libs/c/libc-port/src/kyuzen_libc_port.cpp`, compiled into `crt/crt.o`.
 
@@ -134,14 +134,16 @@ underlying allocator has a fixed ceiling and no grow hook.
 ## Commands
 
 ```sh
-make sdk-c              # stage the SDK to build/sdk/c (with anti-stale asserts)
-make sdk-c-smoke        # build the test app purely through the SDK
-make sdk-c-smoke-qemu   # run the test app in QEMU
+./build.sh sdk-c        # stage the SDK to build/target/sdk/c (with anti-stale asserts)
+
+> The old `sdk-c-smoke` and `sdk-c-smoke-qemu` targets are not mapped to CMake
+> yet, and the Makefile has been removed. Their example sources are still in
+> `tools/libc-phase3/`.
 ```
 
 > **Build gotcha:** incremental CMake does not detect `entrypoints.txt`
 > changes. If you change entrypoints, remove `build/libc/cmake` and re-run
-> `make libc-phase0`.
+> `libc-phase0`.
 
 ## Related Documentation
 

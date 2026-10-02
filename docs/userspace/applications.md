@@ -86,12 +86,12 @@ Absolute paths are used as-is. So `clock` and `start calc` resolve to
 ## Building Applications
 
 ```sh
-make apps        # build the SDK and all C, C++, and Rust applications
-make desktop     # build only desktop.elf
-make rust-apps   # build the Rust applications
+./build.sh              # build the SDK and all C, C++, and Rust applications
+./build.sh kyuzen-desktop   # build only desktop.elf
+./build.sh kyuzen-rust-apps # build the Rust applications
 ```
 
-Output lands in `build/apps/*.elf`. The build instructions are in
+Output lands in `build/target/apps/*.elf`. The build instructions are in
 [Building](../development/building.md).
 
 ## Adding a New Application
@@ -101,7 +101,7 @@ A C application:
 1. Create `apps/myapp.c` with `int main(int argc, char **argv)`.
 2. Add it to `apps/Makefile` (`APP_ELFS` or the relevant list).
 3. Optionally add `manifests/myapp.app`.
-4. Build with `make apps`; the ELF lands in `build/apps/myapp.elf`.
+4. Build with `./build.sh`; the ELF lands in `build/target/apps/myapp.elf`.
 5. It is installed to `/apps/myapp.elf` at boot (add a Limine module entry).
 
 A C++ application follows the same steps using the C++ SDK (`kyuzen-c++`); see

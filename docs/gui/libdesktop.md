@@ -35,7 +35,7 @@ into the C++ SDK.
 ## Boundary Rules
 
 These are enforced by `tools/desktop-phase8/check-desktop-isolation.sh`
-(`make desktop-isolation`):
+(the desktop isolation guard):
 
 - Public headers may include only `<stdint.h>` and `<kyuzen/desktop/...>` — no
   `userlib.h`, no `libgui.h`, no private paths, no raw ABI symbols.
@@ -71,7 +71,7 @@ A desktop implementation:
 
 A minimal example is `tests/target/test-desktop/main.cpp` (about 100 lines).
 Select an implementation at build time with
-`make desktop DESKTOP_APP=my-desktop` (output always fills the boot slot
+`cmake -S . -B build/target -DKYUZEN_DESKTOP_APP=my-desktop` (output always fills the boot slot
 `build/apps/desktop.elf`).
 
 ## Related Documentation

@@ -1,5 +1,12 @@
 # Desain: Migrasi login/shell/zen ke Ring 3 (Fase 3)
 
+> **Catatan (pasca-migrasi CMake).** Dokumen ini ditulis saat proyek masih
+> dibangun dengan Makefile, jadi perintah `make ...` di dalamnya merujuk build
+> lama. Makefile sudah dihapus; padanan CMake-nya ada di
+> [Building](../development/building.md). Hasil verifikasi yang tercatat di sini
+> sengaja tidak diubah — itu catatan apa yang benar-benar dijalankan saat itu.
+
+
 > **Status**: `SELESAI` — Fase 1-4 selesai & terverifikasi (2026-XX).
 > **Prasyarat**: FIX_005 Tahap 1-4 (SELESAI).
 > **Terkait**: `fix/FIX.md` K-1 (FIXED), PM-2 (FIXED), UP-18.

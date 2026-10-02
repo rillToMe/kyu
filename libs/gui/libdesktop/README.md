@@ -26,7 +26,7 @@ kernel/KWM/syscall  ──backend──▶  libdesktop (API publik <kyuzen/deskt
 | `application.hpp` | `Application::run(Shell&)` — pemilik event loop |
 
 Aturan boundary (ditegakkan `tools/desktop-phase8/check-desktop-isolation.sh`,
-`make desktop-isolation`):
+the desktop isolation guard):
 
 - Header publik hanya boleh include `<stdint.h>` + `<kyuzen/desktop/...>`.
   Tanpa `userlib.h`/`libgui.h`, tanpa path privat, tanpa simbol ABI mentah.
@@ -46,5 +46,6 @@ Aturan boundary (ditegakkan `tools/desktop-phase8/check-desktop-isolation.sh`,
 5. Tanpa perubahan kernel, KWM, atau `libdesktop`.
 
 Contoh minimum: `tests/target/test-desktop/main.cpp` (±100 baris).
-Pilih implementasi saat build: `make desktop DESKTOP_APP=my-desktop`
-(output selalu mengisi slot boot `build/apps/desktop.elf`).
+Pilih implementasi saat build:
+`cmake -S . -B build/target -DKYUZEN_DESKTOP_APP=my-desktop`
+(output selalu mengisi slot boot `build/target/apps/desktop.elf`).

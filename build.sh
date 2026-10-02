@@ -179,6 +179,21 @@ case "${1:-all}" in
         "$CTEST" --test-dir "$SCRIPT_DIR/$HOST_BUILD_DIR" --output-on-failure
         ;;
 
+    mkfs)
+        report_toolchain
+        echo ""
+        # The KyuzenFS disk formatter is a HOST program, so it lives in the host
+        # build tree, not the target one. `./build.sh mkfs.kyuzenfs` cannot work
+        # — that would be looked up as a target build target and fail with
+        # "unknown target". This subcommand builds it from the right tree and
+        # prints how to use it.
+        "$CMAKE" -S "$SCRIPT_DIR/tests/host" -B "$SCRIPT_DIR/$HOST_BUILD_DIR" -G "$GENERATOR"
+        "$CMAKE" --build "$SCRIPT_DIR/$HOST_BUILD_DIR" --target mkfs.kyuzenfs
+        echo ""
+        echo "Built: $SCRIPT_DIR/$HOST_BUILD_DIR/mkfs.kyuzenfs.exe"
+        echo "Usage: $SCRIPT_DIR/$HOST_BUILD_DIR/mkfs.kyuzenfs.exe disk.img [size_MB]"
+        ;;
+
     all|"")
         report_toolchain
         echo ""

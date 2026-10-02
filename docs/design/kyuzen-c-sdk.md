@@ -12,7 +12,7 @@ libs/c/                      # COMMITTED: sumber boundary
 ├── linker/app.ld           # linker script kanonis (ENTRY _start, 2 PT_LOAD @0x4000000)
 └── README.md               # ringkasan boundary + perintah
 
-build/sdk/c/                # GENERATED (gitignored): `make sdk-c`
+build/target/sdk/c/         # GENERATED (gitignored): `./build.sh sdk-c`
 ├── include/                # salinan header hasil hdrgen (stdio/stdlib/string/time/...)
 ├── lib/libc.a              # salinan archive Phase 0–4 (232 member)
 ├── crt/crt.o               # salinan object port (_start + exit/errno/heap/stdio/time)
@@ -108,18 +108,18 @@ kernel yang didokumentasikan, bukan diperbaiki, fase ini).
 ## 6. Target make
 
 ```sh
-make sdk-c             # stage SDK (+guard anti-stale: printf/malloc/qsort/timespec_get di libc.a, time.h ada)
-make sdk-c-smoke       # app tools/libc-phase3 (murni SDK; guard anti-third_party)
-make sdk-c-smoke-qemu  # QEMU otomatis, harap [phase3] PASS
-make libc-phase4       # app tools/libc-phase4 via SDK (bukti runtime baru terekspos)
-make libc-phase4-qemu  # QEMU otomatis, harap [phase4] PASS
+./build.sh sdk-c       # stage SDK (+guard anti-stale: printf/malloc/qsort/timespec_get di libc.a, time.h ada)
+
+> Target `sdk-c-smoke`, `sdk-c-smoke-qemu`, `libc-phase4` dan
+> `libc-phase4-qemu` belum dipetakan ke CMake dan Makefile sudah dihapus.
+> Sumber contohnya masih ada di `tools/libc-phase3/` dan `tools/libc-phase4/`.
 ```
 
 Determinisme: `sdk-c` bergantung pada `libc.a` + object port, sehingga
 perubahan `entrypoints.txt` menarik rebuild. **Pengecualian terdokumentasi**:
 incremental CMake tidak mendeteksi perubahan `entrypoints.txt` (audit
 §14.7.6) — bila guard `sdk-c` melaporkan `libc.a` basi, hapus
-`build/libc/cmake` lalu ulangi dari `make libc-phase0`. Guard menolak state
+`build/target/libc/cmake` lalu ulangi. Guard menolak state
 basi dengan keras, tidak pernah diam-diam memakai archive lama.
 
 ## 7. Yang TIDAK dilakukan fase ini
@@ -173,6 +173,6 @@ urutan arsip, atau flag (`libs/cpp/README.md`, audit §19). Publik:
   mendelegasikan link ke GCC — didokumentasikan di README).
 - Contoh `examples/cpp/{hello,containers,strings}` — ELF asli via wrapper.
 - Guard `tools/libc-phase7/check-sdk-isolation.sh`: 0 rujukan source app ke
-  `third_party/stdlib/llvm-project`, `libs/c/libc-port`, `build/libc`,
-  `build/libcxx`. Smoke `tools/libc-phase7` + `make libc-phase7-qemu`
-  (`[phase7] PASS`), `make cpp-app(-run)`.
+  `third_party/stdlib/llvm-project`, `libs/c/libc-port`, `build/target/libc`,
+  `build/target/libcxx`. Smoke `tools/libc-phase7` belum dipetakan ke CMake;
+  Makefile-nya sudah dihapus.

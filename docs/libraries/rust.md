@@ -37,7 +37,7 @@ The workspace keeps Cargo metadata and `target/` out of the C/C++ build tree.
 
 ```sh
 rustup target add x86_64-unknown-none
-make rust-apps          # cargo build --release, then copy ELFs to build/apps/
+./build.sh kyuzen-rust-apps   # cargo build --release, then copy ELFs to build/target/apps/
 ```
 
 The resulting ELFs (`hello-slint.elf`, `control-center.elf`) are installed to

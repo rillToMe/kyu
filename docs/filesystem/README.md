@@ -58,7 +58,7 @@ stays at the root.
   the superblock is invalid (`EINVAL`), the filesystem is formatted
   automatically.
 - `kfs_format` (syscall 5) is root-only.
-- `make mkfs` builds the host-side formatter; `./mkfs.kyuzenfs disk.img`
+- `./build.sh mkfs` builds the host-side formatter; `./build/host/mkfs.kyuzenfs disk.img`
   creates a filesystem image.
 
 ## Path Resolution

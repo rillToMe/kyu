@@ -19,7 +19,7 @@ libs/cpp/                   # COMMITTED: boundary source
 ├── linker/app.ld           # C script + .init_array
 └── README.md
 
-build/sdk/cpp/              # GENERATED (gitignored): from `make sdk-cpp`
+build/target/sdk/cpp/       # GENERATED (gitignored): from `./build.sh sdk-cpp`
 ├── include/                # libc++ closure + Kyuzen headers
 ├── bin/kyuzen-c++          # ready-to-use wrapper
 ├── cxxrt.o                 # C++ runtime
@@ -36,9 +36,7 @@ build/sdk/cpp/bin/kyuzen-c++ hello.cpp -o hello.elf
 or via make:
 
 ```sh
-make cpp-app            # build the hello example
-make cpp-app-run        # run it in QEMU
-make cpp-examples       # all examples (hello/containers/strings)
+./build.sh sdk-cpp      # stage the SDK first (see Commands below)
 ```
 
 ### What the wrapper does
@@ -144,13 +142,13 @@ unwinding, no pthreads, and no TLS.
 ## Commands
 
 ```sh
-make sdk-cpp              # stage the C++ SDK to build/sdk/cpp
-make sdk-cpp-smoke        # build the smoke test via the SDK
-make sdk-cpp-smoke-qemu   # run it in QEMU
-make cpp-app              # hello example via the wrapper
-make cpp-app-run          # run it in QEMU
-make cpp-examples         # all examples
-make cpp-sdk-isolation    # guard: 0 references to internal LLVM/port/build
+./build.sh sdk-cpp      # stage the C++ SDK to build/target/sdk/cpp
+
+> The old `sdk-cpp-smoke`, `sdk-cpp-smoke-qemu`, `cpp-app`, `cpp-app-run`,
+> `cpp-examples` and `cpp-sdk-isolation` targets are not mapped to CMake yet,
+> and the Makefile has been removed. Their example sources are still in
+> `tools/libc-phase5/`, `tools/libc-phase6/`, `tools/libc-phase7/` and
+> `examples/cpp/`.
 ```
 
 ## Related Documentation

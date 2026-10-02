@@ -22,7 +22,7 @@ libs/cpp/                   # COMMITTED: sumber boundary (bukan artifact)
 ├── linker/app.ld           # = app.ld C + section .init_array (ctor global)
 └── README.md               # file ini
 
-build/sdk/cpp/              # GENERATED (gitignored): hasil `make sdk-cpp`
+build/target/sdk/cpp/       # GENERATED (gitignored): hasil `./build.sh sdk-cpp`
 ├── include/                # closure libc++ (9 header publik subset +
 │                           #   internal __* transitif + 2 site file Kyuzen +
 │                           #   3 header publik <kyuzen/...>)
@@ -39,24 +39,22 @@ menyelesaikan masalah itu; SDK hanya menyediakan yang tidak ada di standar
 ## Cara build aplikasi (satu-satunya yang perlu diketahui developer)
 
 ```sh
-build/sdk/cpp/bin/kyuzen-c++ hello.cpp -o hello.elf
+build/target/sdk/cpp/bin/kyuzen-c++ hello.cpp -o hello.elf
 ```
 
-atau via make:
+Bangun dulu SDK-nya (lihat [Perintah](#perintah) di bawah untuk daftar lengkap):
 
 ```sh
-make cpp-app      # contoh examples/cpp/hello via wrapper publik
-make cpp-app-run  # jalankan contoh hello di QEMU
-make cpp-examples # semua contoh (hello/containers/strings)
+./build.sh sdk-cpp    # stage SDK ke build/target/sdk/cpp
 ```
 
 Alur di balik wrapper (dimiliki SDK, bukan developer):
 
 ```text
 hello.cpp
-    ↓  flag kanonis + -isystem build/sdk/cpp/include + -isystem build/sdk/c/include
+    ↓  flag kanonis + -isystem build/target/sdk/cpp/include + -isystem build/target/sdk/c/include
 clang++ → object sementara (di TMPDIR, otomatis dibersihkan)
-    ↓  ld.lld -m elf_x86_64 -nostdlib -T build/sdk/cpp/linker/app.ld
+    ↓  ld.lld -m elf_x86_64 -nostdlib -T build/target/sdk/cpp/linker/app.ld
        app.o + lib/libcxxrt.a + cxxrt.o + crt.o + libc.a (urutan ini, selalu)
 hello.elf  (statis, entry _start, 0 undefined symbol)
 ```
@@ -74,7 +72,7 @@ terulang): link TIDAK lewat driver `clang++` — clang host ini mendelegasikan
 link ke GCC/collect2 (gagal dengan `unrecognised emulation mode`), jadi
 wrapper mengompilasi dengan `clang++` lalu me-link langsung dengan `ld.lld`,
 persis seperti recipe Phase 5/6. Toolchain diambil dari `KYUZEN_CXX`/
-`KYUZEN_LD` bila di-set Makefile, default `clang++`/`ld.lld` di PATH.
+`KYUZEN_LD` bila di-set build system, default `clang++`/`ld.lld` di PATH.
 
 ## Aturan (kontrak, bukan saran)
 
@@ -108,16 +106,15 @@ dipakai lewat boundary publik yang stabil.
 ## Perintah
 
 ```sh
-make sdk-cpp            # stage SDK C++ ke build/sdk/cpp (+kyuzen/ +wrapper)
-make sdk-cpp-smoke      # bangun app uji Phase 5 tools/libc-phase5 (murni via SDK)
-make sdk-cpp-smoke-qemu # jalankan app uji Phase 5 di QEMU (harap PASS + dtor)
-make libc-phase5        # alias: bangun app Phase 5
-make libc-phase6        # bangun app uji Phase 6 tools/libc-phase6 (libc++ subset)
-make libc-phase6-qemu   # jalankan app uji Phase 6 di QEMU (harap [phase6] PASS)
-make cpp-app            # contoh hello via wrapper publik (harap link OK)
-make cpp-app-run        # jalankan contoh hello di QEMU (harap sapaan SDK)
-make cpp-examples       # semua contoh via wrapper publik
-make cpp-sdk-isolation  # guard: 0 rujukan app ke internal LLVM/port/build
-make libc-phase7        # smoke SDK publik Phase 7 via wrapper (harap link OK)
-make libc-phase7-qemu   # jalankan smoke Phase 7 di QEMU (harap [phase7] PASS)
+./build.sh sdk-cpp     # stage SDK C++ ke build/target/sdk/cpp (+kyuzen/ +wrapper)
 ```
+
+Itu satu-satunya target SDK C++ yang ada di build CMake.
+
+> **Target lama sudah tidak ada.** Makefile dulu punya `sdk-cpp-smoke`,
+> `libc-phase5/6/7`, `cpp-app`, `cpp-app-run`, `cpp-examples`, dan
+> `cpp-sdk-isolation`. Semuanya belum dipetakan ke CMake dan Makefile-nya sudah
+> dihapus (tersedia di riwayat git: `git show 05a8d75:Makefile`). Sumber
+> contohnya masih ada di `tools/libc-phase5/`, `tools/libc-phase6/`,
+> `tools/libc-phase7/`, dan `examples/cpp/`, jadi kalau salah satu dibutuhkan
+> lagi, itu pekerjaan menambah target — bukan pekerjaan menulis ulang kode.

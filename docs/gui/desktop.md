@@ -71,13 +71,12 @@ Implications:
 ## Building
 
 ```sh
-make desktop                        # build the default desktop
-make desktop DESKTOP_APP=test-desktop   # swap the implementation
-make desktop-isolation              # isolation guard
-make test-desktop                   # host test (manifest + crash-notice lifecycle)
+./build.sh kyuzen-desktop                                  # default desktop
+cmake -S . -B build/target -DKYUZEN_DESKTOP_APP=test-desktop  # swap implementation
+./build.sh test && ctest --test-dir build/host -R test-desktop
 ```
 
-The output always fills the boot slot `build/apps/desktop.elf`.
+The output always fills the boot slot `build/target/apps/desktop.elf`.
 
 ## Related Documentation
 

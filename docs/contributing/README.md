@@ -8,8 +8,8 @@ mandatory development rules; this document is the human-readable entry point.
 
 1. Read [Architecture Overview](../architecture/overview.md) to understand the
    system.
-2. Read [Building](../development/building.md) and get a clean `make` and
-   `make run` working.
+2. Read [Building](../development/building.md) and get a clean `./build.sh` and
+   `./build.sh run` working.
 3. Read the `.rules/` files — they are binding:
    - `RULES.md` — general principles
    - `STYLE_GUIDE.md` — code style, comments, naming
@@ -52,7 +52,8 @@ mandatory development rules; this document is the human-readable entry point.
 4. **Respect the contracts.** Lock ordering, blocking rules, ownership, and
    buffer limits are documented; violating them is a bug.
 5. **Handle errors.** Never ignore a return value.
-6. **Test.** Build the whole system (`make`), build apps (`make apps`), and run
+6. **Test.** Build the whole system (`./build.sh`), build the ISO
+   (`./build.sh iso`), and run
    the relevant tests ([Testing](../development/testing.md)).
 7. **Document.** Update the relevant documentation under `docs/`.
 
@@ -67,7 +68,7 @@ it from the [documentation index](../README.md).
 
 Before declaring a task complete (from `.rules/REVIEW_CHECKLIST.md`):
 
-- [ ] The project compiles cleanly (`make`, and `make apps` if relevant).
+- [ ] The project compiles cleanly (`./build.sh`).
 - [ ] No new warnings.
 - [ ] Documentation updated where behavior or interfaces changed.
 - [ ] No duplicated logic and no dead code introduced.
