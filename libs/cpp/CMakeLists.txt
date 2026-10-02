@@ -76,7 +76,13 @@ add_custom_command(
             # libcxxrt loop below.
             -isystem libs/cpp/include
             -isystem third_party/stdlib/llvm-project/libcxx/include
-            -isystem build/sdk/c/include
+            # The staged C SDK headers, by ABSOLUTE path. This used to be the
+            # literal string "build/sdk/c/include", which silently assumed the
+            # build directory was named exactly "build" — a wrong guess sent
+            # verbose_abort.cpp to the host's system headers, and it picked up
+            # a reference to _impure_ptr (a newlib/Cygwin symbol) that no
+            # freestanding libc++ translation unit should ever have.
+            -isystem "${KYUZEN_SDK_DIR}/c/include"
             -c libs/c/libc-port/src/kyuzen_cxx_runtime.cpp
             -o "${_sdk_cpp_cxxrt}"
     DEPENDS
@@ -148,9 +154,15 @@ foreach(_i RANGE 0 ${_libcxxrt_count})
                 # assertions, so absolute paths change the emitted object.
                 # Also, `-include <abs-windows-path>` is rejected outright
                 # (clang reads `E:` as a drive prefix in a header name).
+                #
+                # The SDK include is the one exception: it must be absolute,
+                # because it lives under the build directory and a relative
+                # path would have to spell out the build directory's name.
+                # See the note on the cxxrt.o command above for what the old
+                # literal "build/sdk/c/include" cost when it guessed wrong.
                 -isystem libs/cpp/include
                 -isystem third_party/stdlib/llvm-project/libcxx/include
-                -isystem build/sdk/c/include
+                -isystem "${KYUZEN_SDK_DIR}/c/include"
                 -include libs/c/libc-port/src/kyuzen_libcxx_prologue.h
                 -c ${_src}
                 -o "${_obj}"

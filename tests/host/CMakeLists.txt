@@ -48,7 +48,8 @@ find_program(KYUZEN_HOST_CLANGXX NAMES clang++ REQUIRED)
 # KyuzenToolchain.cmake, which would switch these tests to the bare-metal ABI.
 # ---------------------------------------------------------------------------
 include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/KyuzenCompilerWrapper.cmake")
-kyuzen_install_compiler_wrapper("${KYUZEN_HOST_CLANG}" "${KYUZEN_HOST_CLANGXX}")
+kyuzen_install_compiler_wrapper("${KYUZEN_HOST_CLANG}" "${KYUZEN_HOST_CLANGXX}"
+                                 "${CMAKE_BINARY_DIR}/tools")
 
 set(CMAKE_C_COMPILER   "${KYUZEN_WRAPPED_CC}")
 set(CMAKE_CXX_COMPILER "${KYUZEN_WRAPPED_CXX}")

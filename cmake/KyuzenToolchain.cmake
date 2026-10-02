@@ -51,8 +51,8 @@ find_program(KYUZEN_NASM     NAMES nasm     REQUIRED)
 # therefore does not survive: the warning fired three times per configure.
 #
 # A marker file does survive, because every one of those instances resolves the
-# same path here. It lives in build-tools/ (already generated and gitignored),
-# keyed by the detected version so that upgrading the compiler re-arms it.
+# same path here. It lives in the build tree, keyed by the detected version so
+# that upgrading the compiler re-arms it.
 set(KYUZEN_EXPECTED_CLANG_MAJOR "21" CACHE STRING
     "LLVM major version the parity baseline was produced with")
 
@@ -65,7 +65,9 @@ execute_process(
 string(REGEX MATCH "clang version ([0-9]+)" _ "${_clang_version_out}")
 
 if(CMAKE_MATCH_1 AND NOT CMAKE_MATCH_1 STREQUAL KYUZEN_EXPECTED_CLANG_MAJOR)
-    set(_warn_dir  "${CMAKE_CURRENT_LIST_DIR}/../build-tools")
+    # The marker lives inside the build tree, so `rm -rf build` re-arms the
+    # warning — which is right: a fresh build should re-state its toolchain.
+    set(_warn_dir  "${CMAKE_BINARY_DIR}/tools")
     set(_warn_mark "${_warn_dir}/.clang${CMAKE_MATCH_1}-mismatch-reported")
 
     if(NOT EXISTS "${_warn_mark}")
@@ -93,7 +95,7 @@ if(CMAKE_MATCH_1 AND NOT CMAKE_MATCH_1 STREQUAL KYUZEN_EXPECTED_CLANG_MAJOR)
             "needs BOTH, because /usr/bin/cmake generates POSIX paths that native "
             "Ninja cannot read:\n"
             "    export PATH=\"\$MSYS_ROOT/usr/bin:\$MSYS_ROOT/clang64/bin:\$PATH\"\n"
-            "    \$MSYS_ROOT/clang64/bin/cmake -S . -B build-cmake -G Ninja\n"
+            "    \$MSYS_ROOT/clang64/bin/cmake -S . -B build -G Ninja\n"
             "\n"
             "Only override KYUZEN_EXPECTED_CLANG_MAJOR if you intend to move the "
             "baseline to LLVM ${CMAKE_MATCH_1} on purpose.")
@@ -116,7 +118,8 @@ find_program(KYUZEN_LLVM_OBJCOPY  NAMES llvm-objcopy  REQUIRED)
 # ---------------------------------------------------------------------------
 include("${CMAKE_CURRENT_LIST_DIR}/KyuzenCompilerWrapper.cmake")
 
-kyuzen_install_compiler_wrapper("${KYUZEN_CLANG}" "${KYUZEN_CLANGXX}")
+kyuzen_install_compiler_wrapper("${KYUZEN_CLANG}" "${KYUZEN_CLANGXX}"
+                                 "${CMAKE_BINARY_DIR}/tools")
 
 set(CMAKE_C_COMPILER   "${KYUZEN_WRAPPED_CC}")
 set(CMAKE_CXX_COMPILER "${KYUZEN_WRAPPED_CXX}")

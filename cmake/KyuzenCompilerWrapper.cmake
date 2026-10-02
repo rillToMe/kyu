@@ -34,27 +34,36 @@
 #   output does not, so the MSYS clang stays and the depfile is fixed instead.
 #
 # WHAT IT DOES
-#   Generates build-tools/kyuzen-cc and build-tools/kyuzen-cxx from
-#   cmake/kyuzen-cc.in (with @MSYS_ROOT@ substituted), then hands back the
+#   Generates kyuzen-cc and kyuzen-cxx into the build directory (from
+#   cmake/kyuzen-cc.in, with @MSYS_ROOT@ substituted), then hands back the
 #   command lines to use as CMAKE_<LANG>_COMPILER.
 # ============================================================================
 
 include_guard(GLOBAL)
 
 # ---------------------------------------------------------------------------
-# kyuzen_install_compiler_wrapper(<clang> <clangxx>)
+# kyuzen_install_compiler_wrapper(<clang> <clangxx> <dest-dir>)
 #
-# Generates the wrappers next to the source tree and sets, in the CALLER's
-# scope:
+# Generates the wrappers into <dest-dir> and sets, in the CALLER's scope:
 #
 #   KYUZEN_WRAPPED_CC    command line to use as CMAKE_C_COMPILER
 #   KYUZEN_WRAPPED_CXX   command line to use as CMAKE_CXX_COMPILER
+#
+# <dest-dir> is passed in rather than derived, because the two callers want
+# different places and only one of them has CMAKE_BINARY_DIR at the point of
+# the call:
+#
+#   target build  -> ${CMAKE_BINARY_DIR}/tools     (inside the build tree)
+#   host tests    -> ${CMAKE_BINARY_DIR}/tools     (same idea, own build tree)
+#
+# Everything generated lives inside the build directory. Nothing is written
+# into the source tree — which is what makes `rm -rf build` a complete reset.
 #
 # If the template or `sh` cannot be found the wrapped variables are set to the
 # bare compiler paths, so the build still works — just with the permanent-dirty
 # behaviour described above, which is far better than failing outright.
 # ---------------------------------------------------------------------------
-function(kyuzen_install_compiler_wrapper clang clangxx)
+function(kyuzen_install_compiler_wrapper clang clangxx dest_dir)
     set(_bare_cc  "${clang}")
     set(_bare_cxx "${clangxx}")
 
@@ -67,7 +76,7 @@ function(kyuzen_install_compiler_wrapper clang clangxx)
     get_filename_component(_msys_root     "${_clang_usr_dir}" DIRECTORY)
 
     set(_wrapper_in "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/kyuzen-cc.in")
-    set(_wrapper_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../build-tools")
+    set(_wrapper_dir "${dest_dir}")
     set(_wrapper_cc  "${_wrapper_dir}/kyuzen-cc")
     set(_wrapper_cxx "${_wrapper_dir}/kyuzen-cxx")
 

@@ -110,8 +110,20 @@ add_custom_command(
             -fno-unwind-tables -fno-asynchronous-unwind-tables
             -fvisibility-inlines-hidden
             -Ithird_party/stdlib/llvm-project/libc
-            -Ibuild/libc/cmake/libc
-            -isystem build/libc/cmake/libc/include
+            # The nested libc build's generated headers, by ABSOLUTE path.
+            #
+            # These were the literal strings "build/libc/cmake/libc" and
+            # "build/libc/cmake/libc/include" — which silently assumed the build
+            # directory was named exactly "build". Renaming it made them point
+            # at a directory that does not exist, and the port layer then
+            # compiled against whatever headers it could find instead.
+            #
+            # No quotes around the substitutions: these arguments go through
+            # VERBATIM, which would pass the quote characters through as
+            # backslash-escaped literals (`-I\"E:/...\"`), and clang then sees
+            # no input file at all. CMake's argument escaping is enough.
+            -I${_libc_cmake}/libc
+            -isystem ${_libc_inc}
             -DLIBC_NAMESPACE=${KYUZEN_LIBC_NAMESPACE}
             -DLIBC_FULL_BUILD
             -DLIBC_TARGET_OS_IS_BAREMETAL

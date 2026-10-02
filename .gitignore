@@ -40,12 +40,19 @@ tests/host/probes/__pycache__/
 # Host tool binary (dibangun oleh `make mkfs` dari tools/mkfs.kyuzenfs.c)
 /mkfs.kyuzenfs
 
-# Build directories
+# Build directories.
+#
+# Everything CMake generates lives under build/ — the target build in
+# build/target/, the host tests in build/host/, and the generated compiler
+# wrappers in build/tools/. Nothing is written into the source tree, so
+# `rm -rf build` is a complete reset.
+#
+# The stale patterns below (build-cmake/, build-*/) are kept only so that a
+# build directory left over from the Make -> CMake migration does not suddenly
+# show up as untracked. They can go once those directories are gone.
 build/
 bin/
 out/
-# CMake build trees (the Make build uses build/; these are for parallel
-# comparison runs during the Make -> CMake migration)
 build-cmake/
 build-*/
 /graphify-out

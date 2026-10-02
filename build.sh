@@ -98,14 +98,15 @@ CMAKE="$_msys_root/clang64/bin/cmake.exe"
 
 # ctest for the same reason, and it fails in a different way. /usr/bin/ctest is
 # a Cygwin binary that mixes path styles when it invokes a test: it produces
-#     build-host/E:/Project/.../build-host/bin/test-color.exe
+#     build/host/E:/Project/.../build/host/bin/test-color.exe
 # — a POSIX prefix glued to an absolute Windows path. Every test then reports
 # BAD_COMMAND ("Process not started ... no such file or directory"), which looks
 # like a broken test suite rather than a wrong ctest.
 CTEST="$_msys_root/clang64/bin/ctest.exe"
 
-BUILD_DIR="build-cmake"
-HOST_BUILD_DIR="build-host"
+BUILD_DIR="build"
+TARGET_DIR="build/target"
+HOST_BUILD_DIR="build/host"
 GENERATOR="Ninja"
 
 # ---------------------------------------------------------------------------
@@ -152,7 +153,7 @@ report_toolchain() {
 # build tree in sync with any CMakeLists.txt edit, so it always runs.
 # ---------------------------------------------------------------------------
 configure() {
-    "$CMAKE" -S "$SCRIPT_DIR" -B "$SCRIPT_DIR/$BUILD_DIR" -G "$GENERATOR"
+    "$CMAKE" -S "$SCRIPT_DIR" -B "$SCRIPT_DIR/$TARGET_DIR" -G "$GENERATOR"
 }
 
 case "${1:-all}" in
@@ -164,7 +165,7 @@ case "${1:-all}" in
 
     clean)
         echo "Removing build directories..."
-        rm -rf "$SCRIPT_DIR/$BUILD_DIR" "$SCRIPT_DIR/$HOST_BUILD_DIR" "$SCRIPT_DIR/build-tools"
+        rm -rf "$SCRIPT_DIR/$BUILD_DIR"
         echo "  done. Run ./build.sh to rebuild from scratch."
         ;;
 
@@ -182,7 +183,7 @@ case "${1:-all}" in
         report_toolchain
         echo ""
         configure
-        "$CMAKE" --build "$SCRIPT_DIR/$BUILD_DIR"
+        "$CMAKE" --build "$SCRIPT_DIR/$TARGET_DIR"
         ;;
 
     *)
@@ -192,6 +193,6 @@ case "${1:-all}" in
         report_toolchain
         echo ""
         configure
-        "$CMAKE" --build "$SCRIPT_DIR/$BUILD_DIR" --target "$@"
+        "$CMAKE" --build "$SCRIPT_DIR/$TARGET_DIR" --target "$@"
         ;;
 esac
