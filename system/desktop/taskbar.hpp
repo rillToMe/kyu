@@ -75,6 +75,9 @@ public:
     // Aturan zona waktu POSIX untuk waktu lokal (mis. "WIB-7"). Desktop
     // memanggil ini sekali saat startup dari /time.ui. String disalin.
     void set_zone(const char* rule);
+    // Format jam mengikuti preferensi pengguna (Settings > Date & Time):
+    // 1 = 12 jam dengan AM/PM. Default 0 = 24 jam, sama seperti sebelumnya.
+    void set_hour12(int on) { hour12_ = on ? 1 : 0; }
 
     // Gambar strip + ikon + jam/tanggal ke canvas window. w×h = ukuran layar
     // (eksplisit; host test bisa menguji tanpa window). Ikon bergambar
@@ -88,9 +91,11 @@ private:
     const AppEntry* slot_app_[MAX_WINS];
     int nslots_;
     int hovered_;  // slot, atau -1
-    char time_[8];   // "HH:MM"
+    // "HH:MM" atau "h:MM AM" (12 jam). Buffer cukup untuk keduanya.
+    char time_[12];
     char date_[16];  // "DD MM YYYY"
     char zone_[KZ_TZ_MAX];   // aturan zona lokal ("" = UTC)
+    int hour12_;             // 0 = 24 jam, 1 = 12 jam (dari /time.ui)
     void rebuild_slots(const Launcher& launcher, int w);
 };
 

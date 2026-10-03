@@ -54,6 +54,8 @@ void DesktopShell::on_start(Canvas& canvas) {
         const kz_zone_t* zt = kz_zone_table(&nz);
         taskbar_.set_zone((tcfg.zone >= 0 && tcfg.zone < nz)
                           ? zt[tcfg.zone].rule : 0);
+        // Format jam juga milik pengguna (Settings > Date & Time).
+        taskbar_.set_hour12(tcfg.hour12);
     }
     print(const_cast<char*>("[desktop] layar "));
     print_num(static_cast<uint32_t>(w));

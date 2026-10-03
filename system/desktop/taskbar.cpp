@@ -41,7 +41,7 @@ bool shown(const WindowInfo& w) {
 
 }  // namespace
 
-Taskbar::Taskbar() : nwins_(0), nslots_(0), hovered_(-1) {
+Taskbar::Taskbar() : nwins_(0), nslots_(0), hovered_(-1), hour12_(0) {
     for (int i = 0; i < MAX_WINS; i++) {
         wins_[i].id = 0;
         wins_[i].title[0] = '\0';
@@ -131,11 +131,27 @@ bool Taskbar::poll(WindowManager& wm, const Launcher& launcher) {
     kz_civil_t loc;
     kz_civil_local(zone_, unix_sec, &loc);
 
-    char nt[8];
-    put2(nt, (unsigned)loc.hour);
-    nt[2] = ':';
-    put2(nt + 3, (unsigned)loc.minute);
-    nt[5] = '\0';
+    // Jam: 24 jam (default) atau 12 jam dengan AM/PM mengikuti preferensi
+    // pengguna di Settings > Date & Time (/time.ui). Teks dirender rata kanan
+    // dengan lebar dihitung dari panjangnya, jadi "01:15 PM" tidak merusak
+    // tata letak strip.
+    char nt[12];
+    if (hour12_) {
+        unsigned h12 = (unsigned)(loc.hour % 12);
+        if (h12 == 0) h12 = 12;
+        put2(nt, h12);
+        nt[2] = ':';
+        put2(nt + 3, (unsigned)loc.minute);
+        nt[5] = ' ';
+        nt[6] = (loc.hour < 12) ? 'A' : 'P';
+        nt[7] = 'M';
+        nt[8] = '\0';
+    } else {
+        put2(nt, (unsigned)loc.hour);
+        nt[2] = ':';
+        put2(nt + 3, (unsigned)loc.minute);
+        nt[5] = '\0';
+    }
     char nd[16];
     put2(nd, (unsigned)loc.day);
     nd[2] = ' ';
@@ -144,14 +160,18 @@ bool Taskbar::poll(WindowManager& wm, const Launcher& launcher) {
     put4(nd + 6, (unsigned)loc.year);
     nd[10] = '\0';
     if (!title_eq(time_, nt) || !title_eq(date_, nd)) {
-        for (int i = 0; i < 8; i++) {
+        // Salin sampai buffer PENUH (sizeof), bukan angka tetap: "01:15 PM"
+        // butuh 9 byte, dan batas 8 yang lama akan memotongnya.
+        for (int i = 0; i < (int)sizeof(time_) - 1; i++) {
             time_[i] = nt[i];
             if (!nt[i]) break;
         }
-        for (int i = 0; i < 16; i++) {
+        time_[sizeof(time_) - 1] = '\0';
+        for (int i = 0; i < (int)sizeof(date_) - 1; i++) {
             date_[i] = nd[i];
             if (!nd[i]) break;
         }
+        date_[sizeof(date_) - 1] = '\0';
         changed = true;
     }
 

@@ -439,6 +439,24 @@ int main(void) {
         // Jam numerik dari RTC palsu.
         assert(t_streq(bar.clock_time(), "21:35"));
         assert(t_streq(bar.clock_date(), "21 09 2026"));
+        // Format 12 jam (preferensi /time.ui) harus dihormati: 21:35 -> 09:35 PM.
+        // Dikunci di sini karena teksnya dirender rata kanan dengan lebar
+        // dihitung dari panjang, jadi salah format = salah tata letak.
+        bar.set_hour12(1);
+        bar.poll(wm, launcher);
+        assert(t_streq(bar.clock_time(), "09:35 PM"));
+        // Tengah malam & tengah hari: 12 AM / 12 PM, bukan 00 AM / 00 PM.
+        g_time[3] = 0;
+        bar.poll(wm, launcher);
+        assert(t_streq(bar.clock_time(), "12:35 AM"));
+        g_time[3] = 12;
+        bar.poll(wm, launcher);
+        assert(t_streq(bar.clock_time(), "12:35 PM"));
+        // Kembali ke 24 jam -> format lama persis.
+        g_time[3] = 21;
+        bar.set_hour12(0);
+        bar.poll(wm, launcher);
+        assert(t_streq(bar.clock_time(), "21:35"));
         // Hover: masuk slot -> true; sama -> false; pergi -> true + -1.
         assert(bar.update_hover(pt(10, 440), 640, 480) == true);
         assert(bar.hovered() == 0);
