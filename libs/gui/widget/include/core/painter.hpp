@@ -30,10 +30,20 @@ public:
     // Render/dirty clip — dipasang Window::render, TIDAK disentuh widget.
     bool rclip_on;
     int rclip_x, rclip_y, rclip_w, rclip_h;
+    // Permukaan di belakang teks. Dipakai jalur text provider untuk mengomposit
+    // glyph secara IDEMPOTEN (lihat text()). Widget menyetelnya saat menggambar
+    // latar (surface()); default = bg tema, yang benar untuk widget yang
+    // menggambar di atas halaman tanpa latar sendiri.
+    color_t text_bg;
     Painter(gui_window_t* w, const Theme& t)
         : win(w), theme(t), clip_on(false), clip_x(0), clip_y(0),
           clip_w(0), clip_h(0), rclip_on(false), rclip_x(0), rclip_y(0),
-          rclip_w(0), rclip_h(0) {}
+          rclip_w(0), rclip_h(0), text_bg(t.bg) {}
+    // Set permukaan di belakang teks. WAJIB dipanggil widget yang menggambar
+    // latar sendiri sebelum menggambar teks di atasnya; kalau tidak, teks
+    // dikomposit di atas `bg` tema dan tepi glyph akan salah di atas latar
+    // yang berbeda (mis. baris terpilih).
+    void set_text_bg(color_t c) { text_bg = color_opaque(c); }
     void set_render_clip(int x, int y, int w, int h) {
         rclip_on = true; rclip_x = x; rclip_y = y; rclip_w = w; rclip_h = h;
     }
@@ -73,6 +83,13 @@ public:
         // window urusan compositor), jadi `c` dikirim apa adanya.
         gui_draw_rect(win, x, y, w, h, c);
     }
+    // Rect yang juga MENYATAKAN permukaan di belakang teks berikutnya. Dipakai
+    // widget yang menggambar latar sendiri (baris daftar terpilih, header,
+    // track): tanpa ini teks di atasnya akan dikomposit di atas bg tema.
+    void surface_rect(int x, int y, int w, int h, color_t c) {
+        set_text_bg(c);
+        rect(x, y, w, h, c);
+    }
     // ------------------------------------------------------------
     // Pengukuran teks — SATU jalur untuk bitmap 8×16 DAN font nyata.
     // Widget memakai text_measure()/text_vcenter() dari core/text_provider.hpp;
@@ -90,8 +107,12 @@ public:
         if (tp) {
             int n = 0;
             while (s[n]) n++;
+            // Komposit DI ATAS text_bg, bukan di atas isi canvas: hasilnya
+            // idempoten, jadi menggambar ulang area yang sama (ScrollView
+            // menggambar anaknya dua kali per frame, hover melukis ulang
+            // sebagian baris) tidak menggelapkan tepi glyph.
             tp->draw(tp->ud, win->canvas, (int)win->width, (int)win->height,
-                     x, y + text_ascent(), c, s);
+                     x, y + text_ascent(), c, text_bg, s);
             // Provider menulis canvas langsung, jadi damage dicatat di sini
             // (kontrak provider: tidak memanggil gui_damage_rect sendiri).
             gui_damage_rect(win, x, y, tp->measure(tp->ud, s, n) + 2,

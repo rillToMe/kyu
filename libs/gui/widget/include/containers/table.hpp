@@ -175,7 +175,7 @@ public:
         int cw = content_w();
 
         // Header: pita terbenam + label peran `section` + garis tipis.
-        p.rect(x, y, cw, hh, p.theme.surface_variant);
+        p.surface_rect(x, y, cw, hh, p.theme.surface_variant);
         int cx = x + m.sm;
         for (int c = 0; c < ncols; c++) {
             if (c == 0 && icon_column()) cx = x + m.sm;
@@ -199,8 +199,8 @@ public:
         for (int r = 0; r < nrows; r++) {
             int ry = y + hh + r * ROW_H - scroll;
             if (ry + ROW_H <= y + hh || ry >= y + h) continue;
-            if (r == selected) p.rect(x, ry, cw, ROW_H, p.theme.selection);
-            else if (r == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.surface_hover);
+            if (r == selected) p.surface_rect(x, ry, cw, ROW_H, p.theme.selection);
+            else if (r == hover_row) p.surface_rect(x, ry, cw, ROW_H, p.theme.surface_hover);
             int cxx = x + m.sm;
             for (int c = 0; c < ncols; c++) {
                 int avail = col_w[c] - m.sm;

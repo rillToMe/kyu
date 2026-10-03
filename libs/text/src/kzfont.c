@@ -333,3 +333,73 @@ int kz_text_draw(uint32_t *canvas, uint32_t cw, uint32_t ch,
     }
     return touched;
 }
+
+// Varian IDEMPOTEN (lihat kzfont.h): komposit coverage di atas `bg`, bukan di
+// atas isi canvas. Bedanya hanya pada warna dasar yang dipakai saat blend —
+// sehingga memanggilnya N kali pada posisi sama menghasilkan pixel yang SAMA.
+// Itu syarat untuk widget yang menggambar ulang area yang sama (ScrollView
+// menggambar anaknya dua kali per frame; hover melukis ulang sebagian baris).
+int kz_text_draw_on(uint32_t *canvas, uint32_t cw, uint32_t ch,
+                    kz_font_t *font, int x, int baseline_y, color_t fg,
+                    color_t bg, const char *text, int dmg[4]) {
+    if (!canvas || cw == 0 || ch == 0 || !font || !text) return -1;
+    const char *end = text;
+    while (*end) end++;
+    color_t base = color_opaque(bg);
+    int pen = x;
+    int touched = 0;
+    int x0 = x, y0 = baseline_y, x1 = x, y1 = baseline_y;
+    int any = 0;
+    const char *p = text;
+    while (p < end) {
+        uint32_t cp = 0;
+        uint32_t n = kz_utf8_decode(p, end, &cp);
+        if (n == 0) break;
+        p += n;
+        kz_glyph_t g;
+        if (kz_glyph_lookup(font, cp, &g) != 0) continue;  // fallback caller
+        int gx = pen + g.left;
+        int gy = baseline_y - g.top;
+        for (uint32_t r = 0; r < g.height; r++) {
+            int py = gy + (int)r;
+            if (py < 0 || py >= (int)ch) continue;
+            for (uint32_t c = 0; c < g.width; c++) {
+                int px = gx + (int)c;
+                if (px < 0 || px >= (int)cw) continue;
+                uint32_t cov = g.coverage[r * g.pitch + c];
+                if (cov == 0) continue;
+                uint32_t a = (cov * (uint32_t)fg.a + 127u) / 255u;
+                if (a == 0) continue;
+                uint32_t *dst = &canvas[(uint32_t)py * cw + (uint32_t)px];
+                color_t src = color_with_alpha(fg, (uint8_t)a);
+                // Basis SELALU `bg` (bukan *dst): itulah yang membuat hasilnya
+                // idempoten terhadap isi canvas.
+                *dst = color_to_u32(color_blend_alpha(src, base),
+                                    FORMAT_ARGB);
+                if (!any) {
+                    x0 = x1 = px;
+                    y0 = y1 = py;
+                    any = 1;
+                } else {
+                    if (px < x0) x0 = px;
+                    if (px > x1) x1 = px;
+                    if (py < y0) y0 = py;
+                    if (py > y1) y1 = py;
+                }
+                touched++;
+            }
+        }
+        if (g.advance_x > 0) pen += g.advance_x;
+    }
+    if (dmg) {
+        if (any) {
+            dmg[0] = x0;
+            dmg[1] = y0;
+            dmg[2] = x1 - x0 + 1;
+            dmg[3] = y1 - y0 + 1;
+        } else {
+            dmg[0] = dmg[1] = dmg[2] = dmg[3] = 0;
+        }
+    }
+    return touched;
+}

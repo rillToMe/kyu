@@ -190,7 +190,14 @@ enum {
 // Kontrak:
 //   * measure: lebar advance teks (n byte UTF-8) dalam px.
 //   * line_height: jarak antar baris; ascent: jarak atas baris → baseline.
-//   * draw: gambar pada (x, baseline_y) ke canvas ARGB8888 (stride = cw).
+//   * draw: gambar pada (x, baseline_y) ke canvas ARGB8888 (stride = cw),
+//     mengomposit `fg` DI ATAS `bg` (warna latar di belakang teks).
+//     IDEMPOTEN WAJIB: menggambar teks yang sama dua kali pada posisi yang sama
+//     harus menghasilkan pixel yang sama. Widget memang menggambar ulang area
+//     yang sama (ScrollView menggambar anaknya dua kali per frame; hover
+//     melukis ulang sebagian baris), dan provider yang mem-blend ke isi canvas
+//     akan menggelapkan tepi glyph di setiap penggambaran ulang — teks tampak
+//     menebal lalu "kembali normal" saat latar dilukis ulang.
 //     Toolkit menandai damage-nya sendiri; provider TIDAK memanggil
 //     gui_damage_rect().
 // Provider tidak lengkap (measure/line_height/draw ada yang 0) diperlakukan
@@ -199,7 +206,7 @@ enum {
 typedef int  (*ui_text_measure_fn)(void* ud, const char* text, int n);
 typedef int  (*ui_text_metric_fn)(void* ud);
 typedef void (*ui_text_draw_fn)(void* ud, uint32_t* canvas, int cw, int ch,
-                                int x, int baseline_y, color_t color,
+                                int x, int baseline_y, color_t fg, color_t bg,
                                 const char* text);
 typedef struct ui_text_provider {
     ui_text_measure_fn measure;

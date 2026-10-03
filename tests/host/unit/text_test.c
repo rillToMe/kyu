@@ -171,6 +171,50 @@ int main(void) {
         kz_font_destroy(f);
     }
 
+    // --- 3b. IDEMPOTENSI: kz_text_draw_on() harus stabil diulang ---
+    // Regresi nyata: toolkit menggambar ulang area yang sama (ScrollView dulu
+    // menggambar anaknya DUA KALI per frame; hover melukis ulang sebagian
+    // baris). kz_text_draw() mem-blend coverage ke ISI canvas, jadi menggambar
+    // dua kali menggelapkan tepi glyph — teks tampak menebal lalu "kembali
+    // normal" begitu latar dilukis ulang. kz_text_draw_on() mengomposit di atas
+    // `bg`, jadi hasilnya sama berapa kali pun dipanggil.
+    {
+        kz_font_t *f = load_mock(16);
+        uint32_t cv[320 * 200];
+        color_t fg = COLOR_RGB(0xF2, 0xF2, 0xF2);
+        color_t bg = COLOR_RGB(0x18, 0x18, 0x18);
+        int dmg[4];
+        int i;
+
+        // Baseline: satu kali gambar di atas latar yang seragam.
+        for (i = 0; i < 320 * 200; i++) cv[i] = 0xFF000000u | (0x18u << 16) | (0x18u << 8) | 0x18u;
+        kz_text_draw_on(cv, 320, 200, f, 8, 40, fg, bg, "Hello", dmg);
+        uint32_t once[320 * 200];
+        for (i = 0; i < 320 * 200; i++) once[i] = cv[i];
+
+        // Gambar 3x lagi: HARUS identik (idempoten).
+        for (int pass = 0; pass < 3; pass++)
+            kz_text_draw_on(cv, 320, 200, f, 8, 40, fg, bg, "Hello", dmg);
+        int same = 1;
+        for (i = 0; i < 320 * 200; i++)
+            if (cv[i] != once[i]) { same = 0; break; }
+        CHECK(same);   // kz_text_draw_on() idempoten
+
+        // Kontras: kz_text_draw() MEMANG menumpuk (dokumentasi perilakunya),
+        // jadi test ini membuktikan kedua varian berbeda seperti yang diklaim.
+        for (i = 0; i < 320 * 200; i++) cv[i] = 0xFF000000u | (0x18u << 16) | (0x18u << 8) | 0x18u;
+        kz_text_draw(cv, 320, 200, f, 8, 40, fg, "Hello", dmg);
+        uint32_t acc_once[320 * 200];
+        for (i = 0; i < 320 * 200; i++) acc_once[i] = cv[i];
+        kz_text_draw(cv, 320, 200, f, 8, 40, fg, "Hello", dmg);
+        int differs = 0;
+        for (i = 0; i < 320 * 200; i++)
+            if (cv[i] != acc_once[i]) { differs = 1; break; }
+        CHECK(differs);   // kz_text_draw() menumpuk (bukan idempoten)
+
+        kz_font_destroy(f);
+    }
+
     // --- 4. Measure == render aktual ---
     {
         kz_font_t *f = load_mock(16);

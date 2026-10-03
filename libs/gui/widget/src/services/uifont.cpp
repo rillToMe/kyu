@@ -69,12 +69,16 @@ int provAscent(void* ud) {
 }
 
 void provDraw(void* ud, uint32_t* canvas, int cw, int ch, int x, int baseline_y,
-              color_t color, const char* text) {
+              color_t fg, color_t bg, const char* text) {
     (void)ud;
     if (!g_font || !canvas || !text) return;
     int dmg[4];
-    kz_text_draw(canvas, (uint32_t)cw, (uint32_t)ch, g_font, x, baseline_y,
-                 color, text, dmg);
+    // IDEMPOTEN: komposit di atas `bg` (bukan isi canvas). Toolkit menggambar
+    // ulang area yang sama (ScrollView: anak digambar dua kali per frame; hover:
+    // sebagian baris), jadi blend-ke-canvas akan menebalkan tepi glyph tiap
+    // penggambaran ulang.
+    kz_text_draw_on(canvas, (uint32_t)cw, (uint32_t)ch, g_font, x, baseline_y,
+                    fg, bg, text, dmg);
 }
 
 TextProvider g_provider = {

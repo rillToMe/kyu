@@ -118,9 +118,24 @@ int kz_text_measure(kz_font_t *font, const char *text,
 // baseline_y). Clipping ke [0,w)x[0,h). Damage: bbox aktual ditulis ke
 // *dmg (x,y,w,h) bila dmg != NULL; caller meneruskannya ke
 // gui_damage_rect(). Return piksel tersentuh, <0 bila font/param invalid.
+//
+// PENTING — kz_text_draw MENUMPUK di atas isi canvas. Memanggilnya dua kali
+// pada posisi yang sama akan menggelapkan tepi glyph (coverage dip-blend ke
+// pixel yang sudah berisi glyph itu). Aman untuk kanvas yang baru dikosongkan,
+// TIDAK aman untuk penggambaran ulang di atas teks yang sama.
 int kz_text_draw(uint32_t *canvas, uint32_t cw, uint32_t ch,
                  kz_font_t *font, int x, int baseline_y, color_t color,
                  const char *text, int dmg[4]);
+
+// Varian IDEMPOTEN: komposit coverage DI ATAS `bg`, bukan di atas isi canvas.
+// Hasilnya sama berapa kali pun dipanggil — itulah yang dibutuhkan widget yang
+// menggambar ulang area yang sama (ScrollView menggambar anaknya dua kali per
+// frame; hover melukis ulang sebagian baris). Memakai kz_text_draw() di sana
+// membuat teks tampak menebal lalu "kembali normal" saat latar dilukis ulang.
+// `bg` harus warna latar di belakang teks (permukaan widget, bukan warna teks).
+int kz_text_draw_on(uint32_t *canvas, uint32_t cw, uint32_t ch,
+                    kz_font_t *font, int x, int baseline_y, color_t fg,
+                    color_t bg, const char *text, int dmg[4]);
 
 // Replacement box untuk glyph missing (Phase 20): digambar caller bila
 // lookup gagal — libtext TIDAK menggambar apa pun untuk codepoint yang

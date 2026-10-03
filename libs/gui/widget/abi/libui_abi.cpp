@@ -112,7 +112,7 @@ void ui_text_provider_set(const ui_text_provider_t* provider) {
     tp.measure = provider->measure;
     tp.line_height = provider->line_height;
     tp.ascent = provider->ascent;
-    tp.draw = provider->draw;
+    tp.draw = provider->draw;   // tanda tangan ABI sudah membawa fg+bg
     tp.ud = provider->ud;
     ui::text_provider_set(&tp);
 }

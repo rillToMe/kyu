@@ -242,15 +242,24 @@ public:
         int ox, oy;
         child_offset(ox, oy);
         child->x = x + ox; child->y = y + oy;
-        // draw pertama hanya untuk arrange (VBox menghitung h-nya di sini);
-        // keduanya ter-clip viewport agar isi yang lebih panjang dari view
-        // tidak bocor keluar. Lalu hitung ulang scroll_max (bar mungkin
-        // muncul → konten menyempit) dan gambar ulang dengan lebar benar.
-        p.set_clip(x, y, w, h);
-        child->draw(p);
+        // Pass pertama = ARRANGE saja, bukan gambar.
+        //
+        // Dulu di sini `child->draw(p)` dipanggil untuk memaksa layout (VBox
+        // menghitung tinggi isinya di draw()). Itu berarti SELURUH isi
+        // digambar DUA KALI per frame. Untuk jalur bitmap itu tidak terlihat
+        // (pixel ditugaskan, jadi idempoten), tapi jalur font nyata
+        // mem-blend coverage: menggambar dua kali menggelapkan tepi glyph,
+        // sehingga teks tampak menebal/membesar.
+        //
+        // `settle()` memanggil arrange() pada layout (itu yang dibutuhkan untuk
+        // menghitung scroll_max) TANPA menggambar apa pun. Untuk anak yang bukan
+        // layout, settle() memang tidak melakukan apa-apa — dan itu benar,
+        // karena hanya layout yang perlu di-arrange.
+        child->settle();
         update_scroll_maxes();
         child_offset(ox, oy);
         child->x = x + ox; child->y = y + oy;
+        // Satu-satunya pass gambar.
         p.set_clip(x, y, content_w(), view_h());
         child->draw(p);
         p.clear_clip();

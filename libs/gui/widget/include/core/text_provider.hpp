@@ -46,9 +46,20 @@ struct TextProvider {
     // Jarak antar baris dan jarak atas→baseline, dalam px.
     int (*line_height)(void* ud);
     int (*ascent)(void* ud);
-    // Gambar teks pada (x, baseline_y). Return 1 bila tergambar.
+    // Gambar teks pada (x, baseline_y).
+    //
+    // IDEMPOTEN WAJIB: provider harus menulis hasil akhir, bukan menumpuk di
+    // atas pixel yang sudah ada. Canvas bisa memuat teks yang SAMA dari frame
+    // sebelumnya — `ScrollView` misalnya menggambar anaknya DUA KALI per frame
+    // (sekali untuk arrange, sekali untuk render), dan hover hanya melukis
+    // ulang sebagian. Provider yang mem-blend coverage ke pixel yang ada akan
+    // menggelapkan tepi glyph di setiap penggambaran ulang: teks tampak
+    // menebal/membesar lalu "kembali normal" begitu latar baris dilukis ulang.
+    // Karena itu `bg` diberikan: komposit coverage DI ATAS bg, bukan di atas
+    // isi canvas saat ini. (Jalur bitmap tidak punya masalah ini karena
+    // `gui_draw_char` MENUGASKAN pixel solid, bukan mem-blend.)
     void (*draw)(void* ud, uint32_t* canvas, int cw, int ch, int x,
-                 int baseline_y, color_t c, const char* text);
+                 int baseline_y, color_t fg, color_t bg, const char* text);
     void* ud;
 };
 

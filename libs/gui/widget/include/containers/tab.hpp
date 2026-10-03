@@ -146,7 +146,7 @@ public:
             int tw = title_w(i);
             bool act = (i == active);
             bool hov = (i == hover_idx);
-            if (hov && !act) p.rect(tx, y, tw, STRIP_H, p.theme.surface_hover);
+            if (hov && !act) p.surface_rect(tx, y, tw, STRIP_H, p.theme.surface_hover);
             int tl = text_measure(titles[i]);
             color_t tc = tab_disabled[i] ? p.theme.text_disabled
                        : act             ? p.theme.text

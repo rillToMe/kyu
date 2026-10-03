@@ -230,8 +230,12 @@ public:
             bool sel = (i == selected);
             bool hov = (i == hover_row);
             // Latar baris: terpilih > hover. Disabled tidak menandai apa pun.
-            if (sel)      p.rect(x, ry, cw, rh, p.theme.selection);
-            else if (hov) p.rect(x, ry, cw, rh, p.theme.surface_hover);
+            // surface_rect() juga menyatakan permukaan ini sebagai latar teks
+            // baris, sehingga glyph dikomposit di atasnya (bukan di atas bg
+            // halaman) — itu yang menjaga tepi teks tetap benar di baris
+            // terpilih/hover, dan tetap idempoten saat baris digambar ulang.
+            if (sel)      p.surface_rect(x, ry, cw, rh, p.theme.selection);
+            else if (hov) p.surface_rect(x, ry, cw, rh, p.theme.surface_hover);
             // Fokus keyboard: garis di tepi kiri baris (tenang, tidak
             // menutupi teks, dan tidak menggeser apa pun).
             if (i == focus_row && has_focus && enabled)
