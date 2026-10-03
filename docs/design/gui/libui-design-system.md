@@ -198,6 +198,25 @@ instant=0  fast=90  normal=130  slow=180
 Hover dan press **tidak** dianimasikan: keduanya harus terasa instan. Animasi
 hanya untuk permukaan yang muncul/hilang, dan jumlah frame-nya dibatasi token.
 
+### Muka jam (`clockface`)
+
+Proporsi jam dan busur progres dinyatakan sebagai **persen dari radius**,
+sehingga satu set proporsi berlaku untuk semua ukuran: jam 120 px dan 260 px
+terlihat sebagai instrumen yang sama, bukan dua desain berbeda.
+
+```
+ring_w=1  tick_major=12  tick_minor=60  tick_major_w=2  tick_minor_w=1
+tick_major_len=11%  tick_minor_len=5%  tick_inset=2
+hand_hour=48%  hand_min=70%  hand_sec=84%   (panjang, % radius)
+hand_hour_w=4  hand_min_w=3  hand_sec_w=1  hand_tail=12%
+pivot_r=3  pivot_inner_r=1  sweep_step=24      (1/65536 putaran)
+progress_w=4  progress_gap=2
+```
+
+Hierarki dibaca dari **panjang dan bobot** jarum, bukan dari warna: jarum jam
+paling pendek dan tebal, jarum detik paling panjang dan tipis. Hanya jarum detik
+memakai aksen.
+
 ---
 
 ## 4. State
@@ -298,6 +317,32 @@ ui_layout_add(sec, row2);
 | Pilihan eksklusif | `radio` + grup | |
 | Pilih dari daftar pendek | `combobox` | |
 | Rentang nilai | `slider` | |
+
+### Widget melingkar: jam & progres
+
+Dua widget ini melukis geometri (bukan teks/kotak), jadi tidak ada padanannya
+di himpunan elemen XML: keduanya disuntikkan native ke slot ber-id. Keduanya
+juga menerima **nilai dari luar** - widget toolkit tidak memanggil syscall.
+
+```c
+ui_widget_t* clock = ui_analogclock_create(win, 168);
+ui_analogclock_set_time(clock, jam, menit, detik, ms_frac);  // 1 = berubah
+ui_widget_t* ring = ui_circularprogress_create(win, 128);
+ui_circularprogress_set_value(ring, 0..1000);                // per-mil
+```
+
+- `ui_analogclock_set_time()` mengembalikan 1 hanya bila tampilan benar-benar
+  berubah, sehingga pemanggil tidak menggambar ulang muka jam tiap frame.
+- Sudut jarum **dikuantisasi** (`clockface::SWEEP_STEP`): gerak tetap halus
+  (~46 posisi per detik) tanpa render 60x/detik.
+- Semua matematikanya integer Q15 (`theme/trig.hpp`). Tidak ada float: build
+  mewarisi `-mno-sse -msoft-float` dan kernel tidak pernah menyetel
+  `CR4.OSFXSR`, jadi instruksi SSE fault.
+- `CircularProgress` memakai per-mil, bukan persen: timer panjang yang
+  diperbarui sering bergerak kurang dari 1% per langkah, dan busur dengan
+  persen bulat akan terlihat tersendat.
+- Bentuknya sengaja tanpa gradien, glow, atau bayangan - yang membuatnya
+  terbaca adalah panjang busur dan hierarki jarum.
 
 ---
 
@@ -439,5 +484,8 @@ dikira preseden. Yang paling sering tersandung:
 - `system/desktop/theme.hpp` menyimpan konstanta yang MENCERMIN nilai libui
   (`== libui surface_hover`, dst.) — kalau token libui berubah, cermin itu wajib
   ikut berubah di commit yang sama.
-- `TypeRole::ft_size_px`/`ft_weight` baru niat, belum diterapkan toolkit.
-- Baru Settings dan File Manager yang memanggil `ui::uifont_install()`.
+- `TypeRole::ft_size_px`/`ft_weight` baru niat, belum diterapkan toolkit. Karena
+  itu teks besar (waktu di aplikasi Clock) digambar aplikasi sendiri lewat
+  `FtText` + font miliknya; lihat catatan di `apps/clock/bigtime.hpp`.
+- Belum semua aplikasi memanggil `ui::uifont_install()`; yang sudah: Settings,
+  File Manager, dan Clock.

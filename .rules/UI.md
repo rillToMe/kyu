@@ -345,6 +345,18 @@ Tab order follows visual order. Arrow keys move within a composite control
 (list, radio group, tabs) and MUST be consumed by it rather than leaking to the
 parent container.
 
+UI-9.10. A window whose navigation is keyboard-driven MUST give the keyboard
+focus to something at startup (`ui_window_focus`). With no focused widget,
+key presses fall through to the application key hook — and an application that
+does not install one silently ignores every key. That looks like a broken
+widget rather than a missing focus call.
+
+UI-9.11. A container that displays one child at a time (tabs, wizard pages)
+MUST report only the **visible** child from `dirty_child_count()` /
+`dirty_child()`. Reporting hidden children puts their controls in the Tab order
+and in the damage walk: Tab lands on a control the user cannot see, and
+activating it changes the wrong page.
+
 UI-9.9. A widget that takes keyboard focus but has nothing to do with arrow keys
 MUST opt out via `ui_widget_set_focusable()` / `focus_opt_out`, so it does not
 swallow keys meant for an ancestor.
@@ -441,6 +453,14 @@ UI-12.6. Pixel alignment: prefer even offsets for text and 1px borders. The
 shared helpers (`ui::snap`, `ui::clamp_int`) exist so widgets do not each
 re-derive alignment. Blurry 1px borders and half-pixel text are review
 findings, not cosmetic preferences.
+
+UI-12.7. `VBox` and `HBox` position children but do NOT stretch them;
+`HBox::arrange()` sets its own width to the sum of its children. A horizontal
+two-column layout therefore collapses to a left column and leaves dead space.
+Compose vertically, or use `Grid` with `UI_TRACK_FILL` when a region must fill
+the available width. A control that must occupy the full content width MUST be
+sized explicitly from the window dimensions (as File Manager does for its
+table, and Clock for its tab strip).
 
 ---
 
@@ -902,4 +922,21 @@ line height, tracking, case, and tone only.
 
 UI-25.5. Applications other than Settings and File Manager do not yet call
 `ui::uifont_install()`, so they still render in the bitmap font regardless of
-the user's font setting.
+the user's font setting. Clock and Settings now do; the rest (Browser, Notepad,
+Task Manager, Image Viewer, Gallery, widget_demo, terminal) still do not.
+
+UI-25.6. `Tab::dirty_child_count()` reports only the **active** panel, so
+controls on a page that is not visible are not keyboard focus stops. That is
+correct behaviour, but it means a page's widgets cannot be reached by Tab until
+that page is selected — including when the page is selected by code rather than
+by the user. A container that shows one child at a time MUST report only the
+visible child through `dirty_child_count()`/`dirty_child()`; reporting all of
+them puts hidden controls in the traversal order and sends keystrokes to the
+wrong page.
+
+UI-25.7. `VBox` and `HBox` only **position** their children; they do not stretch
+them. `HBox::arrange()` sets its own width to the sum of its children, so a
+horizontal two-column composition collapses to a left column and leaves dead
+space to the right. Compose vertically, or use `Grid` with `UI_TRACK_FILL`,
+when a region must fill the available width. Do not read the spec's
+side-by-side layout example as something the current layout engine can do.

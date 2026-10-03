@@ -117,14 +117,18 @@ def main():
         time.sleep(2.0)
         mon.cmd("screendump %s/f_sw_c.ppm" % OUT, 2.0)
 
-        # Angka stopwatch ada di sekitar y=170..260 (hero). Ukur di area itu.
+        # Angka stopwatch ada di sekitar y=170..230 (hero). Ukur di area itu.
         d1 = diff_region(os.path.join(OUT, "f_sw_a.ppm"),
                          os.path.join(OUT, "f_sw_b.ppm"), 110, 160, 600, 300)
         d2 = diff_region(os.path.join(OUT, "f_sw_b.ppm"),
                          os.path.join(OUT, "f_sw_c.ppm"), 110, 160, 600, 300)
         say("stopwatch: diff(sebelum->start) = %.4f" % d1)
         say("stopwatch: diff(start->+2s)    = %.4f" % d2)
-        if d2 > 0.01:
+        # Ambang: angka hero "00:00.000" hanya menempati ~47x50 px, jadi
+        # perubahan milidetik menggeser ~250 piksel sampel = ~0.3% dari area
+        # yang dipindai. Ambang 0.01 terlalu longgar untuk itu; 0.001 cukup
+        # untuk membedakan "berjalan" dari "beku" (yang memberi 0.0000).
+        if d2 > 0.001:
             say("PASS stopwatch BERJALAN (angka berubah tanpa input)")
         else:
             say("FAIL stopwatch tidak berjalan (angka beku)")
@@ -139,7 +143,9 @@ def main():
         d3 = diff_region(os.path.join(OUT, "f_sw_p1.ppm"),
                          os.path.join(OUT, "f_sw_p2.ppm"), 110, 160, 600, 300)
         say("stopwatch: diff(setelah jeda, +2.5s) = %.4f" % d3)
-        if d3 < 0.004:
+        # Saat dijeda angkanya benar-benar diam -> 0.0000. Ambang kecil
+        # (bukan 0.004) supaya "diam" tidak lolos karena satu piksel noise.
+        if d3 < 0.0005:
             say("PASS stopwatch BERHENTI saat jeda")
         else:
             say("FAIL stopwatch masih berjalan setelah jeda")

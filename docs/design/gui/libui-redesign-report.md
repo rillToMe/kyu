@@ -240,8 +240,8 @@ diperbaiki).
 
 Jujur — ini yang **belum** dikerjakan:
 
-1. **Aplikasi lain belum dimigrasikan.** Settings, UI Gallery, XML demo, dan
-   File Manager sudah. Belum: Browser, Notepad, Task Manager, Image Viewer,
+1. **Aplikasi lain belum dimigrasikan.** Settings, UI Gallery, XML demo, File
+   Manager, dan Clock sudah. Belum: Browser, Notepad, Task Manager, Image Viewer,
    Gallery, widget_demo, terminal. Mereka tetap jalan (API dipertahankan) dan
    otomatis mewarisi perbaikan widget, tapi tata letaknya belum memakai
    `Section`/baris daftar kaya, dan belum memanggil `ui::uifont_install()`
@@ -266,3 +266,58 @@ Jujur — ini yang **belum** dikerjakan:
    terpilih) sementara jalur keyboard deterministik. Langkah "new folder di
    /home/user" masih TIDAK karena disk uji tidak punya `/home/user` saat
    dijalankan; rename + delete terbukti bekerja di direktori yang ada.
+
+---
+
+## 9. Uji beban: aplikasi Clock (multi-halaman)
+
+Aplikasi Clock adalah kasus uji pertama untuk design system ini di aplikasi
+BARU yang tidak sekadar memigrasikan tata letak lama. Hasilnya: bahasa visualnya
+cukup, tapi tiga celah nyata muncul - semuanya sudah ditutup.
+
+### Yang ditambahkan ke toolkit
+
+| Tambahan | Alasan |
+|---|---|
+| `AnalogClock` | Melukis jarum + goresan; butuh `Painter` dan token tema, yang tidak bisa dijangkau aplikasi dengan benar. |
+| `CircularProgress` | Busur progres; primitif generik, bukan khas Clock. |
+| `theme/trig.hpp` | Trigonometri Q15. Float tidak tersedia (`-mno-sse -msoft-float`). |
+| `Painter::circle_fill/ring/arc_stroke/line_thick` | Coverage analitis, bukan supersample 4x4: muka jam ~31 ribu piksel, dan 16 sampel/piksel terlalu mahal untuk komponen yang digambar ulang tiap detik. |
+| `ui_tab_active/_set_active/_set_change` | Tab adalah satu-satunya kontrol komposit tanpa notifikasi perubahan; aplikasi berdata berubah perlu tahu halaman mana yang terlihat. |
+| `ui_button_set_text` | Label yang mencerminkan keadaan (Start <-> Pause). |
+| `ui_listview_set_row_title/_description/_clear` | Memperbarui satu baris tanpa membangun ulang daftar. |
+| Token `clockface::*` | Proporsi jam/busur sebagai persen radius, satu set untuk semua ukuran. |
+
+### Cacat toolkit yang ditemukan (dan diperbaiki)
+
+1. **`Tab` melaporkan SEMUA panel lewat `dirty_child_count()`.** Traversal
+   fokus karena itu masuk ke halaman yang tidak terlihat: Tab dari strip
+   mendarat di kontrol halaman lain, dan mengaktifkannya mengubah halaman yang
+   salah. Sekarang hanya panel aktif yang dilaporkan.
+2. **Tidak ada widget yang memegang fokus saat startup.** Panah kiri/kanan
+   dibuang sebelum sampai ke Tab, sehingga navigasi keyboard diam-diam tidak
+   berfungsi sampai pengguna mengklik sesuatu. Aplikasi kini memanggil
+   `ui_window_focus()` di awal.
+3. **`kNavCount` tidak sinkron dengan tabel `kNav`** (6 vs 5 entri) di Settings.
+   `showPage()` memakai `(int)page` sebagai indeks, jadi baris terakhir membaca
+   di luar array dan sidebar memilih halaman yang salah. `kNavCount` sekarang
+   diturunkan dari array.
+
+Ketiganya jenis yang sama: **state yang tidak terlihat tidak boleh ikut
+traversal, dan ukuran yang bisa disimpulkan tidak boleh ditulis dua kali.**
+
+### Batas yang jujur
+
+- **`VBox`/`HBox` tidak meregangkan anak.** `HBox::arrange()` menetapkan
+  lebarnya sendiri = jumlah anak, jadi komposisi dua kolom runtuh jadi kolom
+  kiri. Clock memakai komposisi vertikal karena itu. Kontrol yang harus selebar
+  konten disetel ukurannya dari dimensi window (pola File Manager).
+- **Tidak ada event resize window.** Reflow saat resize tidak mungkin tanpa
+  perubahan kernel/WM, jadi "responsif" berarti memilih komposisi saat startup
+  dari `sys_get_screen_size()` - bukan reflow langsung.
+- **Teks besar digambar aplikasi.** Provider toolkit memakai satu ukuran
+  (15px), jadi waktu ukuran hero memakai `FtText` + font milik aplikasi.
+  Ini pola yang sudah disahkan (`primitives/fttext.hpp`).
+- **Zona waktu adalah tabel tetap**, bukan basis data tzdata. 32 kota,
+  diverifikasi 280.320 sampel terhadap tzdata IANA (0 selisih). Kota di luar
+  tabel tidak tersedia sampai tabelnya bertambah.
