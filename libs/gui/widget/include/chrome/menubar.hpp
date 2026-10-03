@@ -36,7 +36,7 @@ public:
     // selebar window — dulu judul berjarak lebar sehingga terlihat seperti
     // tabel, bukan menu.
     int title_w(int i) const {
-        return _ui_strlen(titles[i].label) * glyph::ADVANCE + 2 * space::MD;
+        return text_measure(titles[i].label) + 2 * space::MD;
     }
     int title_x(int i) const {
         int tx = x + space::SM;

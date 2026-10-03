@@ -136,6 +136,40 @@ tetap 8px). Peran di atas mengendalikan tinggi baris, tracking, dan huruf besar
 untuk aplikasi yang memakai FreeType lewat `ui_fttext_*`; toolkit tidak
 menerapkannya sendiri.
 
+### Font sistem (tipografi nyata)
+
+Aplikasi dapat memasang **font UI pilihan pengguna** (`/font.ui`, diatur di
+Settings > Fonts) supaya SELURUH teks toolkit memakai font itu — dan seluruh
+tata letak yang mengukur teks ikut menyesuaikan:
+
+```cpp
+#include "services/uifont.hpp"
+
+int MyApp::run() {
+    ui::uifont_install();   // SEBELUM widget pertama dibuat
+    ...
+}
+```
+
+Link tambahan (objek terpisah, bukan bagian toolkit inti):
+
+```cmake
+LIBS kyuzen-widget-uifont kyuzen-text-manager kyuzen-text-raster kyuzen-freetype
+```
+
+**Kenapa sebelum widget dibuat:** lebar tombol, label, dan baris daftar dihitung
+dari metrik font saat widget dibuat. Memasang font setelahnya meninggalkan
+ukuran yang salah.
+
+**Kapan pakai:** aplikasi yang ingin mengikuti pilihan font pengguna. Toolkit
+inti sengaja tetap bebas FreeType, jadi aplikasi yang tidak memanggilnya tetap
+memakai bitmap 8×16 tanpa biaya apa pun.
+
+Kontrak internalnya: `core/text_provider.hpp` mendefinisikan `TextProvider`
+(measure/line_height/ascent/draw) dan toolkit memakainya untuk mengukur dan
+menggambar. Bila provider tidak lengkap, toolkit kembali ke bitmap — bukan
+menggambar separuh.
+
 ### Kedalaman
 
 | Level | Permukaan | Bayangan |

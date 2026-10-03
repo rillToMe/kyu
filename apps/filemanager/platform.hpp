@@ -17,7 +17,15 @@ extern "C" {
 #include "libgui.h"
 }
 #include "libui.h"         // toolkit widget (ABI C, sudah extern "C")
+#include "libui_xml.h"     // XML deklaratif (chrome + kerangka isi File Manager)
 #include "media.h"         // tipe berkas + util path + format ukuran (libs/media/media.c)
 #include "media_scale.h"   // scaler RGBA bersama (static inline)
+// Tipografi: font UI dari sistem (kzfont.h tanpa guard extern "C" sendiri,
+// jadi dimasukkan di sini — pola yang sama dengan apps/settings/fonts.cpp).
+extern "C" {
+#include "kzfont.h"      // kz_font_* (libs/text)
+#include "kzfonts.h"     // registry id/nama/berkas font
+#include "kzfontcfg.h"   // format /font.ui
+}
 
 #endif // FM_PLATFORM_HPP

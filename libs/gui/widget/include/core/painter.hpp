@@ -15,6 +15,7 @@
 
 #include "runtime/platform.hpp"
 #include "core/theme.hpp"
+#include "core/text_provider.hpp"
 #include "theme/icons.hpp"
 
 namespace ui {
@@ -72,7 +73,31 @@ public:
         // window urusan compositor), jadi `c` dikirim apa adanya.
         gui_draw_rect(win, x, y, w, h, c);
     }
+    // ------------------------------------------------------------
+    // Pengukuran teks — SATU jalur untuk bitmap 8×16 DAN font nyata.
+    // Widget memakai text_measure()/text_vcenter() dari core/text_provider.hpp;
+    // di sini hanya alias supaya pemanggil lama (p.text_line_h()) tetap jalan.
+    // ------------------------------------------------------------
+    static int text_line_h() { return text_line_height(); }
+    static int text_ascent_px() { return text_ascent(); }
+
     void text(const char* s, int x, int y, color_t c) {
+        if (!s || !s[0]) return;
+        // Provider: gambar di baseline. `y` adalah ATAS baris, jadi baseline =
+        // y + ascent. Itu yang membuat teks provider sejajar dengan teks
+        // bitmap pada koordinat yang sama.
+        const TextProvider* tp = text_provider_get();
+        if (tp) {
+            int n = 0;
+            while (s[n]) n++;
+            tp->draw(tp->ud, win->canvas, (int)win->width, (int)win->height,
+                     x, y + text_ascent(), c, s);
+            // Provider menulis canvas langsung, jadi damage dicatat di sini
+            // (kontrak provider: tidak memanggil gui_damage_rect sendiri).
+            gui_damage_rect(win, x, y, tp->measure(tp->ud, s, n) + 2,
+                            text_line_height());
+            return;
+        }
         // Tanpa clip: jalur cepat (libgui menandai damage ter-clip sendiri).
         if (!clip_on && !rclip_on) { gui_draw_text(win, s, x, y, c); return; }
         // Ter-clip: gambar per-sel 8x16; hanya sel yang beririsan dengan clip.
@@ -96,6 +121,11 @@ public:
     // ------------------------------------------------------------
     void text_role(const char* s, int x, int y, color_t c, const TypeRole& r) {
         if (!s || !s[0]) return;
+        // Dengan provider: ukuran huruf datang dari FONT (peran hanya memilih
+        // tone); tracking dan uppercase adalah trik bitmap untuk membangun
+        // hierarki tanpa ukuran — keduanya tidak perlu dan justru merusak
+        // tipografi nyata. Jadi jalur provider menggambar apa adanya.
+        if (text_provider_active()) { text(s, x, y, c); return; }
         const int adv = glyph::ADVANCE + r.bitmap_tracking;
         if (adv == glyph::ADVANCE && !r.bitmap_upper) {
             text(s, x, y, c);          // jalur cepat: peran default
@@ -126,9 +156,44 @@ public:
     void text_ellipsis(const char* s, int x, int y, int max_w, color_t c,
                        const TypeRole& r) {
         if (!s || !s[0] || max_w <= 0) return;
-        const int adv = glyph::ADVANCE + r.bitmap_tracking;
         int n = 0;
         while (s[n]) n++;
+        // Berapa karakter yang muat? Dengan provider, lebar satu karakter TIDAK
+        // konstan, jadi dihitung dari pengukuran nyata (bukan max_w/advance).
+        if (text_provider_active()) {
+            if (text_measure(s) <= max_w) { text(s, x, y, c); return; }
+            const int dot = text_measure("...");
+            int keep = n;
+            while (keep > 0) {
+                // Cari prefiks terpanjang yang muat bersama "...".
+                char buf[128];
+                int k = 0;
+                for (; k < keep && k < 127 && s[k]; k++) buf[k] = s[k];
+                buf[k] = '\0';
+                if (text_measure(buf) + dot <= max_w) break;
+                keep--;
+            }
+            if (keep <= 0) {
+                // Terlalu sempit untuk ellipsis: potong seadanya.
+                char buf[8];
+                int k = 0;
+                for (; k < 7 && s[k]; k++) {
+                    buf[k] = s[k];
+                    buf[k + 1] = '\0';
+                    if (text_measure(buf) > max_w) { buf[k] = '\0'; break; }
+                }
+                text(buf, x, y, c);
+                return;
+            }
+            char buf[131];
+            int k = 0;
+            for (; k < keep && k < 127 && s[k]; k++) buf[k] = s[k];
+            buf[k++] = '.'; buf[k++] = '.'; buf[k++] = '.';
+            buf[k] = '\0';
+            text(buf, x, y, c);
+            return;
+        }
+        const int adv = glyph::ADVANCE + r.bitmap_tracking;
         int fit = max_w / adv;
         if (n <= fit) { text_role(s, x, y, c, r); return; }
         if (fit < 4) {                 // terlalu sempit untuk "..." → potong saja

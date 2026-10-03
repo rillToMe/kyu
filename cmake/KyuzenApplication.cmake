@@ -404,10 +404,30 @@ function(kyuzen_add_sdk_app name)
 
     # Build-ordering: the objects reach the link line through the response file,
     # which CMake does not parse, so the edges are declared explicitly.
+    #
+    # PENTING — add_dependencies() saja TIDAK CUKUP di sini. Di Ninja,
+    # `add_dependencies` menjadi order-only edge: ia menjamin urutan build,
+    # tetapi TIDAK membuat target dianggap kotor ketika prasyaratnya berubah.
+    # Akibatnya mengubah satu .cpp app TIDAK memicu link ulang: objeknya
+    # dikompilasi baru, tapi ELF-nya tetap yang lama. Itu bug senyap — build
+    # melaporkan sukses sementara biner yang dijalankan (dan yang masuk ISO)
+    # adalah versi sebelumnya.
+    #
+    # Perbaikannya: objek harus menjadi FILE dependency nyata dari aturan link.
+    # LINK_DEPENDS menerima generator expression $<TARGET_OBJECTS:...> dan
+    # mengekspansinya menjadi path file objek, jadi menyentuh salah satu objek
+    # memaksa relink — tanpa mengubah urutan link (rsp file tetap yang mengatur
+    # itu).
     add_dependencies(${name} ${name}-objects)
     kyuzen_object_libraries(_obj_libs ${ARG_LIBS})
     foreach(_ol IN LISTS _obj_libs)
         add_dependencies(${name} ${_ol})
+    endforeach()
+
+    set(_link_depends "${KYUZEN_SDK_CPP_LD}"
+                      "$<TARGET_OBJECTS:${name}-objects>")
+    foreach(_ol IN LISTS _obj_libs)
+        list(APPEND _link_depends "$<TARGET_OBJECTS:${_ol}>")
     endforeach()
 
     # The SDK artifacts must exist before the link.
@@ -418,7 +438,7 @@ function(kyuzen_add_sdk_app name)
         OUTPUT_NAME "${_out_name}"
         SUFFIX ".elf"
         RUNTIME_OUTPUT_DIRECTORY "${KYUZEN_ELF_DIR}"
-        LINK_DEPENDS "${KYUZEN_SDK_CPP_LD}"
+        LINK_DEPENDS "${_link_depends}"
     )
 endfunction()
 

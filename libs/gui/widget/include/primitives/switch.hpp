@@ -34,7 +34,7 @@ public:
           change_cb(0), change_data(0) {
         const Metrics m;
         h = m.control_h_sm;
-        int tw = label ? text_width(label, Typography().label) : 0;
+        int tw = label ? text_measure_role(label, Typography().label) : 0;
         w = TRACK_W + (tw ? m.sm + tw : 0);
         cursor_kind = UI_CURSOR_HAND;
     }

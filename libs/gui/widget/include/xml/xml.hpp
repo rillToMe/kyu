@@ -33,7 +33,13 @@ enum {
     MAX_ATTR_NAME = 32,
     MAX_ATTR_VALUE = 256,
     MAX_ID = 48,
-    MAX_IDS = 32,
+    // 64, bukan 32: satu chrome aplikasi nyata menghabiskan id dengan cepat —
+    // menubar dengan 3 menu (7+8+3 item ber-id) + 6 tombol toolbar + statusbar
+    // + baris path + bar rename + sidebar + slot isi sudah melewati 32. Batas
+    // lama berasal dari masa toolkit hanya punya form sederhana; efeknya
+    // dokumen yang sepenuhnya wajar ditolak dengan UI_XML_LIMIT. Biaya
+    // menaikkannya kecil: Context dialokasikan sekali per window.
+    MAX_IDS = 64,
     MAX_GROUPS = 8,
     MAX_ROOTS = 16
 };
@@ -86,10 +92,30 @@ enum {
     K_SCROLLVIEW, K_VBOX, K_HBOX, K_GRID,
     // Design system: elemen struktural & primitif baru.
     K_SECTION, K_SWITCH, K_ICON,
+    // Chrome (dipasang lewat ui_window_add_bar, bukan ke layout root).
+    K_MENUBAR, K_MENU, K_TOOLBAR, K_STATUSBAR,
     K_KIND_MAX
 };
 
-struct IdEntry { char id[MAX_ID + 1]; Widget* w; int kind; };
+// Peran penempatan elemen hasil inflasi. Inflater mencatatnya supaya `commit()`
+// bisa memasang widget ke tempat yang BENAR tanpa app perlu tahu:
+//   ROOT   — masuk layout root window (ui_window_add), perilaku lama
+//   BAR    — pita chrome di PUNCAK window (ui_window_add_bar)
+//   BBAR   — pita chrome di DASAR window (ui_window_add_bottom_bar)
+// Elemen chrome otomatis berperan BAR/BBAR: menubar+toolbar ke puncak,
+// statusbar ke dasar. Ini yang membuat deklarasi chrome mungkin di XML tanpa
+// menambah API penempatan baru di sisi aplikasi.
+enum { PLACE_ROOT = 0, PLACE_BAR = 1, PLACE_BBAR = 2 };
+
+// Satu id yang terdaftar. `w` = widget pemiliknya; `index` = nomor baris/item
+// DI DALAM widget itu untuk elemen yang bukan Widget sendiri (item menu,
+// tombol toolbar). Untuk widget biasa `index` = -1.
+struct IdEntry {
+    char id[MAX_ID + 1];
+    Widget* w;
+    int kind;
+    int index;
+};
 struct GroupEntry { char name[32]; RadioGroup* g; };
 struct Context {
     Window* win;
@@ -99,6 +125,10 @@ struct Context {
     int ngroups;
     Widget* roots[MAX_ROOTS];   // detached sampai commit
     int nroots;
+    // Peran penempatan per root (PLACE_ROOT / PLACE_BAR). Diisi saat inflasi
+    // elemen root; dipakai commit() supaya chrome (menubar/toolbar/statusbar)
+    // dipasang lewat add_bar dan sisanya lewat add.
+    int root_place[MAX_ROOTS];
     bool committed;
     // Tema window (diterapkan saat commit; has_theme = ada atribut tema).
     bool has_theme;
@@ -120,6 +150,12 @@ void rollback(Context* ctx);
 Widget* find(Context* ctx, const char* id);
 // Registrasi id (cek duplikat + batas). 1 = ok.
 int add_id(Context* ctx, const char* id, Widget* w, Error* err);
+// Registrasi id untuk elemen yang BUKAN Widget: satu baris di dalam Menu
+// (item menu) atau satu tombol di dalam Toolbar. `kind` diisi pemanggil
+// (K_MENU / K_TOOLBAR) dan `index` = nomor baris/tombol. Binding memakai ini
+// supaya aplikasi menyebut item dengan NAMA, bukan posisi.
+int add_menu_item_id(Context* ctx, const char* id, Widget* owner, int index,
+                     Error* err);
 // Grup radio bernama (buat bila belum ada; batas MAX_GROUPS). 0 = penuh.
 RadioGroup* group(Context* ctx, const char* name, Error* err);
 

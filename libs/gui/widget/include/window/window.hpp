@@ -62,6 +62,13 @@ public:
     Widget* top_bars[4];   // bar full-width (MenuBar/Toolbar), di atas root
     int n_bars;
     int bar_h;         // tinggi kumulatif bar → offset root
+    // Bar BAWAH (StatusBar). Dipisah dari top_bars karena add_bar() menumpuk
+    // dari ATAS: menaruh statusbar di sana menempatkannya di bawah toolbar,
+    // bukan di dasar window. Bar bawah digambar terakhir dan menempel di
+    // y = height - h, jadi aplikasi tidak perlu menghitungnya sendiri.
+    Widget* bottom_bars[2];
+    int n_bbars;
+    int bbar_h;
     // Phase 9 — Desktop Services
     Dialog* dialog;        // modal aktif (0 = none); dimiliki window
     Widget* focus_prev;    // Phase C: fokus sebelum dialog dibuka (restore saat tutup)
@@ -97,6 +104,7 @@ public:
         : gw(gui_create_window(width, height)), theme_cfg(), cfg_valid(false), root(0),
           running(gw != 0), mouse_x(0), mouse_y(0), hovered(0),
           focused(0), grabbed(0), popup(0), popup_owner(0), n_bars(0), bar_h(0),
+          n_bbars(0), bbar_h(0),
           dialog(0), focus_prev(0), notify_text(0), notify_until(0),
           drag_src(0), drag_payload(0), drag_x(0), drag_y(0),
           tip_since(0), tip_target(0), tip_shown(false),
@@ -105,6 +113,7 @@ public:
           key_cb(0), key_data(0),
           dirty_valid(0), dirty_x(0), dirty_y(0), dirty_w(0), dirty_h(0) {
         for (int i = 0; i < 4; i++) top_bars[i] = 0;
+    for (int i = 0; i < 2; i++) bottom_bars[i] = 0;
         for (int i = 0; i < 32; i++) { shortcuts[i].cb = 0; shortcuts[i].data = 0; }
     }
 
@@ -112,6 +121,14 @@ public:
         sys_kwm_set_cursor(UI_CURSOR_ARROW);   // jangan tinggalkan I-beam/tangan
         if (dialog) delete dialog;
         if (notify_text) _ui_free(notify_text);
+        // Bar chrome dimiliki window (dibuat lewat add_bar/add_bottom_bar) —
+        // keduanya harus dihapus di sini. Ini juga menutup kebocoran yang
+        // sebelumnya tidak terlihat: menubar/toolbar/statusbar tidak pernah
+        // dibebaskan saat window ditutup.
+        for (int i = 0; i < n_bars; i++) delete top_bars[i];
+        for (int i = 0; i < n_bbars; i++) delete bottom_bars[i];
+        n_bars = 0;
+        n_bbars = 0;
         if (root) delete root;
         if (gw) gui_destroy(gw);
     }
@@ -137,11 +154,44 @@ public:
     void add_bar(Widget* b) {
         if (n_bars >= 4) return;
         b->x = 0; b->y = bar_h;
+        b->w = (int)gw->width;
         bar_h += b->h;
         b->set_owner(this);
         top_bars[n_bars++] = b;
         if (root) root->y = 8 + bar_h;
     }
+
+    // Bar BAWAH (StatusBar): menempel di dasar window. Dipisah dari add_bar()
+    // karena add_bar menumpuk dari atas — statusbar yang dipasang lewat
+    // add_bar() akan muncul di bawah toolbar, bukan di dasar. Tinggi bar bawah
+    // juga menyingkat area root supaya isi tidak tertutup.
+    void add_bottom_bar(Widget* b) {
+        if (n_bbars >= 2) return;
+        b->x = 0;
+        b->w = (int)gw->width;
+        b->y = (int)gw->height - bbar_h - b->h;
+        bbar_h += b->h;
+        b->set_owner(this);
+        bottom_bars[n_bbars++] = b;
+        // Bar bawah menambah tinggi yang dipakai chrome di kedua ujung.
+        relayout_bottom_bars();
+    }
+
+    // Susun ulang bar bawah (dipanggil saat ditambah ATAU ukuran window
+    // berubah): tumpuk dari dasar ke atas supaya urutan penambahan = urutan
+    // visual dari bawah.
+    void relayout_bottom_bars() {
+        int y = (int)gw->height;
+        for (int i = n_bbars - 1; i >= 0; i--) {
+            y -= bottom_bars[i]->h;
+            bottom_bars[i]->x = 0;
+            bottom_bars[i]->y = y;
+            bottom_bars[i]->w = (int)gw->width;
+        }
+        if (root) root->y = 8 + bar_h;
+    }
+
+    int content_bottom() const { return (int)gw->height - bbar_h; }
 
     // Root selalu VBox bermargin 8px — widget pertama sekalipun layout.
     void add(Widget* w) {
@@ -151,6 +201,8 @@ public:
     }
 
     Widget* pick_bar(int mx, int my) {
+        for (int i = n_bbars - 1; i >= 0; i--)
+            if (bottom_bars[i]->pick(mx, my)) return bottom_bars[i];
         for (int i = n_bars - 1; i >= 0; i--)
             if (top_bars[i]->pick(mx, my)) return top_bars[i];
         return 0;
@@ -220,6 +272,9 @@ public:
 
     void set_focus(Widget* n) {
         if (n && !n->enabled) n = 0;   // Phase B: disabled tak bisa memegang fokus
+        // Opt-out fokus (mis. sidebar mouse-only) juga tidak bisa difokuskan
+        // lewat klik, bukan hanya dilewati traversal Tab.
+        if (n && !n->takes_focus()) n = 0;
         // Phase C (C7): fokus lama mungkin menunjuk widget yang sudah
         // di-delete. Sanitized di sini (tanpa deref) sebelum disentuh.
         if (focused && !focus_alive()) focused = 0;
@@ -236,7 +291,7 @@ public:
     enum { FOCUS_MAX = 64 };
     static void collect_focus(Widget* w, Widget** out, int* n) {
         if (!w || !w->visible || !w->enabled) return;   // prune subtree
-        if (w->focusable()) {
+        if (w->takes_focus()) {
             if (*n < FOCUS_MAX) out[(*n)++] = w;
         }
         int k = w->dirty_child_count();
@@ -247,6 +302,8 @@ public:
         for (int i = 0; i < n_bars && n < FOCUS_MAX; i++)
             collect_focus(top_bars[i], out, &n);
         collect_focus(root, out, &n);
+        for (int i = 0; i < n_bbars && n < FOCUS_MAX; i++)
+            collect_focus(bottom_bars[i], out, &n);
         return n;
     }
     // Widget masih hidup di pohon? (perbandingan pointer, tanpa deref —
@@ -262,6 +319,8 @@ public:
     bool owns_widget(Widget* q) {
         for (int i = 0; i < n_bars; i++)
             if (owned_walk(top_bars[i], q)) return true;
+        for (int i = 0; i < n_bbars; i++)
+            if (owned_walk(bottom_bars[i], q)) return true;
         return owned_walk(root, q);
     }
     // Fokus hidup = menunjuk dialog modal atau node di pohon. Hanya
@@ -450,7 +509,7 @@ public:
         p.text(notify_text, nx + 8, ny + 6, p.theme.text);
     }
     void draw_drag_ghost(Painter& p) {
-        int tw = drag_payload ? _ui_strlen(drag_payload) * 8 + 12 : 24;
+        int tw = drag_payload ? text_measure(drag_payload) + 12 : 24;
         int gx = drag_x + 4, gy = drag_y + 4;
         p.rect(gx, gy, tw, 18, p.theme.surface_elevated);
         p.rect(gx, gy, tw, 1, p.theme.accent);
@@ -571,6 +630,7 @@ public:
     }
     void damage_dirty_widgets() {
         for (int i = 0; i < n_bars; i++) collect_dirty(top_bars[i]);
+        for (int i = 0; i < n_bbars; i++) collect_dirty(bottom_bars[i]);
         collect_dirty(root);
         collect_dirty(popup);
         collect_dirty(dialog);
@@ -584,6 +644,7 @@ public:
     }
     void forget_dirty_widgets() {
         for (int i = 0; i < n_bars; i++) forget_dirty(top_bars[i]);
+        for (int i = 0; i < n_bbars; i++) forget_dirty(bottom_bars[i]);
         forget_dirty(root); forget_dirty(popup); forget_dirty(dialog);
     }
     // Union bounds bar + root (recurse layout). Untuk tick/klik yang callback-nya
@@ -592,6 +653,8 @@ public:
         int x0 = 0x7fffffff, y0 = 0x7fffffff, x1 = -0x7fffffff, y1 = -0x7fffffff;
         for (int i = 0; i < n_bars; i++)
             if (top_bars[i]) top_bars[i]->collect_bounds(x0, y0, x1, y1);
+        for (int i = 0; i < n_bbars; i++)
+            if (bottom_bars[i]) bottom_bars[i]->collect_bounds(x0, y0, x1, y1);
         if (root) root->collect_bounds(x0, y0, x1, y1);
         if (x1 > x0 && y1 > y0) damage_rect(x0, y0, x1 - x0, y1 - y0);
         else damage_full();
@@ -610,7 +673,7 @@ public:
     }
     void damage_overlay(Widget* ov) { damage_overlay(ov, ELEV_POPUP); }
     void damage_ghost(int gx, int gy) {
-        int tw = drag_payload ? _ui_strlen(drag_payload) * 8 + 12 : 24;
+        int tw = drag_payload ? text_measure(drag_payload) + 12 : 24;
         damage_rect(gx, gy, tw + 12, 26);
     }
 
@@ -627,6 +690,7 @@ public:
         p.rect(0, 0, (int)gw->width, (int)gw->height, theme.bg);
         for (int i = 0; i < n_bars; i++) top_bars[i]->draw(p);
         if (root) root->draw(p);
+        for (int i = 0; i < n_bbars; i++) bottom_bars[i]->draw(p);
         if (popup) { p.shadow(popup->x, popup->y, popup->w, popup->h, ELEV_POPUP); popup->draw(p); }
         if (dialog) {                     // modal di atas popup
             p.shadow(dialog->x, dialog->y, dialog->w, dialog->h, ELEV_DIALOG);
@@ -714,7 +778,7 @@ public:
                                 drag_x = mouse_x; drag_y = mouse_y;
                             } else {
                                 grabbed = picked;
-                                set_focus(grabbed && grabbed->focusable() ? grabbed : 0);
+                                set_focus(grabbed && grabbed->takes_focus() ? grabbed : 0);
                                 if (grabbed) grabbed->on_click(mouse_x, mouse_y);
                             }
                             // callback (on_click) bisa mengubah widget mana pun;

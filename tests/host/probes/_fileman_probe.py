@@ -31,16 +31,52 @@ sys.path.insert(0, HERE)
 import _ui_probe as P          # harness boot/login/monitor/screendump
 import _screen_text as ST      # baca_ppm (dipakai untuk sampling warna)
 
+# Harness _ui_probe.py menunjuk build/boot_image.iso (path Makefile lama).
+# Build CMake menaruh ISO di build/target/boot_image.iso — pilih yang ada,
+# supaya probe jalan sebelum dan sesudah migrasi path.
+_ISO_CMAKE = os.path.join(P.ROOT, "build", "target", "boot_image.iso")
+if os.path.exists(_ISO_CMAKE):
+    P.ISO = _ISO_CMAKE
+
 OUT = os.path.join(P.ROOT, "tests", "host", "probes", "_ui_out")
-# Tema bawaan toolkit (libs/widget/include/core/theme.hpp) — dipakai untuk
-# membuktikan jendela File Manager benar-benar tergambar.
-THEME_BG     = (0x1A, 0x1A, 0x2E)
-# Tombol dialog: tombol PERTAMA = primer (accent; fileman memakai tema default
-# Dark+Neutral → 0x8B8B8B), sisanya btnfill (Phase B; dulu semua 0x3C3C3C —
-# dua blok ~68px di baris dialog). Cari primer dulu, fallback btnfill lama.
-THEME_BTN_DIALOG = (0x3C, 0x3C, 0x3C)
-THEME_BTN_PRIMARY = (0x8B, 0x8B, 0x8B)
+
+# ---------------------------------------------------------------------------
+# Geometri + warna dari DESIGN SYSTEM (bukan angka yang disalin dari kode app).
+#
+# Sumber: libs/gui/widget/include/theme/{colors,metrics}.hpp
+#   bg (Dark+Neutral)        0x111111   <- isi jendela aplikasi
+#   surface                  0x181818   <- pita chrome (menubar/toolbar/statusbar)
+#   surface_elevated         0x232323   <- tombol sekunder
+#   accent (Neutral)         0x8B8B8B   <- tombol primer (dialog)
+#   menubar 26 / toolbar 34 / statusbar 24
+#
+# CATATAN PENTING soal identifikasi jendela: bg aplikasi (0x111111) TIDAK bisa
+# dipakai sebagai penanda jendela — shell desktop memakai surface 0x181818, dan
+# setelah redesign keduanya netral, sehingga pencarian "piksel 0x111111" juga
+# mengenai area gelap lain di layar. Yang dipakai penanda adalah PITA CHROME
+# (0x181818) yang membentuk run horizontal panjang selebar jendela: itulah
+# menubar/toolbar yang hanya dimiliki jendela aplikasi.
+# ---------------------------------------------------------------------------
+THEME_BG = (0x11, 0x11, 0x11)             # isi jendela aplikasi
+THEME_CHROME = (0x18, 0x18, 0x18)         # pita chrome (menubar/toolbar/statusbar)
+THEME_BTN_DIALOG = (0x23, 0x23, 0x23)     # surface_elevated
+THEME_BTN_PRIMARY = (0x8B, 0x8B, 0x8B)    # accent (Neutral)
 WIN_W_EXPECT = 720
+
+MENUBAR_H = 26
+TOOLBAR_H = 34
+STATUSBAR_H = 24
+ROOT_Y = 8 + MENUBAR_H + TOOLBAR_H        # 68 (relatif ke atas klien)
+CONTROL_H = 28
+SPACE_SM = 8
+ROW_H = 24                                # list::ROW_H
+SIDEBAR_X = 8
+SIDEBAR_W = 140
+
+# Baris sidebar ke-i (klien-relative): tinggi ROW_H, mulai di bawah baris path.
+SIDEBAR_TOP = ROOT_Y + CONTROL_H + SPACE_SM      # 104
+TOOLBAR_MID = MENUBAR_H + TOOLBAR_H // 2         # 43
+
 # Awalan jejak aplikasi (FileManagerApp::trace) — satu tempat saja.
 TRACE = "[filemanager] "
 
@@ -55,24 +91,57 @@ def dump(m, name, wait=1.0):
     return ppm
 
 
-def window_bbox(ppm, color=THEME_BG, step=2):
-    """Bbox piksel berwarna `color` (isi jendela) + lebar/tinggi efektif."""
+def window_bbox(ppm, color=THEME_CHROME, min_run=300, step=2):
+    """Bbox jendela aplikasi dari PITA CHROME-nya.
+
+    Menubar/toolbar adalah satu-satunya elemen di layar yang membentuk run
+    horizontal panjang berwarna `surface` selebar jendela. Dipakai itu sebagai
+    penanda, bukan bg aplikasi: bg (0x111111) juga muncul di area gelap lain
+    setelah shell dan aplikasi memakai palet netral yang sama.
+
+    Return (x0, y0, x1, y1, lebar, tinggi, jumlah_piksel) atau None.
+    """
     w, h, px = ST.read_ppm(ppm)
 
     def rgb(x, y):
         i = (y * w + x) * 3
         return (px[i], px[i + 1], px[i + 2])
 
-    xs, ys = [], []
-    for y in range(0, h, step):
-        for x in range(0, w, step):
+    # Baris mana yang memuat run chrome panjang? Itu pita chrome jendela.
+    # Taskbar juga memakai `surface`, jadi run panjang saja tidak cukup:
+    # taskbar membentang SELEBAR LAYAR (1920), sedangkan menubar/toolbar
+    # selebar JENDELA (~720). Karena itu kandidat dikelompokkan per LEBAR run
+    # dan kelompok dengan lebar paling masuk akal (<= WIN_W_EXPECT + margin,
+    # dan bukan selebar layar) yang dipakai.
+    candidates = []          # (y, bx, run_len)
+    for y in range(0, h):
+        run = 0
+        best = 0
+        bx = 0
+        for x in range(0, w):
             if rgb(x, y) == color:
-                xs.append(x)
-                ys.append(y)
-    if not xs:
+                run += 1
+                if run > best:
+                    best = run
+                    bx = x - run + 1
+            else:
+                run = 0
+        if best >= min_run:
+            candidates.append((y, bx, best))
+    if not candidates:
         return None
-    return (min(xs), min(ys), max(xs), max(ys),
-            max(xs) - min(xs), max(ys) - min(ys), len(xs))
+
+    # Buang run yang selebar layar penuh (itu taskbar, bukan jendela).
+    not_full = [c for c in candidates if c[2] <= WIN_W_EXPECT + 24]
+    if not_full:
+        candidates = not_full
+
+    x0 = min(c[1] for c in candidates)
+    x1 = max(c[1] + c[2] - 1 for c in candidates)
+    y0 = min(c[0] for c in candidates)
+    y1 = max(c[0] for c in candidates)
+    width = x1 - x0 + 1
+    return (x0, y0, x1, y1, width, y1 - y0 + 1, len(candidates))
 
 
 def find_leftmost_button(ppm, y0, y1, colors=(THEME_BTN_PRIMARY, THEME_BTN_DIALOG),
@@ -132,17 +201,85 @@ def move_to(m, x, y, step=8):
     """Pindahkan kursor ke koordinat layar absolut (x, y).
 
     Protokol monitor QEMU hanya punya `mouse_move` RELATIF: dorong dulu ke sudut
-    (0,0) — kernel/KWM menjepit kursor di tepi — lalu melangkah `step` px.
-    Presisi ±step; cukup untuk baris sidebar (20 px) dan tombol toolbar (120 px).
+    (0,0) - kernel/KWM menjepit kursor di tepi - lalu melangkah `step` px.
+
+    Sisa pembagian dikirim sebagai langkah TERAKHIR (bukan dipotong `//step`),
+    dan jumlah dorongan slam disamakan dengan _ui_probe.py yang terbukti bekerja.
     """
-    for _ in range(60):
+    for _ in range(250):
         m.move(-40, -40)
-    time.sleep(0.3)
+    time.sleep(0.5)
     for _ in range(x // step):
         m.move(step, 0)
+    if x % step:
+        m.move(x % step, 0)
     for _ in range(y // step):
         m.move(0, step)
+    if y % step:
+        m.move(0, y % step)
     time.sleep(0.4)
+
+
+def calibrate_cursor(m, ppm, cli_x, cli_y):
+    """Ukur perpindahan kursor yang SEBENARNYA terjadi (skala harness).
+
+    Protokol mouse monitor QEMU memakai koordinat layar HOST, sementara tamu
+    (guest) punya resolusinya sendiri. Dengan `-display none` pemetaannya tidak
+    identik 1:1, sehingga kursor mendarat dengan selisih tetap terhadap target.
+    Alih-alih menebak faktor skalanya, probe MENGUKURNYA: dorong kursor ke
+    sudut, maju sejauh D pada sumbu Y, klik baris sidebar, lalu baca baris mana
+    yang benar-benar terpilih — dari situ skala = terukur / D.
+
+    Return (offset, skala) dalam satuan klien, atau None bila tak terukur.
+    """
+    probe_d = 120                       # dorongan uji pada sumbu Y
+    for _ in range(250):
+        m.move(-40, -40)
+    time.sleep(0.5)
+    for _ in range(probe_d // 8):
+        m.move(0, 8)
+    time.sleep(0.3)
+    m.click()
+    time.sleep(1.5)
+    fresh = dump(m, "f0_calib")
+    got = selected_sidebar_row(fresh, cli_x, cli_y)
+    if got is None:
+        return None
+    landed = SIDEBAR_TOP + got * ROW_H + ROW_H // 2
+    # Kursor mendarat di `landed` padahal kita mendorong `probe_d` dari sudut.
+    scale = landed / probe_d
+    print("  [calib] dorong %d px -> mendarat di rel %d (baris %d), skala %.3f"
+          % (probe_d, landed, got, scale))
+    return (0, scale)
+
+
+def move_to_scaled(m, x, y, scale=1.0, step=8):
+    """move_to() dengan kompensasi skala kursor."""
+    sx = int(round(x * scale))
+    sy = int(round(y * scale))
+    move_to(m, sx, sy, step)
+
+
+def selected_sidebar_row(ppm, cli_x, cli_y):
+    """Indeks baris sidebar yang sedang terpilih (tinta seleksi), atau None."""
+    w, h, px = ST.read_ppm(ppm)
+
+    def rgb(x, y):
+        i = (y * w + x) * 3
+        return (px[i], px[i + 1], px[i + 2])
+
+    # selection = mix(accent, bg, 77) -> 0x353535 untuk Neutral/dark.
+    sel = (0x35, 0x35, 0x35)
+    band = []
+    for y in range(cli_y + SIDEBAR_TOP, cli_y + SIDEBAR_TOP + 8 * ROW_H):
+        if y >= h:
+            break
+        if rgb(cli_x + 20, y) == sel:
+            band.append(y)
+    if not band:
+        return None
+    centre = (band[0] + band[-1]) // 2 - cli_y
+    return (centre - SIDEBAR_TOP) // ROW_H
 
 
 def serial():
@@ -175,9 +312,34 @@ def main():
         m.key("ret")
         time.sleep(4.0)
         ppm = dump(m, "f1_launch")
+
+        # FOKUS JENDELA DULU. Klik mouse dirutekan KWM ke jendela yang
+        # berfokus; tanpa langkah ini klik pertama hanya memfokuskan jendela
+        # dan tidak sampai ke aplikasi.
+        #
+        # TITIK KLIK: area KONTEN yang kosong (di bawah baris daftar), BUKAN
+        # menubar — mengklik menubar membuka menu, dan menu yang terbuka
+        # menangkap seluruh input berikutnya (panah/Enter menggerakkan menu,
+        # bukan aplikasi). JANGAN kirim ESC sesudahnya: di File Manager ESC
+        # menutup window (itu perilaku yang diinginkan aplikasi, tapi mematikan
+        # sisa probe).
+        bb0 = window_bbox(ppm)
+        if bb0:
+            focus_x = bb0[0] + 400
+            focus_y = bb0[1] + 470          # dekat dasar konten, area kosong
+            move_to(m, focus_x, focus_y)
+            m.click()
+            time.sleep(1.0)
+            print("  [launch] klik fokus pada area konten (%d,%d)"
+                  % (focus_x, focus_y))
+
         bb = window_bbox(ppm)
-        dump_ok = bb and abs(bb[4] - WIN_W_EXPECT) <= 24 and bb[5] > 300
-        print("  [launch] bbox isi jendela: %s" % (bb,))
+        # Lebar jendela HARUS ~720 (menubar/toolbar membentang selebar klien).
+        # Tinggi bbox hanya mencakup baris yang memuat run chrome panjang, jadi
+        # yang diperiksa tinggi adalah "ada banyak baris pita", bukan tinggi
+        # jendela penuh.
+        dump_ok = bb and abs(bb[4] - WIN_W_EXPECT) <= 24 and bb[6] >= MENUBAR_H
+        print("  [launch] bbox pita chrome jendela: %s" % (bb,))
         print("  -> jendela tema bawaan ~%dpx tergambar: %s"
               % (WIN_W_EXPECT, "YA" if dump_ok else "TIDAK"))
         print("  -> kernel panic: %s" % ("YA" if "[PANIC]" in serial() else "TIDAK"))
@@ -191,39 +353,94 @@ def main():
             rows = dump(m, "f2_open")
             m.key("backspace")            # Up
             time.sleep(1.8)
-            m.key("down")
-            m.key("down")                 # home
-            time.sleep(0.4)
-            m.key("ret")
-            time.sleep(1.8)
-            m.key("down")
-            time.sleep(0.4)
-            m.key("ret")                  # user -> /home/user
-            time.sleep(2.0)
+            # JANGAN tekan `ret` pada entri acak: berkas tanpa handler
+            # memunculkan dialog modal "No application is associated", dan
+            # modal menangkap SEMUA input berikutnya sehingga langkah
+            # sesudahnya diam-diam tidak sampai ke aplikasi.
+            # JANGAN pakai ESC untuk menutupnya juga: di File Manager ESC
+            # adalah "tutup window" (perilaku aplikasi yang benar), jadi ESC
+            # di sini mematikan sisa probe.
+            # Cukup kembali ke root dengan Backspace (Up) berulang.
+            for _ in range(4):
+                m.key("backspace")
+                time.sleep(0.6)
             rows = dump(m, "f3_nested")
 
-            # Geometri KLIEN diukur dari screendump (bukan diasumsikan):
-            # baris sidebar ke-i menempati klien y = 72 + i*20 .. +20 (terbukti
-            # dari baris terpilih pada f1_launch: "/" = item terakhir).
-            # "Pictures" = item ke-3 → pusat y = 72 + 60 + 10 = 142, x = 8+66.
-            cli_x, cli_y = (bb[0] + 1, bb[1] + 1) if bb else (0, 0)
-            move_to(m, cli_x + 74, cli_y + 142)     # sidebar: Pictures
-            m.click()
-            time.sleep(2.2)
-            dump(m, "f4_sidebar")
+            # Geometri KLIEN diukur dari screendump (bukan diasumsikan): bbox
+            # memberi origin klien, dan posisi baris dihitung dari TOKEN tema
+            # (SIDEBAR_TOP + i*ROW_H).
+            #
+            # BARIS mana yang diklik diambil dari JEJAK APLIKASI
+            # ("[filemanager] shortcuts Home,Documents,..."), bukan dari
+            # asumsi. Sidebar hanya memuat direktori yang BENAR-BENAR ada, jadi
+            # urutannya berbeda antar disk — mengasumsikan "Pictures = baris
+            # ke-3" membuat probe gagal pada disk tanpa /home/user.
+            cli_x, cli_y = (bb[0], bb[1]) if bb else (0, 0)
+            labels = []
+            for line in serial().splitlines():
+                if TRACE + "shortcuts " in line:
+                    labels = line.split("shortcuts ", 1)[1].strip().split(",")
+            print("  [sidebar] shortcut terdeteksi: %s" % (labels,))
+            target = "Pictures" if "Pictures" in labels else (
+                labels[1] if len(labels) > 1 else (labels[0] if labels else None))
+            if target:
+                # Sidebar lewat KEYBOARD (panah kanan = shortcut berikutnya).
+                # Jalur ini deterministik: tidak bergantung pada pemetaan
+                # koordinat mouse harness, yang di `-display none` tidak 1:1
+                # dengan guest dan skalanya terbukti tidak linear.
+                #
+                # CATATAN: cycleShortcut() mulai dari shortcut yang cocok
+                # dengan path AKTIF; kalau path sekarang bukan salah satu
+                # shortcut, ia mulai dari indeks 0. Karena itu probe mencari
+                # sampai path-nya berakhir dengan nama target, bukan berhenti
+                # setelah satu langkah.
+                pos_before = len(serial())
+                found = False
+                for _ in range(len(labels) + 1):
+                    m.key("right")
+                    time.sleep(0.7)
+                    if ("path /" in serial()[pos_before:]
+                            and target in serial()[pos_before:]):
+                        found = True
+                        break
+                got_path = ""
+                for line in serial().splitlines():
+                    if TRACE + "path " in line:
+                        got_path = line.split("path ", 1)[1].strip()
+                if got_path.endswith("/" + target):
+                    print("  -> sidebar (keyboard): navigasi ke '%s' berhasil"
+                          % target)
+                else:
+                    print("  -> sidebar (keyboard): path terakhir '%s' (target %s, found=%s)"
+                          % (got_path, target, found))
+            else:
+                print("  -> sidebar: tidak ada shortcut (disk kosong?) — dilewati")
             m.key("alt-left")                       # Back
             time.sleep(2.0)
             m.key("alt-right")                      # Forward
             time.sleep(2.0)
             dump(m, "f5_history")
-            m.key("alt-left")                       # kembali ke /home/user
+            m.key("alt-left")                       # kembali
             time.sleep(2.0)
 
-            # Toolbar = bar pertama (klien y 0..28, terverifikasi dari hover:
-            # rect theme.button_hover 116x22 muncul di y klien 3..25 saat kursor
-            # di atasnya). Tombol ke-6 ("List / Icons") = sel x 600..720 →
-            # pusat (660, 14); hover-nya dijadikan bukti geometri lebih dulu.
-            move_to(m, cli_x + 660, cli_y + 14, step=4)
+            # Toolbar = pita kedua (klien y MENUBAR_H..MENUBAR_H+TOOLBAR_H).
+            # Tombol "Icons" (toggle view) adalah tombol TERAKHIR; pusatnya
+            # dihitung dari token (ikon + teks + padding) supaya probe tidak
+            # bergantung pada lebar hardcoded dari implementasi lama.
+            def toolbar_btn_center(labels, want):
+                """Pusat x tombol `want` dalam barisan label toolbar."""
+                x = 4                                   # space::XS
+                for lbl in labels:
+                    w = 16 + 8 + len(lbl) * 8 + 16       # ikon+gap+teks+2*pad
+                    if lbl == want:
+                        return x + w // 2
+                    x += w + 4
+                return None
+            tb_labels = ["Back", "Forward", "Up", "Refresh", "New Folder", "Icons"]
+            tb_cx = toolbar_btn_center(tb_labels, "Icons")
+            if tb_cx is None:
+                tb_cx = 40          # jaga-jaga: jatuh ke tombol pertama
+            move_to(m, cli_x + tb_cx, cli_y + TOOLBAR_MID, step=4)
             time.sleep(0.6)
             dump(m, "f6_toolbar_hover", 0.4)
             m.click()                              # → Icon view

@@ -1,4 +1,16 @@
-// libs/widget/include/containers/table.hpp — dipindah apa adanya dari apps/libui.cpp.
+// libs/widget/include/containers/table.hpp — tabel kolom + baris scrollable.
+//
+// BAHASA VISUAL TABEL KYUZENOS
+// Tabel adalah permukaan DATA: baris rapat, tanpa kotak per baris.
+//   * Header = pita `surface_variant` (terbenam) dengan label peran `section`
+//     (huruf besar, tone sekunder) + garis tipis di bawahnya. Header tidak
+//     memakai warna aksen — ia label, bukan aksi.
+//   * Baris memakai tinggi token `list::ROW_H` (24px) supaya sejajar dengan
+//     ListView dan TreeView. Satu tinggi baris di seluruh aplikasi.
+//   * Hover = `surface_hover`, terpilih = tinta `selection`. Bukan aksen penuh:
+//     aksen disediakan untuk aksi/nilai, bukan untuk menandai "baris ini".
+//   * Teks sel dipotong dengan ellipsis (teks panjang tidak bocor ke kolom
+//     sebelahnya) dan digambar vertikal-center.
 #ifndef KWIDGET_CONTAINERS_TABLE_HPP
 #define KWIDGET_CONTAINERS_TABLE_HPP
 
@@ -6,13 +18,12 @@
 
 namespace ui {
 
-// ------------------------------------------------------------
-// Table — header tetap 24px + baris 20px yang bisa di-scroll.
-// Setiap sel teks dipotong ke kolomnya (per-sel clip).
-// ------------------------------------------------------------
 class Table : public Scrollable {
 public:
-    enum { HEADER_H = 24, MAX_COLS = 8, MAX_ROWS = 64 };
+    // Tinggi header = token daftar. Enum dipertahankan (nama lama) supaya
+    // kode/test yang menyebut Table::HEADER_H tetap benar, tapi NILAINYA
+    // sekarang dari token — bukan angka 24 yang ditulis terpisah.
+    enum { HEADER_H = list::HEADER_H, MAX_COLS = 8, MAX_ROWS = 64 };
     char* col[MAX_COLS];
     int col_w[MAX_COLS];
     int ncols;
@@ -40,13 +51,16 @@ public:
             for (int c = 0; c < MAX_COLS; c++) cells[r][c] = 0;
             icon[r] = 0; icon_w[r] = icon_h[r] = 0;
         }
-        set_scroll_view(0, h - HEADER_H - BAR_W);
+        set_scroll_view(0, h - header_h() - BAR_W);
     }
     virtual ~Table() {
         for (int c = 0; c < ncols; c++) _ui_free(col[c]);
         for (int r = 0; r < nrows; r++)
             for (int c = 0; c < ncols; c++) _ui_free(cells[r][c]);
     }
+    // Tinggi header dari token daftar (satu tempat; konstruktor, scroll, dan
+    // hit-test memakai ini supaya tidak ada tiga angka berbeda).
+    int header_h() const { return list::HEADER_H; }
     void add_column(const char* title, int width) {
         if (ncols >= MAX_COLS) return;
         col[ncols] = _ui_strdup(title);
@@ -59,7 +73,7 @@ public:
         for (int c = 0; c < n; c++) cells[nrows][c] = _ui_strdup(vals[c]);
         for (int c = n; c < ncols; c++) cells[nrows][c] = 0;
         nrows++;
-        set_scroll_view(nrows * ROW_H, h - HEADER_H - BAR_W);
+        set_scroll_view(nrows * ROW_H, h - header_h() - BAR_W);
         mark_dirty();
     }
     void clear() {
@@ -74,7 +88,7 @@ public:
         selected = -1;
         hover_row = -1;
         for (int r = 0; r < MAX_ROWS; r++) { icon[r] = 0; icon_w[r] = icon_h[r] = 0; }
-        set_scroll_view(0, h - HEADER_H - BAR_W);
+        set_scroll_view(0, h - header_h() - BAR_W);
         mark_dirty();
     }
     void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
@@ -92,8 +106,8 @@ public:
     }
     // Baris di bawah `my` (window-local) atau -1 (header / area kosong / luar).
     int row_at(int my) const {
-        if (my < y + HEADER_H || my >= y + h) return -1;
-        int r = (scroll + my - (y + HEADER_H)) / ROW_H;
+        if (my < y + header_h() || my >= y + h) return -1;
+        int r = (scroll + my - (y + header_h())) / ROW_H;
         return (r >= 0 && r < nrows) ? r : -1;
     }
     // Pilih baris dari kode + gulirkan masuk view. Tidak memanggil change_cb.
@@ -101,7 +115,7 @@ public:
         if (i < -1 || i >= nrows || i == selected) return;
         selected = i;
         if (i >= 0) {
-            int view_h = h - HEADER_H - BAR_W;
+            int view_h = h - header_h() - BAR_W;
             int ry = i * ROW_H;
             if (ry < scroll) scroll = ry;
             else if (ry + ROW_H > scroll + view_h) scroll = ry + ROW_H - view_h;
@@ -128,43 +142,95 @@ public:
             if (change_cb) change_cb(change_data);
         }
     }
+    // Keyboard: panah pindah + memilih (native: tabel adalah satu stop fokus).
+    virtual bool focusable() override { return enabled; }
+    virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
+        (void)ascii; (void)mods;
+        if (!enabled || nrows <= 0) return;
+        uint32_t sc = scancode & 0xFF;
+        int nv = selected;
+        switch (sc) {
+        case 0x48: nv = selected - 1; break;              // Up
+        case 0x50: nv = selected + 1; break;              // Down
+        case 0x49: nv = selected - 5; break;              // PgUp
+        case 0x51: nv = selected + 5; break;              // PgDn
+        case 0x47: nv = 0; break;                         // Home
+        case 0x4F: nv = nrows - 1; break;                 // End
+        case 0x1C:                                        // Enter = aktivasi
+            if (selected >= 0 && change_cb) change_cb(change_data);
+            return;
+        default: return;
+        }
+        if (nv < 0) nv = 0;
+        if (nv > nrows - 1) nv = nrows - 1;
+        if (nv == selected) return;
+        set_selected(nv);
+        if (change_cb) change_cb(change_data);
+    }
     virtual void draw(Painter& p) override {
+        const Metrics& m = p.theme.metrics;
+        const TypeRole& hdr_role = p.theme.type.section;
+        const TypeRole& cell_role = p.theme.type.body;
+        const int hh = header_h();
         int cw = content_w();
-        // header tetap
-        p.rect(x, y, cw, HEADER_H, p.theme.surface);
-        int cx = x + 2;
+
+        // Header: pita terbenam + label peran `section` + garis tipis.
+        p.rect(x, y, cw, hh, p.theme.surface_variant);
+        int cx = x + m.sm;
         for (int c = 0; c < ncols; c++) {
-            p.text(col[c], cx, y + 4, p.theme.text);
+            if (c == 0 && icon_column()) cx = x + m.sm;
+            p.text_ellipsis(col[c], cx, y + text_vcenter(hh), col_w[c] - m.sm,
+                            p.theme.tone(hdr_role.tone), hdr_role);
             cx += col_w[c];
         }
-        p.rect(x, y + HEADER_H - 1, cw, 1, p.theme.divider);   // pemisah halus, bukan garis fg terang
+        p.rect(x, y + hh - 1, cw, 1, p.theme.border_subtle);
+
         if (nrows == 0 && empty_text[0]) {
-            int ew = _ui_strlen(empty_text) * 8;
-            p.text(empty_text, x + (cw - ew) / 2, y + HEADER_H + (h - HEADER_H) / 2 - 8,
-                   p.theme.text);
+            // Keadaan kosong: tone tersier, tidak berteriak.
+            int ew = text_measure(empty_text);
+            p.text_ellipsis(empty_text, x + m.sm,
+                            y + hh + (h - hh) / 2 - glyph::HEIGHT / 2,
+                            cw - 2 * m.sm, p.theme.text_tertiary, cell_role);
+            (void)ew;
         }
-        // baris (scroll), setiap sel dipotong ke kolomnya
-        p.set_clip(x, y + HEADER_H, cw, h - HEADER_H);
+
+        // Baris (scroll). Setiap sel dipotong ke kolomnya.
+        p.set_clip(x, y + hh, cw, h - hh);
         for (int r = 0; r < nrows; r++) {
-            int ry = y + HEADER_H + r * ROW_H - scroll;
-            if (ry + ROW_H <= y + HEADER_H || ry >= y + h) continue;
+            int ry = y + hh + r * ROW_H - scroll;
+            if (ry + ROW_H <= y + hh || ry >= y + h) continue;
             if (r == selected) p.rect(x, ry, cw, ROW_H, p.theme.selection);
-            else if (r == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.surface_elevated);
-            int cxx = x + 2;
+            else if (r == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.surface_hover);
+            int cxx = x + m.sm;
             for (int c = 0; c < ncols; c++) {
-                p.set_clip(cxx, y + HEADER_H, col_w[c] - 2, h - HEADER_H);
+                int avail = col_w[c] - m.sm;
+                if (avail <= 0) { cxx += col_w[c]; continue; }
+                p.set_clip(cxx, y + hh, avail, h - hh);
                 int tx = cxx;
                 if (c == 0 && icon[r]) {   // ikon + geser teks kolom pertama
-                    p.image(cxx, ry + 2, ICON_PX, ICON_PX, icon[r], icon_w[r], icon_h[r]);
+                    p.image(cxx, ry + (ROW_H - ICON_PX) / 2, ICON_PX, ICON_PX,
+                            icon[r], icon_w[r], icon_h[r]);
                     tx += ICON_PX + ICON_PAD;
+                    avail -= ICON_PX + ICON_PAD;
                 }
-                if (cells[r][c]) p.text(cells[r][c], tx, ry + 2, p.theme.text);
-                p.set_clip(x, y + HEADER_H, cw, h - HEADER_H);
+                if (cells[r][c] && avail > 0) {
+                    p.text_ellipsis(cells[r][c], tx, ry + text_vcenter(ROW_H),
+                                    avail, p.theme.text, cell_role);
+                }
+                p.set_clip(x, y + hh, cw, h - hh);
                 cxx += col_w[c];
             }
         }
         p.clear_clip();
         draw_bar(p);
+    }
+
+private:
+    // Kolom pertama menyediakan ruang ikon bila ADA baris yang berikon. Tanpa
+    // ini, tabel tanpa ikon menyisakan indentasi kosong di semua baris.
+    bool icon_column() const {
+        for (int r = 0; r < nrows; r++) if (icon[r]) return true;
+        return false;
     }
 };
 

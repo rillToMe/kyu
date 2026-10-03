@@ -71,6 +71,8 @@ enum Icon {
     ICON_INFO = UI_ICON_INFO,
     ICON_WARNING = UI_ICON_WARNING,
     ICON_ERROR = UI_ICON_ERROR,
+    ICON_LIST = UI_ICON_LIST,
+    ICON_GRID = UI_ICON_GRID,
     ICON_COUNT = UI_ICON_COUNT
 };
 
@@ -358,6 +360,32 @@ static inline IconSpec icon_spec(Icon id) {
         icon_seg(&s, 12, 12, 11, 12);
         icon_seg(&s, 6, 6, 10, 10);
         icon_seg(&s, 10, 6, 6, 10);
+        break;
+    case ICON_LIST:               // tiga baris + bullet kiri
+        icon_seg(&s, 5, 4, 13, 4);
+        icon_seg(&s, 5, 8, 13, 8);
+        icon_seg(&s, 5, 12, 13, 12);
+        icon_dot(&s, 3, 4, 0);
+        icon_dot(&s, 3, 8, 0);
+        icon_dot(&s, 3, 12, 0);
+        break;
+    case ICON_GRID:               // 2x2 kotak
+        icon_seg(&s, 3, 3, 7, 3);
+        icon_seg(&s, 3, 7, 7, 7);
+        icon_seg(&s, 3, 3, 3, 7);
+        icon_seg(&s, 7, 3, 7, 7);
+        icon_seg(&s, 9, 3, 13, 3);
+        icon_seg(&s, 9, 7, 13, 7);
+        icon_seg(&s, 9, 3, 9, 7);
+        icon_seg(&s, 13, 3, 13, 7);
+        icon_seg(&s, 3, 9, 7, 9);
+        icon_seg(&s, 3, 13, 7, 13);
+        icon_seg(&s, 3, 9, 3, 13);
+        icon_seg(&s, 7, 9, 7, 13);
+        icon_seg(&s, 9, 9, 13, 9);
+        icon_seg(&s, 9, 13, 13, 13);
+        icon_seg(&s, 9, 9, 9, 13);
+        icon_seg(&s, 13, 9, 13, 13);
         break;
     case ICON_NONE:
     default:

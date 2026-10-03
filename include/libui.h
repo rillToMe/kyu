@@ -174,8 +174,41 @@ enum {
     UI_ICON_INFO = 28,
     UI_ICON_WARNING = 29,
     UI_ICON_ERROR = 30,
-    UI_ICON_COUNT = 31
+    // Tampilan daftar vs kisi (toggle view File Manager).
+    UI_ICON_LIST = 31,
+    UI_ICON_GRID = 32,
+    UI_ICON_COUNT = 33
 };
+
+// --- Text provider: tipografi dari font sistem (aditif) ---
+// Toolkit menggambar teks dengan bitmap 8×16 bawaan. Aplikasi yang punya akses
+// ke font nyata (libs/text) dapat memasang PROVIDER proses, sehingga SEMUA teks
+// toolkit — dan seluruh tata letak yang mengukur teks itu — memakai font
+// tersebut. Inilah yang membuat pilihan font pengguna (Settings > Fonts)
+// berlaku di seluruh aplikasi, bukan hanya di desktop.
+//
+// Kontrak:
+//   * measure: lebar advance teks (n byte UTF-8) dalam px.
+//   * line_height: jarak antar baris; ascent: jarak atas baris → baseline.
+//   * draw: gambar pada (x, baseline_y) ke canvas ARGB8888 (stride = cw).
+//     Toolkit menandai damage-nya sendiri; provider TIDAK memanggil
+//     gui_damage_rect().
+// Provider tidak lengkap (measure/line_height/draw ada yang 0) diperlakukan
+// sebagai "tidak ada" → toolkit kembali ke bitmap, bukan menggambar separuh.
+// Pass NULL untuk melepas provider.
+typedef int  (*ui_text_measure_fn)(void* ud, const char* text, int n);
+typedef int  (*ui_text_metric_fn)(void* ud);
+typedef void (*ui_text_draw_fn)(void* ud, uint32_t* canvas, int cw, int ch,
+                                int x, int baseline_y, color_t color,
+                                const char* text);
+typedef struct ui_text_provider {
+    ui_text_measure_fn measure;
+    ui_text_metric_fn  line_height;
+    ui_text_metric_fn  ascent;       // boleh 0 (toolkit memakai default)
+    ui_text_draw_fn    draw;
+    void* ud;
+} ui_text_provider_t;
+void ui_text_provider_set(const ui_text_provider_t* provider);
 
 // --- Label ---
 // text di-copy oleh toolkit — caller boleh pakai stack buffer.
@@ -216,6 +249,11 @@ void ui_button_set_icon(ui_widget_t* widget, int icon);
 // dilepas. Berlaku untuk Button/TextBox/CheckBox/Slider (widget lain
 // mengabaikan secara visual tapi tetap tak bisa di-hit).
 void ui_widget_set_enabled(ui_widget_t* widget, int enabled);
+// Widget yang bisa DIKLIK tapi tidak boleh menjadi stop fokus keyboard.
+// Dipakai mis. sidebar navigasi: barisnya menerima klik, tetapi panah
+// atas/bawah dan F2/Delete tetap milik daftar isi + aplikasi. Berbeda dari
+// disabled: widget tetap aktif penuh untuk mouse.
+void ui_widget_set_focusable(ui_widget_t* widget, int focusable);
 
 // --- Klik kanan (menu konteks) ---
 // Widget menerima klik kanan (EVENT_MOUSE_CLICK P1=1) dan memanggil cb dengan
@@ -427,6 +465,10 @@ void ui_layout_add(ui_widget_t* layout, ui_widget_t* child);
 // --- Phase 8: Advanced Widgets ---
 // Bar full-width di puncak window (MenuBar/Toolbar), di atas layout root.
 void ui_window_add_bar(ui_window_t* win, ui_widget_t* bar);
+// Bar full-width di DASAR window (StatusBar). Dipisah dari ui_window_add_bar
+// karena bar puncak ditumpuk dari atas: statusbar yang dipasang lewat
+// ui_window_add_bar akan muncul di bawah toolbar, bukan di dasar window.
+void ui_window_add_bottom_bar(ui_window_t* win, ui_widget_t* bar);
 
 // --- ScrollView ---
 // Wadah scrollable generik: satu widget anak, scroll roda + scrollbar.
@@ -572,6 +614,12 @@ void ui_menu_add_sep(ui_widget_t* menu);
 void ui_menu_set_checked(ui_widget_t* menu, int index, int checked);
 // Item redup & tidak bereaksi klik (Undo/Redo saat tidak ada historis).
 void ui_menu_set_enabled(ui_widget_t* menu, int index, int enabled);
+// Set state item lewat ID (nama dari XML), bukan nomor baris. Ini menghapus
+// keharusan aplikasi menyimpan enum index yang harus disinkronkan dengan
+// urutan penambahan item — sumber bug nyata saat menu bertambah.
+// Return 1 bila item dengan id itu ada, 0 bila tidak (id salah/menu tanpa id).
+int ui_menu_set_checked_id(ui_widget_t* menu, const char* id, int checked);
+int ui_menu_set_enabled_id(ui_widget_t* menu, const char* id, int enabled);
 
 // --- StatusBar ---
 // Pita status di dasar window: teks kiri ("Ln 1, Col 1") + teks kanan

@@ -113,21 +113,23 @@ const int PV_PAD = 12;  // padding dalam kartu
 // Palet desktop dulu biru-navy (TASK_BG 0x0B0E1C, TASK_EDGE 0x2A3355, ...)
 // sementara libui sudah memakai netral charcoal. Dua palet yang berbeda
 // membuat taskbar/launcher terasa seperti aplikasi lain yang menempel di
-// layar. Sekarang desktop memakai tangga netral YANG SAMA dengan tema libui
-// (surface 0x181818, elevated 0x232323, border 0x303030, teks 0xF2F2F2),
-// dengan aksen netral 0x8B8B8B — jadi shell dan aplikasi satu keluarga.
+// layar. Sekarang desktop memakai tangga netral YANG SAMA dengan tema libui,
+// jadi shell dan aplikasi satu keluarga.
 //
-// Warna wallpaper tetap lebih dingin dari UI: wallpaper adalah LATAR, dan
-// sedikit perbedaan suhu membuat jendela aplikasi terbaca sebagai "di atas"
-// wallpaper tanpa perlu border tebal.
+// PENTING — taskbar TIDAK memakai bg jendela (0x111111). Percobaan pertama
+// menyamakannya, dan hasilnya chrome shell dan isi jendela aplikasi menjadi
+// warna yang identik: batas antara "shell" dan "aplikasi" hilang, dan taskbar
+// menyatu dengan jendela yang kebetulan berada di atasnya. Shell memakai
+// `surface` (0x181818) — satu langkah lebih terang dari bg aplikasi, seperti
+// panel di design system — sehingga tepi jendela tetap terbaca.
 const Color WALL_BG = rgb(0x12, 0x14, 0x18);
 const Color WALL_BG2 = rgb(0x1C, 0x20, 0x28);  // ujung gradasi prosedural
 const Color WALL_TXT = rgb(0x3A, 0x3E, 0x46);
-const Color TASK_BG = rgb(0x11, 0x11, 0x11);       // == libui bg (dark)
+const Color TASK_BG = rgb(0x18, 0x18, 0x18);       // == libui surface
 const Color TASK_EDGE = rgb(0x30, 0x30, 0x30);     // == libui border
-const Color TASK_BTN = rgb(0x18, 0x18, 0x18);      // == libui surface
-const Color TASK_ACTIVE = rgb(0x2A, 0x2A, 0x2A);   // == libui surface_hover
-const Color TASK_HOVER = rgb(0x23, 0x23, 0x23);    // == libui surface_elevated
+const Color TASK_BTN = rgb(0x1E, 0x1E, 0x1E);      // slot diam
+const Color TASK_ACTIVE = rgb(0x2E, 0x2E, 0x2E);   // app fokus
+const Color TASK_HOVER = rgb(0x28, 0x28, 0x28);    // hover slot
 const Color TASK_TXT = rgb(0xF2, 0xF2, 0xF2);      // == libui text
 const Color SYS_TXT = rgb(0xF2, 0xF2, 0xF2);       // jam (baris utama)
 const Color SYS_DIM = rgb(0xA8, 0xA8, 0xA8);       // tanggal (sekunder)

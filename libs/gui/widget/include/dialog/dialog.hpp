@@ -64,7 +64,7 @@ public:
         int nlines = 1;
         for (int i = 0; text[i]; i++) if (text[i] == '\n') nlines++;
         int wid = m.xl + 2 * m.xl;            // minimum yang nyaman
-        int cand = text_width(title, ty.title) + 2 * m.xl;
+        int cand = text_measure_role(title, ty.title) + 2 * m.xl;
         if (cand > wid) wid = cand;
         // Baris isi terpanjang.
         int start = 0, i = 0;
@@ -108,7 +108,7 @@ public:
     }
     int btn_w(int i) const {
         const Metrics m;
-        return _ui_strlen(btns[i]) * glyph::ADVANCE + 2 * m.control_pad_x;
+        return text_measure(btns[i]) + 2 * m.control_pad_x;
     }
     int hit_button(int mx, int my) const {
         const Metrics m;
@@ -181,7 +181,7 @@ public:
             int bw = btn_w(i);
             p.surface(bx, byy, bw, m.control_h, fill, m.radius_control);
             p.rrect_border(bx, byy, bw, m.control_h, m.radius_control, bd, 255);
-            int tw = _ui_strlen(btns[i]) * glyph::ADVANCE;
+            int tw = text_measure(btns[i]);
             p.text(btns[i], bx + (bw - tw) / 2,
                    byy + text_vcenter(m.control_h), txt);
         }

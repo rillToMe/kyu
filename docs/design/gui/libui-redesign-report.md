@@ -240,15 +240,17 @@ diperbaiki).
 
 Jujur — ini yang **belum** dikerjakan:
 
-1. **Aplikasi lain belum dimigrasikan.** Settings, UI Gallery, XML demo sudah.
-   Belum: File Manager, Browser, Notepad, Task Manager, Image Viewer, Gallery,
-   widget_demo. Mereka tetap jalan (API dipertahankan) dan otomatis mewarisi
-   perbaikan widget, tapi tata letaknya belum memakai `Section`/baris daftar
-   kaya.
-2. **Tipografi jalur FreeType belum terpusat.** Peran membawa `ft_size_px`
-   sebagai niat, tapi app ber-FT (Settings Fonts, desktop, fontdemo) masih
-   memilih ukuran sendiri. Menyatukannya butuh memindahkan `libs/text` ke
-   bawah kendali tema — di luar cakupan redesign ini.
+1. **Aplikasi lain belum dimigrasikan.** Settings, UI Gallery, XML demo, dan
+   File Manager sudah. Belum: Browser, Notepad, Task Manager, Image Viewer,
+   Gallery, widget_demo, terminal. Mereka tetap jalan (API dipertahankan) dan
+   otomatis mewarisi perbaikan widget, tapi tata letaknya belum memakai
+   `Section`/baris daftar kaya, dan belum memanggil `ui::uifont_install()`
+   sehingga masih memakai bitmap 8×16.
+2. **Hierarki tipografi jalur font nyata belum bertingkat.** Provider memakai
+   SATU ukuran (15px) untuk semua teks — bitmap juga begitu, jadi ini tidak
+   mundur, tetapi `title`/`body`/`caption` belum benar-benar berbeda ukuran.
+   Menaikkannya butuh provider multi-ukuran (satu `kz_font_t` per peran) dan
+   `TypeRole::ft_size_px` dihormati di jalur gambar.
 3. **Animasi belum diimplementasikan.** Token durasi/easing ada dan terukur,
    tapi belum ada satu transisi pun yang memakainya. Sengaja: menambahkan
    animasi tanpa kebutuhan nyata melanggar aturan "gerak harus menjelaskan".
@@ -256,7 +258,11 @@ Jujur — ini yang **belum** dikerjakan:
    embed sudah ada; migrasinya belum dilakukan.
 5. **Kontrol high-DPI belum diuji.** Token berbasis px; belum ada jalur scaling.
 6. **`TextEdit` belum memakai peran tipografi.** Ia punya konstanta `CHAR_W`/
-   `LINE_H` sendiri yang selaras dengan grid 8×16, tapi belum membaca token.
-7. **Probe QEMU belum memeriksa isi layar secara semantik.** Ia membuktikan
-   jendela tergambar (pixel jendela > 0) dan berbeda antar aplikasi, bukan
-   bahwa tata letak spesifik benar.
+   `LINE_H` sendiri yang selaras dengan grid 8×16, tapi belum membaca token —
+   dan belum ikut text provider (editor tetap bitmap walau font sistem aktif).
+7. **Probe QEMU File Manager punya keterbatasan harness yang terdokumentasi.**
+   Pemetaan koordinat mouse `-display none` tidak 1:1 dengan guest dan skalanya
+   tidak linear, jadi jalur mouse diuji lewat *verifikasi hasil* (baris mana yang
+   terpilih) sementara jalur keyboard deterministik. Langkah "new folder di
+   /home/user" masih TIDAK karena disk uji tidak punya `/home/user` saat
+   dijalankan; rename + delete terbukti bekerja di direktori yang ada.

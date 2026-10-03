@@ -8,26 +8,39 @@
 //     jadi toolkit melukis ulang hanya region yang berubah. Hanya perubahan tata
 //     letak (mode tampilan, sidebar, bar rename) yang memicu satu frame repaint
 //     penuh — itu memang perilaku ui_widget_set_visible() di toolkit.
+//
+// CHROME DARI XML (ui/xml/filemanager.xml)
+// Menubar, isi menu, toolbar, statusbar, baris path, dan bar rename
+// dideklarasikan sebagai DOKUMEN, bukan dirangkai dari kode. Yang tetap native
+// hanya dua hal yang memang tidak bisa deklaratif:
+//   * tabel + kisi — isinya dibangun ulang dari model setiap refresh;
+//   * daftar shortcut sidebar — hanya direktori yang BENAR-BENAR ada.
+//
+// Efek samping yang penting: aplikasi tidak lagi menyimpan enum index item
+// menu. State menu disetel lewat NAMA (ui_menu_set_checked_id("view_list")),
+// jadi menambah/menggeser item di XML tidak bisa lagi membuat centang salah
+// baris — bug yang dulu mungkin karena urutan penambahan harus cocok persis
+// dengan enum di kode.
 #include "app.hpp"
 
 #include <cstdint>
+
+#include "services/uifont.hpp"   // font UI sistem (font.ui) -> toolkit
+#include "ui_xml_data.h"         // generated: ui_xml_filemanager[+_len]
 
 namespace fm {
 namespace {
 
 constexpr int kWindowW = 720;
 constexpr int kWindowH = 520;
-constexpr int kMargin = 8;
-constexpr int kInnerW = kWindowW - kMargin * 2;             // 704
-constexpr int kSpacing = 8;
-constexpr int kPathH = 28;
-constexpr int kContentH = 350;
-constexpr int kStatusH = 20;
-constexpr int kSidebarW = 132;
-constexpr int kSidebarGap = 8;
-constexpr int kViewW = kInnerW - kSidebarW - kSidebarGap;   // 564
 constexpr int kMaxRows = 64;        // Table::MAX_ROWS
 constexpr int kDoubleClickMs = 400;
+
+// Geometri area tampilan (tabel/kisi). Angka ini TETAP di sini karena kedua
+// widget itu dibuat native dan ukurannya ditentukan konten, bukan dokumen.
+constexpr int kViewW = 556;
+constexpr int kViewH = 352;
+constexpr int kSidebarW = 140;
 
 // Entri boleh dijadikan target operasi? Nama yang lebih panjang dari kNameMax
 // HANYA dipotong untuk tampilan — memakainya sebagai path bisa mengenai berkas
@@ -45,24 +58,6 @@ void toCStr(const std::string& s, char* out, int cap) {
 
 const char* const kOkButtons[1] = { "OK" };
 const char* const kDeleteButtons[2] = { "Delete", "Cancel" };
-
-// Index item menu View — set_checked()/set_enabled() memakai index BARIS,
-// termasuk separator (Menu menyimpan separator sebagai item). Urutan
-// penambahan di buildMenus() harus tetap sesuai daftar ini.
-enum {
-    kViewItemList    = 0,
-    kViewItemIcons   = 1,
-    /* separator     = 2 */
-    kViewItemSidebar = 3,
-    /* separator     = 4 */
-    kViewItemSortName = 5,
-    kViewItemSortType = 6,
-    kViewItemSortSize = 7,
-    /* separator     = 8 */
-    kViewItemAsc  = 9,
-    kViewItemDesc = 10,
-};
-enum { kGoItemBack = 0, kGoItemForward = 1 };
 
 // --- thunk callback C → method (pola Gallery) -------------------------------
 void tBack(void* ud)      { static_cast<FileManagerApp*>(ud)->cmdBack(); }
@@ -91,7 +86,10 @@ void tSortDesc(void* ud)  { static_cast<FileManagerApp*>(ud)->cmdSort(SortKey::N
 // Siklus hidup
 // ------------------------------------------------------------
 FileManagerApp::~FileManagerApp() {
+    // Urutan: window dulu (widget miliknya), baru konteks XML — grup radio dan
+    // ID map milik konteks, dan widget-nya sudah dibebaskan bersama window.
     if (win_) ui_window_destroy(win_);
+    if (xml_) ui_xml_ctx_destroy(xml_);
 }
 
 int FileManagerApp::run(const char* initial) {
@@ -99,13 +97,33 @@ int FileManagerApp::run(const char* initial) {
     if (!win_) return 1;
     ui_window_set_title(win_, "File Manager");
 
-    // Widget dibuat DULU (sidebar/menu mengisi dirinya lewat widget yang ada),
-    // lalu isi menu, lalu sidebar (butuh verifikasi direktori lewat adapter).
-    buildContent();
-    collectShortcuts();
-    buildMenus();
-    buildToolbar();
+    // Font UI dari SISTEM (font.ui) DULU, sebelum widget dibuat: lebar/tinggi
+    // tombol, label, dan baris daftar dihitung dari metrik font AKTIF saat
+    // widget dibuat, jadi memasang font setelahnya meninggalkan ukuran yang
+    // salah. Gagal memuat font BUKAN error: toolkit kembali ke bitmap 8×16.
+    if (ui::uifont_install()) trace("font: system", "");
+    else                       trace("font: bitmap fallback", "");
+
+    // Chrome + kerangka dari dokumen. Kalau dokumen gagal (bentuknya dikunci
+    // host test), aplikasi TIDAK dijalankan: UI yang tidak lengkap akan
+    // menelusuri pointer null di jalur render (page fault), dan itu jauh lebih
+    // sulit didiagnosis daripada satu baris serial + keluar.
+    if (!buildFromXml()) {
+        trace("xml inflate failed", "");
+        return 2;
+    }
+
+    bindXml();
+    buildViewWidgets();
+    // Sidebar = klik saja; fokus keyboard tetap di daftar isi (lihat catatan
+    // di makeSidebarMouseOnly).
+    makeSidebarMouseOnly();
+    if (!uiComplete()) {
+        trace("UI tidak lengkap (widget wajib hilang)", "");
+        return 2;
+    }
     buildContextMenus();
+    collectShortcuts();
     icons_.load();
 
     ui_window_set_key(win_, &FileManagerApp::onAppKey, this);
@@ -126,134 +144,148 @@ int FileManagerApp::run(const char* initial) {
 // ------------------------------------------------------------
 // Pembangunan UI
 // ------------------------------------------------------------
-void FileManagerApp::buildMenus() {
-    menubar_ = ui_menubar_create(win_);
-
-    menu_file_ = ui_menubar_add_menu(menubar_, "File");
-    ui_menu_add_item_acc(menu_file_, "New Folder", "Ctrl+N", tNewFolder, this);
-    ui_menu_add_item_acc(menu_file_, "New File", 0, tNewFile, this);
-    ui_menu_add_sep(menu_file_);
-    ui_menu_add_item_acc(menu_file_, "Open", "Enter", tOpen, this);
-    ui_menu_add_item_acc(menu_file_, "Rename", "F2", tRename, this);
-    ui_menu_add_item_acc(menu_file_, "Delete", "Del", tDelete, this);
-    ui_menu_add_sep(menu_file_);
-    ui_menu_add_item_acc(menu_file_, "Refresh", "Ctrl+R", tRefresh, this);
-    ui_menu_add_sep(menu_file_);
-    ui_menu_add_item_acc(menu_file_, "Close", "Esc", tClose, this);
-
-    menu_view_ = ui_menubar_add_menu(menubar_, "View");
-    ui_menu_add_item(menu_view_, "List", tViewList, this);            // 0
-    ui_menu_add_item(menu_view_, "Icons", tViewIcon, this);           // 1
-    ui_menu_add_sep(menu_view_);                                     // 2
-    ui_menu_add_item(menu_view_, "Sidebar", tToggleSidebar, this);    // 3
-    ui_menu_add_sep(menu_view_);                                     // 4
-    ui_menu_add_item(menu_view_, "Sort by Name", tSortName, this);    // 5
-    ui_menu_add_item(menu_view_, "Sort by Type", tSortType, this);    // 6
-    ui_menu_add_item(menu_view_, "Sort by Size", tSortSize, this);    // 7
-    ui_menu_add_sep(menu_view_);                                     // 8
-    ui_menu_add_item(menu_view_, "Ascending", tSortAsc, this);        // 9
-    ui_menu_add_item(menu_view_, "Descending", tSortDesc, this);      // 10
-
-    menu_go_ = ui_menubar_add_menu(menubar_, "Go");
-    ui_menu_add_item_acc(menu_go_, "Back", "Alt+Left", tBack, this);          // 0
-    ui_menu_add_item_acc(menu_go_, "Forward", "Alt+Right", tForward, this);   // 1
-    ui_menu_add_item_acc(menu_go_, "Up", "Backspace", tUp, this);             // 2
-    ui_menu_add_sep(menu_go_);                                               // 3
-    // Satu callback melayani semua shortcut sidebar; userdata-nya binding milik
-    // app (reserve dulu supaya alamat stabil selama menu hidup).
-    go_bindings_.clear();
-    go_bindings_.reserve(shortcuts_.size());
-    for (std::size_t i = 0; i < shortcuts_.size(); ++i) {
-        go_bindings_.push_back(GoBinding{ this, (int)i });
-        ui_menu_add_item(menu_go_, shortcuts_[i].label, &FileManagerApp::onGoShortcut,
-                         &go_bindings_.back());
+bool FileManagerApp::buildFromXml() {
+    ui_xml_error_t err;
+    ui_xml_doc_t* doc = ui_xml_parse(ui_xml_filemanager, ui_xml_filemanager_len,
+                                     &err);
+    if (!doc) {
+        trace("xml parse error", err.element);
+        return false;
     }
+    xml_ = ui_xml_ctx_create(win_);
+    if (!xml_) { ui_xml_doc_destroy(doc); return false; }
+    // Inflate ke window: menubar/toolbar/statusbar dipasang OTOMATIS sebagai
+    // pita (menubar+toolbar di puncak, statusbar di dasar) — aplikasi tidak
+    // memanggil add_bar sendiri, dan tidak perlu tahu urutannya.
+    if (!ui_xml_inflate(xml_, doc, &err)) {
+        // Laporkan KODE + elemen + atribut, bukan hanya nama elemen: satu kata
+        // "button" tidak memberi tahu apa yang salah, sedangkan
+        // "code=19 button.icon" langsung menunjuk penyebabnya.
+        char diag[96];
+        int k = 0;
+        const char* p = "code=";
+        while (*p && k < 90) diag[k++] = *p++;
+        // angka kode (2 digit cukup; kode > 99 ditulis sebagai 99)
+        int code = err.code;
+        if (code > 99) code = 99;
+        if (code >= 10) diag[k++] = (char)('0' + code / 10);
+        diag[k++] = (char)('0' + code % 10);
+        diag[k++] = ' ';
+        for (int i = 0; err.element[i] && k < 90; i++) diag[k++] = err.element[i];
+        if (err.attribute[0]) {
+            diag[k++] = '.';
+            for (int i = 0; err.attribute[i] && k < 92; i++)
+                diag[k++] = err.attribute[i];
+        }
+        diag[k] = '\0';
+        trace("xml inflate error", diag);
+        ui_xml_doc_destroy(doc);
+        return false;
+    }
+    ui_xml_doc_destroy(doc);   // UI hidup tanpa dokumen (independen)
 
-    ui_window_add_bar(win_, menubar_);
+    menu_file_ = ui_xml_find(xml_, "menu_file");
+    menu_view_ = ui_xml_find(xml_, "menu_view");
+    menu_go_   = ui_xml_find(xml_, "menu_go");
+    path_box_  = ui_xml_find(xml_, "path");
+    rename_bar_ = ui_xml_find(xml_, "rename_bar");
+    rename_label_ = ui_xml_find(xml_, "rename_label");
+    rename_box_ = ui_xml_find(xml_, "rename_box");
+    view_slot_ = ui_xml_find(xml_, "view_slot");
+    sidebar_   = ui_xml_find(xml_, "sidebar");
+    status_    = ui_xml_find(xml_, "status");
+    return menu_file_ && menu_view_ && menu_go_ && path_box_ && rename_bar_ &&
+           rename_box_ && view_slot_ && sidebar_ && status_;
 }
 
-void FileManagerApp::buildToolbar() {
-    toolbar_ = ui_toolbar_create(win_);
-    ui_toolbar_add_button(toolbar_, "< Back", tBack, this);
-    ui_toolbar_add_button(toolbar_, "Fwd >", tForward, this);
-    ui_toolbar_add_button(toolbar_, "Up", tUp, this);
-    ui_toolbar_add_button(toolbar_, "Refresh", tRefresh, this);
-    ui_toolbar_add_button(toolbar_, "New Folder", tNewFolder, this);
-    ui_toolbar_add_button(toolbar_, "List / Icons", tToggleView, this);
-    ui_window_add_bar(win_, toolbar_);
+void FileManagerApp::bindXml() {
+    // Semua binding DIJAGA null: ui_xml_bind() mengembalikan 0 untuk id yang
+    // tidak ada, dan toolkit-nya sendiri aman terhadap widget null — tapi
+    // pemakaian LANGSUNG (ui_listview_set_change di bawah) tidak. Kalau dokumen
+    // gagal di-inflate, aplikasi harus tetap hidup dengan window sebagian,
+    // bukan page fault.
+    if (!xml_) return;
+    // --- Menu File ---
+    ui_xml_bind(xml_, "file_new_folder", UI_XML_ON_CLICK, tNewFolder, this);
+    ui_xml_bind(xml_, "file_new_file", UI_XML_ON_CLICK, tNewFile, this);
+    ui_xml_bind(xml_, "file_open", UI_XML_ON_CLICK, tOpen, this);
+    ui_xml_bind(xml_, "file_rename", UI_XML_ON_CLICK, tRename, this);
+    ui_xml_bind(xml_, "file_delete", UI_XML_ON_CLICK, tDelete, this);
+    ui_xml_bind(xml_, "file_refresh", UI_XML_ON_CLICK, tRefresh, this);
+    ui_xml_bind(xml_, "file_close", UI_XML_ON_CLICK, tClose, this);
+
+    // --- Menu View ---
+    ui_xml_bind(xml_, "view_list", UI_XML_ON_CLICK, tViewList, this);
+    ui_xml_bind(xml_, "view_icons", UI_XML_ON_CLICK, tViewIcon, this);
+    ui_xml_bind(xml_, "view_sidebar", UI_XML_ON_CLICK, tToggleSidebar, this);
+    ui_xml_bind(xml_, "view_sort_name", UI_XML_ON_CLICK, tSortName, this);
+    ui_xml_bind(xml_, "view_sort_type", UI_XML_ON_CLICK, tSortType, this);
+    ui_xml_bind(xml_, "view_sort_size", UI_XML_ON_CLICK, tSortSize, this);
+    ui_xml_bind(xml_, "view_asc", UI_XML_ON_CLICK, tSortAsc, this);
+    ui_xml_bind(xml_, "view_desc", UI_XML_ON_CLICK, tSortDesc, this);
+
+    // --- Menu Go ---
+    ui_xml_bind(xml_, "go_back", UI_XML_ON_CLICK, tBack, this);
+    ui_xml_bind(xml_, "go_forward", UI_XML_ON_CLICK, tForward, this);
+    ui_xml_bind(xml_, "go_up", UI_XML_ON_CLICK, tUp, this);
+
+    // --- Toolbar ---
+    ui_xml_bind(xml_, "tb_back", UI_XML_ON_CLICK, tBack, this);
+    ui_xml_bind(xml_, "tb_forward", UI_XML_ON_CLICK, tForward, this);
+    ui_xml_bind(xml_, "tb_up", UI_XML_ON_CLICK, tUp, this);
+    ui_xml_bind(xml_, "tb_refresh", UI_XML_ON_CLICK, tRefresh, this);
+    ui_xml_bind(xml_, "tb_new_folder", UI_XML_ON_CLICK, tNewFolder, this);
+    ui_xml_bind(xml_, "tb_toggle_view", UI_XML_ON_CLICK, tToggleView, this);
+
+    // --- Baris path & bar rename ---
+    ui_xml_bind(xml_, "path", UI_XML_ON_CHANGE, &FileManagerApp::onPathGo, this);
+    ui_xml_bind(xml_, "path_go", UI_XML_ON_CLICK, &FileManagerApp::onPathGo, this);
+    ui_xml_bind(xml_, "rename_box", UI_XML_ON_CHANGE, &FileManagerApp::onRenameOk,
+                this);
+    ui_xml_bind(xml_, "rename_ok", UI_XML_ON_CLICK, &FileManagerApp::onRenameOk,
+                this);
+    ui_xml_bind(xml_, "rename_cancel", UI_XML_ON_CLICK,
+                &FileManagerApp::onRenameCancel, this);
+
+    // --- Sidebar: pilihan memakai callback change ListView ---
+    if (sidebar_)
+        ui_listview_set_change(sidebar_, &FileManagerApp::onSidebarChanged, this);
 }
 
-void FileManagerApp::buildContent() {
-    // Baris path: kolom path + tombol Go.
-    ui_widget_t* path_row = ui_hbox_create(win_, 6);
-    ui_widget_set_size(path_row, kInnerW, kPathH);
-    path_box_ = ui_textbox_create(win_, kInnerW - 64);
-    ui_widget_set_size(path_box_, kInnerW - 64, 24);
-    ui_textbox_set_enter(path_box_, &FileManagerApp::onPathGo, this);
-    ui_layout_add(path_row, path_box_);
-    ui_widget_t* go = ui_button_create(win_, "Go");
-    ui_widget_set_size(go, 58, 28);
-    ui_button_set_click(go, &FileManagerApp::onPathGo, this);
-    ui_layout_add(path_row, go);
+// Widget yang SENGAJA native: tabel + kisi. Keduanya dibangun ulang dari model
+// pada setiap refresh, jadi mendeklarasikannya di XML tidak menambah nilai —
+// hanya menambah satu lapisan antara dokumen dan data.
+void FileManagerApp::buildViewWidgets() {
+    if (!view_slot_) return;
 
-    // Bar rename inline (hanya terlihat saat dipakai).
-    rename_bar_ = ui_hbox_create(win_, 6);
-    ui_widget_set_size(rename_bar_, kInnerW, kPathH);
-    rename_label_ = ui_label_create(win_, "Rename:");
-    ui_widget_set_size(rename_label_, 78, 16);
-    ui_layout_add(rename_bar_, rename_label_);
-    rename_box_ = ui_textbox_create(win_, kInnerW - 220);
-    ui_widget_set_size(rename_box_, kInnerW - 220, 24);
-    ui_textbox_set_enter(rename_box_, &FileManagerApp::onRenameOk, this);
-    ui_layout_add(rename_bar_, rename_box_);
-    ui_widget_t* ok = ui_button_create(win_, "OK");
-    ui_widget_set_size(ok, 62, 28);
-    ui_button_set_click(ok, &FileManagerApp::onRenameOk, this);
-    ui_layout_add(rename_bar_, ok);
-    ui_widget_t* cancel = ui_button_create(win_, "Cancel");
-    ui_widget_set_size(cancel, 70, 28);
-    ui_button_set_click(cancel, &FileManagerApp::onRenameCancel, this);
-    ui_layout_add(rename_bar_, cancel);
-    ui_widget_set_visible(rename_bar_, 0);
-
-    // Isi: sidebar + (tabel | kisi).
-    content_ = ui_hbox_create(win_, kSidebarGap);
-    ui_widget_set_size(content_, kInnerW, kContentH);
-
-    sidebar_ = ui_listview_create(win_, kSidebarW, kContentH);
-    ui_widget_set_size(sidebar_, kSidebarW, kContentH);
-    ui_listview_set_change(sidebar_, &FileManagerApp::onSidebarChanged, this);
-    ui_layout_add(content_, sidebar_);
-
-    table_ = ui_table_create(win_, kViewW, kContentH);
-    ui_widget_set_size(table_, kViewW, kContentH);
-    ui_table_add_column(table_, "Name", kViewW - 232);
-    ui_table_add_column(table_, "Type", 150);
-    ui_table_add_column(table_, "Size", 82);
+    table_ = ui_table_create(win_, kViewW, kViewH);
+    ui_widget_set_size(table_, kViewW, kViewH);
+    ui_table_add_column(table_, "Name", kViewW - 226);
+    ui_table_add_column(table_, "Type", 148);
+    ui_table_add_column(table_, "Size", 78);
     ui_table_set_change(table_, &FileManagerApp::onRowChanged, this);
     ui_table_set_empty_text(table_, "This folder is empty");
     ui_widget_set_right_click(table_, &FileManagerApp::onRightClick, this);
-    ui_layout_add(content_, table_);
+    ui_layout_add(view_slot_, table_);
 
-    grid_ = ui_gridview_create(win_, kViewW, kContentH);
-    ui_widget_set_size(grid_, kViewW, kContentH);
+    grid_ = ui_gridview_create(win_, kViewW, kViewH);
+    ui_widget_set_size(grid_, kViewW, kViewH);
     ui_gridview_set_cell(grid_, 112, 98, IconCache::kGridPx);
     ui_gridview_set_empty_text(grid_, "This folder is empty");
     ui_gridview_set_change(grid_, &FileManagerApp::onGridChanged, this);
     ui_gridview_set_activate(grid_, &FileManagerApp::onGridActivate, this);
     ui_widget_set_right_click(grid_, &FileManagerApp::onRightClick, this);
     ui_widget_set_visible(grid_, 0);
-    ui_layout_add(content_, grid_);
+    ui_layout_add(view_slot_, grid_);
+}
 
-    status_ = ui_statusbar_create(win_);
-    ui_widget_set_size(status_, kInnerW, kStatusH);
-
-    ui_widget_t* root = ui_vbox_create(win_, kSpacing);
-    ui_layout_add(root, path_row);
-    ui_layout_add(root, rename_bar_);
-    ui_layout_add(root, content_);
-    ui_layout_add(root, status_);
-    ui_window_add(win_, root);
+// Apakah semua widget yang WAJIB ada sudah terpasang? Dipakai run() untuk
+// memutuskan apakah UI layak dijalankan. Tanpa cek ini, dokumen yang gagal
+// membuat aplikasi menelusuri pointer null di jalur render — page fault, bukan
+// pesan error (itu yang terjadi sekali dan tertangkap probe QEMU).
+bool FileManagerApp::uiComplete() const {
+    return path_box_ && rename_bar_ && rename_box_ && view_slot_ && sidebar_ &&
+           table_ && grid_ && status_ && menu_file_ && menu_view_ && menu_go_;
 }
 
 void FileManagerApp::buildContextMenus() {
@@ -273,6 +305,7 @@ void FileManagerApp::buildContextMenus() {
 
 void FileManagerApp::collectShortcuts() {
     // Hanya direktori yang BENAR-BENAR ada (diverifikasi lewat adapter).
+    // Karena itu isinya tidak bisa dideklarasikan di XML.
     const Shortcut candidates[] = {
         { "Home",      "/home/user",            false },
         { "Documents", "/home/user/Documents",  false },
@@ -287,7 +320,36 @@ void FileManagerApp::collectShortcuts() {
     for (const Shortcut& s : candidates) {
         if (!FileSystem::isDirectory(s.path)) continue;
         shortcuts_.push_back(s);
-        ui_listview_add_item(sidebar_, s.label);
+        // Baris kaya: ikon semantik + judul. Sidebar File Manager adalah
+        // daftar tempat, jadi ikon folder konsisten untuk semuanya; "Root"
+        // memakai ikon home supaya terbeda dari folder biasa.
+        const int icon = (s.path[0] == '/' && s.path[1] == '\0')
+                             ? UI_ICON_HOME : UI_ICON_FOLDER;
+        ui_listview_add_row(sidebar_, s.label, 0, icon, 0);
+    }
+    // Jejak daftar shortcut: isinya bergantung isi disk (hanya direktori yang
+    // ada), jadi mencatatnya membuat alat uji bisa menghitung BARIS mana yang
+    // harus diklik tanpa menebak — dulu probe mengasumsikan "Pictures = baris
+    // ke-3" dan gagal di disk yang tidak punya /home/user.
+    {
+        std::string list;
+        for (std::size_t i = 0; i < shortcuts_.size(); ++i) {
+            if (i) list += ",";
+            list += shortcuts_[i].label;
+        }
+        trace("shortcuts", list);
+    }
+
+    // Item "Go > <shortcut>" ditambahkan aplikasi: jumlahnya mengikuti hasil
+    // verifikasi direktori di atas, jadi tidak bisa ada di dokumen.
+    if (menu_go_) {
+        go_bindings_.clear();
+        go_bindings_.reserve(shortcuts_.size());
+        for (std::size_t i = 0; i < shortcuts_.size(); ++i) {
+            go_bindings_.push_back(GoBinding{ this, (int)i });
+            ui_menu_add_item(menu_go_, shortcuts_[i].label,
+                             &FileManagerApp::onGoShortcut, &go_bindings_.back());
+        }
     }
 }
 
@@ -403,17 +465,21 @@ void FileManagerApp::updateStatus() {
 }
 
 void FileManagerApp::updateMenus() {
-    ui_menu_set_checked(menu_view_, kViewItemList, view_ == ViewMode::List);
-    ui_menu_set_checked(menu_view_, kViewItemIcons, view_ == ViewMode::Icon);
-    ui_menu_set_checked(menu_view_, kViewItemSidebar, sidebar_visible_);
+    // State menu disetel lewat NAMA (id dari XML), bukan nomor baris. Ini
+    // menghapus enum index yang dulu harus cocok persis dengan urutan
+    // penambahan item — menggeser satu item di XML tidak lagi bisa membuat
+    // centang muncul di baris yang salah.
+    ui_menu_set_checked_id(menu_view_, "view_list", view_ == ViewMode::List);
+    ui_menu_set_checked_id(menu_view_, "view_icons", view_ == ViewMode::Icon);
+    ui_menu_set_checked_id(menu_view_, "view_sidebar", sidebar_visible_);
     const SortSpec& s = model_.sortSpec();
-    ui_menu_set_checked(menu_view_, kViewItemSortName, s.key == SortKey::Name);
-    ui_menu_set_checked(menu_view_, kViewItemSortType, s.key == SortKey::Type);
-    ui_menu_set_checked(menu_view_, kViewItemSortSize, s.key == SortKey::Size);
-    ui_menu_set_checked(menu_view_, kViewItemAsc, !s.descending);
-    ui_menu_set_checked(menu_view_, kViewItemDesc, s.descending);
-    ui_menu_set_enabled(menu_go_, kGoItemBack, history_.canGoBack());
-    ui_menu_set_enabled(menu_go_, kGoItemForward, history_.canGoForward());
+    ui_menu_set_checked_id(menu_view_, "view_sort_name", s.key == SortKey::Name);
+    ui_menu_set_checked_id(menu_view_, "view_sort_type", s.key == SortKey::Type);
+    ui_menu_set_checked_id(menu_view_, "view_sort_size", s.key == SortKey::Size);
+    ui_menu_set_checked_id(menu_view_, "view_asc", !s.descending);
+    ui_menu_set_checked_id(menu_view_, "view_desc", s.descending);
+    ui_menu_set_enabled_id(menu_go_, "go_back", history_.canGoBack());
+    ui_menu_set_enabled_id(menu_go_, "go_forward", history_.canGoForward());
 }
 
 void FileManagerApp::updateSidebarSelection() {
@@ -443,6 +509,18 @@ void FileManagerApp::releaseFocus() {
     ui_window_focus(win_, nullptr);
 }
 
+// Sidebar memakai ListView yang — sejak redesign — FOCUSABLE (daftar adalah
+// primitif navigasi, jadi Tab bisa masuk ke dalamnya). Untuk File Manager itu
+// keliru: fokus keyboard harus tetap di daftar ISI, karena panah atas/bawah
+// dipakai untuk memilih berkas, dan aplikasi yang menangani F2/Delete.
+// Karena itu sidebar dijadikan NON-focusable lewat flag `mouse_only`: baris
+// tetap bisa diklik, tapi traversal Tab dan dispatch panah tidak pernah
+// mendarat di sana. (Dulu ini tidak jadi masalah karena ListView belum
+// focusable sama sekali.)
+void FileManagerApp::makeSidebarMouseOnly() {
+    if (!sidebar_) return;
+    ui_widget_set_focusable(sidebar_, 0);
+}
 void FileManagerApp::navigateTo(const std::string& path, bool with_history) {
     if (path.empty()) return;
     if ((int)path.size() >= kPathMax) {
@@ -506,6 +584,20 @@ void FileManagerApp::cmdClose() { ui_window_request_close(win_); }
 void FileManagerApp::cmdOpenShortcut(int shortcut_index) {
     if (shortcut_index < 0 || shortcut_index >= (int)shortcuts_.size()) return;
     navigateTo(shortcuts_[shortcut_index].path, true);
+}
+
+// Sidebar dari keyboard. Daftar shortcut tidak pernah memegang fokus keyboard
+// (fokus ada di tabel/kisi), jadi panah kiri/kanan dipakai untuk berpindah
+// shortcut: itu jalur keyboard yang setara dengan mengklik baris sidebar, dan
+// tanpa itu sidebar hanya bisa dipakai dengan mouse.
+void FileManagerApp::cycleShortcut(int dir) {
+    if (shortcuts_.empty() || dir == 0) return;
+    int cur = -1;
+    for (std::size_t i = 0; i < shortcuts_.size(); ++i)
+        if (samePath(shortcuts_[i].path, currentPath())) { cur = (int)i; break; }
+    int n = (int)shortcuts_.size();
+    int next = (cur < 0) ? (dir > 0 ? 0 : n - 1) : (cur + dir + n) % n;
+    cmdOpenShortcut(next);
 }
 
 bool FileManagerApp::childPath(int index, std::string& out) const {
@@ -868,9 +960,11 @@ void FileManagerApp::onAppKey(void* ud, std::uint32_t ascii, std::uint32_t scanc
     case 0x00E: a->cmdUp(); break;                  // Backspace
     case 0x03C: a->cmdRename(); break;              // F2
     case 0x153: a->cmdDelete(); break;              // Delete (extended)
-    case 0x148: case 0x14B: a->setSelected(a->selected_ - 1); break;   // Up/Left
-    case 0x150: case 0x14D: a->setSelected(a->selected_ + 1); break;   // Down/Right
-    case 0x147: a->setSelected(0); break;                              // Home
+    case 0x148: a->setSelected(a->selected_ - 1); break;   // Up
+    case 0x150: a->setSelected(a->selected_ + 1); break;   // Down
+    case 0x14B: a->cycleShortcut(-1); break;               // Left = sidebar ←
+    case 0x14D: a->cycleShortcut(+1); break;               // Right = sidebar →
+    case 0x147: a->setSelected(0); break;                  // Home
     case 0x14F: a->setSelected((int)a->model_.entries().size() - 1); break;  // End
     default:
         if (ascii >= 32) {

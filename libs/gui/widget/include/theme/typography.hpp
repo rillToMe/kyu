@@ -95,6 +95,11 @@ struct Typography {
 // Pengukuran teks jalur bitmap — SATU tempat, dipakai semua widget.
 // Dulu tiap widget menulis `_ui_strlen(t) * 8` sendiri; dengan tracking
 // rumusnya tidak lagi sepele, jadi dihitung sekali di sini.
+//
+// CATATAN: fungsi ini MENGUKUR JALUR BITMAP. Kalau aplikasi memasang text
+// provider (font nyata), pengukuran HARUS lewat core/text_provider.hpp —
+// `text_measure_role()` di sana yang memilih jalur dengan benar. Fungsi ini
+// tetap ada karena dipakai sebagai nilai default dan oleh test.
 // ------------------------------------------------------------
 static inline int text_width(const char* s, const TypeRole& r) {
     if (!s) return 0;
@@ -112,6 +117,11 @@ static inline int text_block_height(int lines, const TypeRole& r) {
 // Offset vertikal agar glyph 16px tampak berada di tengah kotak setinggi `box`.
 // Selalu >= 0 supaya tidak pernah tergambar di luar bounds (damage tracking
 // mengandalkan ini).
+//
+// CATATAN: ini mengukur glyph BITMAP (16px). Widget yang harus mengikuti tinggi
+// baris font nyata memakai `text_center_offset()` dari core/text_provider.hpp;
+// Painter::text() sudah menempatkan baseline dengan benar untuk kedua jalur,
+// jadi nilai ini tetap aman dipakai sebagai offset atas.
 static inline int text_vcenter(int box_h) {
     int o = (box_h - glyph::HEIGHT) / 2;
     return o > 0 ? o : 0;

@@ -43,7 +43,7 @@ public:
                             role);
         }
         if (right) {
-            int tw = _ui_strlen(right) * glyph::ADVANCE;
+            int tw = text_measure(right);
             p.text(right, x + w - tw - m.sm, ty, p.theme.text_tertiary);
         }
     }

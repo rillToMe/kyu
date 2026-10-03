@@ -27,6 +27,12 @@ public:
     // Phase 9: Drag & Drop + bentuk kursor per-widget.
     bool draggable;
     char* dnd_payload;
+    // Opt-out fokus keyboard. Sebagian widget bisa DIKLIK tapi tidak boleh
+    // menjadi stop traversal Tab — mis. sidebar navigasi File Manager, yang
+    // panah atas/bawahnya sudah dipakai daftar isi dan aplikasi yang menangani
+    // F2/Delete. Tanpa flag ini, menjadikan sebuah kontainer fokusable akan
+    // menelan tombol yang sebelumnya sampai ke aplikasi.
+    bool focus_opt_out;
     // Phase D: tooltip presentasional per-widget (teks milik widget;
     // ditampilkan Window setelah hover delay, tanpa fokus/traversal).
     char* tooltip;
@@ -49,7 +55,8 @@ public:
                draggable(false), dnd_payload(0), tooltip(0),
               drop_target(false), drop_cb(0), drop_data(0),
               cursor_kind(UI_CURSOR_ARROW),
-              dirty(false), dm_x(0), dm_y(0), dm_w(0), dm_h(0), owner(0) {}
+              dirty(false), dm_x(0), dm_y(0), dm_w(0), dm_h(0), owner(0),
+              focus_opt_out(false) {}
     virtual ~Widget() { _ui_free(dnd_payload); _ui_free(tooltip); }
     // Pemilik dipasang Window saat widget masuk pohon (Layout menurunkan ke anak).
     virtual void set_owner(Window* o) { owner = o; }
@@ -70,6 +77,14 @@ public:
         mark_dirty();
     }
     virtual bool focusable() { return false; }   // TextBox → true
+    // Opt-out fokus: dipakai Window::collect_focus() dan set_focus(). Ini satu
+    // titik penegakan — widget yang menimpa focusable() tidak perlu tahu flag
+    // ini, dan tidak bisa "lupa" menghormatinya.
+    bool takes_focus() { return focus_opt_out ? false : focusable(); }
+    void set_focus_opt_out(bool on) {
+        focus_opt_out = on;
+        if (on && has_focus) set_focus(false);
+    }
     // Phase C: true = widget menelan Tab sendiri (editor multiline).
     // Traversal Tab melewati widget ini; false = Tab memindahkan fokus.
     virtual bool wants_tab() { return false; }

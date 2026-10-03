@@ -300,22 +300,37 @@ public:
 
     virtual void draw(Painter& p) override {
         rebuild();
+        const Metrics& m = p.theme.metrics;
+        const TypeRole& role = p.theme.type.caption;
         int cw = content_w();
         p.set_clip(x, y, cw, h);
         if (n == 0 && empty_text[0]) {
-            int tw = _ui_strlen(empty_text) * 8;
-            p.text(empty_text, x + (cw - tw) / 2, y + h / 2 - 8, p.theme.text);
+            p.text_ellipsis(empty_text, x + m.sm,
+                            y + h / 2 - glyph::HEIGHT / 2, cw - 2 * m.sm,
+                            p.theme.text_tertiary, p.theme.type.body);
         }
         int first, last;
         visible_range(first, last);
         int inner_w = cell_w - 2 * PAD;
-        int max_chars = inner_w / 8;
+        int max_chars = inner_w / glyph::ADVANCE;
         char label[NAME_MAX + 3];
         for (int i = first; i <= last; i++) {
             int cx, cy;
             cell_rect(i, cx, cy);
-            if (i == selected) p.rect(cx + 1, cy + 1, cell_w - 2, cell_h - 2, p.theme.selection);
-            else if (i == hover_cell) p.rect(cx + 1, cy + 1, cell_w - 2, cell_h - 2, p.theme.surface_elevated);
+            // Sel terpilih = tinta `selection` + border aksen tipis (bentuk
+            // seleksi yang sama dengan baris daftar, plus outline supaya sel
+            // terbaca sebagai satu objek di antara thumbnail).
+            const bool sel = (i == selected);
+            const bool hov = (i == hover_cell);
+            if (sel) {
+                p.surface(cx + 1, cy + 1, cell_w - 2, cell_h - 2, p.theme.selection,
+                          m.radius_small);
+                p.rrect_border(cx + 1, cy + 1, cell_w - 2, cell_h - 2,
+                               m.radius_small, p.theme.accent, 255);
+            } else if (hov) {
+                p.surface(cx + 1, cy + 1, cell_w - 2, cell_h - 2,
+                          p.theme.surface_hover, m.radius_small);
+            }
             const Cell& cell = cells[i];
             int tx = cx + PAD;
             int ty = cy + PAD;
@@ -326,17 +341,27 @@ public:
                         ty + (thumb_box - cell.ph) / 2,
                         cell.pw, cell.ph, cell.px, cell.pw, cell.ph);
             } else {
-                p.rect(tx, ty, inner_w, thumb_box, p.theme.surface);
+                // Kotak thumbnail = permukaan TERBENAM (well), bukan permukaan
+                // terangkat: ia wadah kosong, bukan tombol.
+                p.surface(tx, ty, inner_w, thumb_box, p.theme.surface_variant,
+                          m.radius_small);
                 if (cell.placeholder == PH_ERROR) {
-                    int mw = thumb_box / 2;
-                    p.rect(tx + (inner_w - mw) / 2, ty + (thumb_box - mw) / 2, mw, mw,
-                           p.theme.surface_elevated);
-                    p.text("!", tx + inner_w / 2 - 4, ty + thumb_box / 2 - 8, p.theme.text);
+                    // Ikon error dari sistem ikon (bukan glyph "!").
+                    p.icon(ICON_WARNING, tx + inner_w / 2, ty + thumb_box / 2,
+                           m.icon_lg, p.theme.danger);
+                } else if (cell.placeholder == PH_LOADING) {
+                    // Placeholder memuat: garis tengah tenang, tanpa animasi
+                    // (gerak harus menjelaskan sesuatu; ini tidak).
+                    int lw = inner_w / 2;
+                    p.rect(tx + (inner_w - lw) / 2, ty + thumb_box / 2 - 1, lw, 2,
+                           p.theme.border);
                 }
             }
             label_for(cell, label, (int)sizeof(label), max_chars);
-            int lw = _ui_strlen(label) * 8;
-            p.text(label, cx + (cell_w - lw) / 2, cy + PAD + thumb_box + 2, p.theme.text);
+            int lw = text_measure(label);
+            p.text_ellipsis(label, cx + (cell_w - lw) / 2,
+                            cy + PAD + thumb_box + m.xs, inner_w,
+                            p.theme.text, role);
         }
         p.clear_clip();
         draw_bar(p);

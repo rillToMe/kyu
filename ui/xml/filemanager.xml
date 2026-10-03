@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  File Manager — chrome + kerangka isi.
+
+  Yang dimiliki XML ini = STRUKTUR dan SEMANTIK:
+    - pita aplikasi (menubar/toolbar/statusbar) beserta isinya,
+    - baris path dan bar rename inline,
+    - tata letak sidebar + area tampilan.
+
+  Yang TIDAK ada di sini (dan tidak boleh): warna, radius, jarak px, ukuran
+  font. Semua itu milik tema libui.
+
+  DUA HAL YANG SENGAJA TETAP DI KODE C++:
+    1. Tabel dan kisi (table/gridview) DIBUAT NATIVE dan dimasukkan ke
+       `<vbox id="view_slot">`. Keduanya diisi ulang dari model setiap
+       refresh (ui_table_clear + add_row), jadi mendeklarasikannya di XML
+       hanya akan menambah lapisan tanpa nilai.
+    2. Daftar shortcut sidebar dibangun dari hasil verifikasi direktori
+       (hanya folder yang BENAR-BENAR ada yang muncul), jadi isinya tidak
+       bisa ditulis di XML.
+
+  ID dipakai aplikasi untuk mengikat callback dan menyetel state. Perhatikan
+  id item menu: aplikasi memakai NAMA ("view_list"), bukan nomor baris.
+-->
+<window>
+
+    <!-- Pita atas: dipasang otomatis sebagai bar (bukan anak layout). -->
+    <menubar>
+        <menu id="menu_file" title="File">
+            <item id="file_new_folder" text="New Folder" acc="Ctrl+N"/>
+            <item id="file_new_file" text="New File"/>
+            <sep/>
+            <item id="file_open" text="Open" acc="Enter"/>
+            <item id="file_rename" text="Rename" acc="F2"/>
+            <item id="file_delete" text="Delete" acc="Del"/>
+            <sep/>
+            <item id="file_refresh" text="Refresh" acc="Ctrl+R"/>
+            <sep/>
+            <item id="file_close" text="Close" acc="Esc"/>
+        </menu>
+
+        <menu id="menu_view" title="View">
+            <item id="view_list" text="List" checked="true"/>
+            <item id="view_icons" text="Icons"/>
+            <sep/>
+            <item id="view_sidebar" text="Sidebar" checked="true"/>
+            <sep/>
+            <item id="view_sort_name" text="Sort by Name" checked="true"/>
+            <item id="view_sort_type" text="Sort by Type"/>
+            <item id="view_sort_size" text="Sort by Size"/>
+            <sep/>
+            <item id="view_asc" text="Ascending" checked="true"/>
+            <item id="view_desc" text="Descending"/>
+        </menu>
+
+        <menu id="menu_go" title="Go">
+            <item id="go_back" text="Back" acc="Alt+Left" enabled="false"/>
+            <item id="go_forward" text="Forward" acc="Alt+Right" enabled="false"/>
+            <item id="go_up" text="Up" acc="Backspace"/>
+            <sep/>
+            <!-- Shortcut sidebar ditambahkan aplikasi di sini: hanya direktori
+                 yang benar-benar ada, jadi isinya diverifikasi runtime. -->
+        </menu>
+    </menubar>
+
+    <!-- Pita atas kedua: aksi cepat. Tombol ber-ikon, label pendek. -->
+    <toolbar>
+        <button id="tb_back" text="Back" icon="chevron-left"/>
+        <button id="tb_forward" text="Forward" icon="chevron-right"/>
+        <button id="tb_up" text="Up" icon="arrow-right"/>
+        <button id="tb_refresh" text="Refresh" icon="refresh"/>
+        <button id="tb_new_folder" text="New Folder" icon="plus"/>
+        <button id="tb_toggle_view" text="Icons" icon="grid"/>
+    </toolbar>
+
+    <!-- Pita BAWAH: statusbar menempel di dasar window. -->
+    <statusbar id="status" text="/" right=""/>
+
+    <!-- Kerangka isi: path, bar rename, sidebar + tampilan. -->
+    <vbox id="shell" spacing="sm">
+
+        <hbox spacing="sm">
+            <textbox id="path" width="620" tooltip="Current path — Enter to go"/>
+            <button id="path_go" text="Go" variant="primary" icon="arrow-right"/>
+        </hbox>
+
+        <!-- Bar rename inline: tersembunyi sampai dipakai. -->
+        <hbox id="rename_bar" spacing="sm" visible="false">
+            <label id="rename_label" text="Rename:"/>
+            <textbox id="rename_box" width="470"/>
+            <button id="rename_ok" text="OK" variant="primary" icon="check"/>
+            <button id="rename_cancel" text="Cancel" variant="tertiary"/>
+        </hbox>
+
+        <hbox spacing="sm">
+            <listview id="sidebar" width="140" height="360"/>
+            <!-- Tabel/kisi dimasukkan aplikasi ke sini (lihat catatan di atas). -->
+            <vbox id="view_slot" spacing="0"/>
+        </hbox>
+
+    </vbox>
+</window>

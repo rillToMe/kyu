@@ -57,7 +57,7 @@ public:
     void apply_metrics() {
         const Metrics m;
         h = m.control_h;
-        int tw = text ? _ui_strlen(text) * glyph::ADVANCE : 0;
+        int tw = text ? text_measure(text) : 0;
         if (icon_id != ICON_NONE) {
             if (tw > 0) w = m.control_pad_x + m.icon_md + m.sm + tw + m.control_pad_x;
             else        w = m.control_h;      // tombol ikon = persegi
@@ -124,7 +124,7 @@ public:
         if (draw_border) p.rrect_border(x, y, w, h, r, bd, 255);
 
         // Konten: [ikon] [teks], terpusat sebagai satu grup.
-        int tw = _ui_strlen(text) * glyph::ADVANCE;
+        int tw = text_measure(text);
         int iw = (icon_id != ICON_NONE) ? m.icon_md : 0;
         int gap = (iw && tw) ? m.sm : 0;
         int total = iw + gap + tw;

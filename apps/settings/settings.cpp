@@ -10,6 +10,8 @@
 //   * jarak memakai token UI_SPACE_* (bukan angka yang dipilih per baris).
 #include "settings.hpp"
 
+#include "services/uifont.hpp"   // font UI sistem (font.ui) -> toolkit
+
 namespace settings {
 
 namespace {
@@ -73,6 +75,11 @@ int SettingsApp::run() {
     if (!win_) return 1;
     ui_window_set_title(win_, "Settings");
     ui_settings_load(win_);  // pakai tema tersimpan (kalau ada)
+    // Font UI sistem DULU, sebelum widget dibuat: ukuran kontrol dan label
+    // dihitung dari metrik font aktif. Settings ikut memakai font yang sedang
+    // dipilih pengguna — termasuk saat pengguna baru menggantinya di halaman
+    // Fonts, sehingga pratinjau dan UI memakai font yang sama.
+    if (ui::uifont_install()) trace("font: system");
     ui_window_set_key(win_, onKeyThunk, this);
 
     buildUi();
@@ -98,7 +105,7 @@ void SettingsApp::buildUi() {
     ui_widget_t* sb = ui_statusbar_create(win_);
     ui_statusbar_set_text(sb, "Settings", "Changes are saved immediately");
     ui_widget_set_size(sb, 720, UI_SPACE_XL);
-    ui_window_add_bar(win_, sb);
+    ui_window_add_bottom_bar(win_, sb);
 
     ui_widget_t* root = ui_hbox_create(win_, kGap);
 

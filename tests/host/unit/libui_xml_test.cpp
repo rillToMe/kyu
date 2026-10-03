@@ -142,6 +142,8 @@ void png_free(uint32_t* b) { (void)b; }
 #include "containers/tab.hpp"
 #include "containers/scrollview.hpp"
 #include "window/window.hpp"
+#include "chrome/menu.hpp"        // ui::Menu (state item lewat id)
+#include "chrome/toolbar.hpp"     // ui::Toolbar (bind tombol lewat id)
 
 static int PASS = 0, FAIL = 0;
 static void check(int cond, const char* what) {
@@ -1029,6 +1031,165 @@ int main(void) {
         check(all_rejected == 1,
               "G07: atribut visual/nilai asing di XML ditolak");
         check(balanced(), "G08: penolakan tidak membocorkan alokasi");
+    }
+
+    // ==========================================================
+    // H. Chrome dari XML: <menubar>/<menu>/<item>/<sep>/<toolbar>/
+    //    <statusbar>. Yang diuji: dokumen diterima, id item bisa di-bind,
+    //    state item bisa disetel lewat NAMA, dan penempatan pita benar
+    //    (menubar+toolbar di puncak, statusbar di DASAR — bukan di puncak,
+    //    yang terjadi kalau semuanya lewat add_bar).
+    // ==========================================================
+    {
+        static const char* CHROME_DOC =
+            "<window>"
+            "<menubar>"
+            "<menu id=\"m_view\" title=\"View\">"
+            "<item id=\"it_list\" text=\"List\" checked=\"true\"/>"
+            "<item id=\"it_icons\" text=\"Icons\"/>"
+            "<sep/>"
+            "<item id=\"it_disabled\" text=\"Nope\" enabled=\"false\"/>"
+            "</menu>"
+            "</menubar>"
+            "<toolbar>"
+            "<button id=\"tb_one\" text=\"One\" icon=\"check\"/>"
+            "<button id=\"tb_two\" text=\"\" icon=\"close\"/>"
+            "</toolbar>"
+            "<statusbar id=\"sb\" text=\"/\" right=\"ready\"/>"
+            "<label text=\"body\"/>"
+            "</window>";
+        ui_xml_doc_t* d = pd(CHROME_DOC, &e);
+        check(d != 0, "H01: dokumen chrome diterima");
+        // Ukuran window DIBATASI canvas stub (GW_W x GW_H): menubar/toolbar
+        // digambar selebar window, jadi window yang lebih besar dari canvas
+        // akan menulis di luar buffer.
+        ui_window_t* win = ui_window_create(GW_W, GW_H);
+        ui_xml_ctx_t* cx = ui_xml_ctx_create(win);
+        int r = ui_xml_inflate(cx, d, &e);
+        check(r == 1, "H02: chrome terinflasi");
+        ui::Window* w = (ui::Window*)win;
+
+        // Penempatan: 2 bar puncak (menubar+toolbar), 1 bar dasar (statusbar).
+        check(w->n_bars == 2 && w->n_bbars == 1,
+              "H03: menubar+toolbar ke puncak, statusbar ke DASAR");
+        if (w->n_bbars == 1) {
+            // Bar dasar harus menempel di dasar window, bukan di bawah toolbar.
+            int sb_y = w->bottom_bars[0]->y;
+            check(sb_y + w->bottom_bars[0]->h == (int)w->gw->height,
+                  "H04: statusbar menempel di dasar window");
+            check(sb_y > w->bar_h,
+                  "H05: statusbar TIDAK menumpuk di bawah toolbar");
+        }
+        // Root layout harus tergeser di bawah bar puncak.
+        check(w->root != 0 && w->root->y >= w->bar_h,
+              "H06: root layout tergeser di bawah bar puncak");
+
+        // Binding item menu lewat NAMA, lalu set state lewat nama juga.
+        // Semua deref DIJAGA: kalau inflasi gagal, widget-nya tidak ada dan
+        // menelusuri pohonnya hanya akan membuat test crash alih-alih gagal.
+        int fired = 0;
+        check(ui_xml_bind(cx, "it_list", UI_XML_ON_CLICK,
+                          [](void* u) { *(int*)u = 1; }, &fired) == 1,
+              "H07: item menu bisa di-bind lewat id");
+        ui::Menu* mv = (ui::Menu*)ui_xml_find(cx, "m_view");
+        check(mv != 0, "H08a: menu ditemukan lewat id");
+        if (mv) {
+            check(mv->index_of_id("it_list") == 0 &&
+                  mv->index_of_id("it_icons") == 1,
+                  "H08: index_of_id memetakan nama ke baris");
+            check(mv->items[0].checked, "H09: checked dari XML diterapkan");
+            check(mv->items[2].sep, "H10: <sep/> menjadi baris pemisah");
+            check(mv->items[3].disabled, "H11: enabled=false dari XML diterapkan");
+
+            // set_checked_id: state lewat nama (bukan nomor baris).
+            check(ui_menu_set_checked_id((ui_widget_t*)mv, "it_icons", 1) == 1 &&
+                  mv->items[1].checked,
+                  "H12: set_checked_id menyetel baris yang benar");
+            check(ui_menu_set_checked_id((ui_widget_t*)mv, "no_such_id", 1) == 0,
+                  "H13: id tak dikenal ditolak (tanpa mengubah apa pun)");
+            check(ui_menu_set_enabled_id((ui_widget_t*)mv, "it_disabled", 1) == 1 &&
+                  !mv->items[3].disabled,
+                  "H14: set_enabled_id mengaktifkan kembali");
+        }
+
+        // Toolbar: bind lewat id, dan tombol ikon-saja punya lebar > 0.
+        check(ui_xml_bind(cx, "tb_two", UI_XML_ON_CLICK,
+                          [](void* u) { *(int*)u = 1; }, &fired) == 1,
+              "H15: tombol toolbar bisa di-bind lewat id");
+        if (w->n_bars >= 2 && w->top_bars[1]) {
+            ui::Toolbar* tb = (ui::Toolbar*)w->top_bars[1];
+            check(tb->n == 2 && tb->btns[1].icon == ui::ICON_CLOSE &&
+                  tb->btn_w(1) > 0,
+                  "H16: tombol ikon-saja terpasang dengan lebar wajar");
+        } else {
+            check(false, "H16: toolbar terpasang sebagai bar kedua");
+        }
+
+        ui_xml_ctx_destroy(cx);
+        ui_xml_doc_destroy(d);
+        ui_window_destroy(win);
+        check(balanced(), "H17: inflasi chrome seimbang");
+    }
+    {
+        // Atribut asing di elemen chrome ditolak (skema tetap ketat).
+        const char* bad[] = {
+            "<window><menubar color=\"0xFF0000\"/></window>",
+            "<window><toolbar><button text=\"x\" radius=\"7\"/></toolbar></window>",
+            "<window><menu><item text=\"x\" shadow=\"1\"/></menu></window>",
+            "<window><statusbar height=\"40\" foo=\"1\"/></window>",
+            "<window><menubar><label text=\"x\"/></menubar></window>",
+        };
+        int all_rejected = 1;
+        for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            ui_xml_doc_t* d = pd(bad[i], &e);
+            if (!d) { all_rejected = 0; continue; }
+            ui_window_t* win = ui_window_create(200, 120);
+            ui_xml_ctx_t* cx = ui_xml_ctx_create(win);
+            if (ui_xml_inflate(cx, d, &e) != 0) all_rejected = 0;
+            ui_xml_ctx_destroy(cx);
+            ui_xml_doc_destroy(d);
+            ui_window_destroy(win);
+        }
+        check(all_rejected == 1, "H18: atribut visual / anak asing di chrome ditolak");
+        check(balanced(), "H19: penolakan chrome tidak membocorkan alokasi");
+    }
+
+    // ==========================================================
+    // I. DOKUMEN SUNGGUHAN File Manager (ui/xml/filemanager.xml).
+    //    Menguji file yang BENAR-BENAR dikirim aplikasi, bukan salinan — jadi
+    //    dokumen yang rusak tidak bisa lolos ke QEMU tanpa terlihat di sini.
+    // ==========================================================
+    {
+        ui_xml_doc_t* d = pd(ui_xml_filemanager, &e);
+        check(d != 0, "I01: filemanager.xml parse");
+        if (d) {
+            ui_window_t* win = ui_window_create(GW_W, GW_H);
+            ui_xml_ctx_t* cx = ui_xml_ctx_create(win);
+            int r = ui_xml_inflate(cx, d, &e);
+            check(r == 1, "I02: filemanager.xml inflate");
+            ui::Window* w = (ui::Window*)win;
+            check(w->n_bars == 2 && w->n_bbars == 1,
+                  "I03: chrome fileman di puncak+dasar");
+            // ID yang dipakai aplikasi untuk binding HARUS ada — kalau salah
+            // satu hilang, File Manager akan memasang callback ke widget null.
+            static const char* need[] = {
+                "menu_file", "menu_view", "menu_go", "path", "path_go",
+                "rename_bar", "rename_label", "rename_box", "rename_ok",
+                "rename_cancel", "view_slot", "sidebar", "status",
+                "tb_back", "tb_forward", "tb_up", "tb_refresh", "tb_new_folder",
+                "tb_toggle_view", "file_new_folder", "file_open", "file_delete",
+                "view_list", "view_icons", "view_sidebar", "view_sort_name",
+                "view_asc", "view_desc", "go_back", "go_forward", "go_up", 0
+            };
+            int missing = 0;
+            for (int i = 0; need[i]; i++)
+                if (!ui_xml_find(cx, need[i])) missing++;
+            check(missing == 0, "I04: semua id yang dibutuhkan aplikasi ada");
+            ui_xml_ctx_destroy(cx);
+            ui_xml_doc_destroy(d);
+            ui_window_destroy(win);
+            check(balanced(), "I05: filemanager.xml seimbang");
+        }
     }
 
     printf("XML: %d PASS, %d FAIL | allocs=%d frees=%d\n", PASS, FAIL, g_allocs, g_frees);

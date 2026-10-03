@@ -243,7 +243,7 @@ void UiGalleryApp::build() {
     // StatusBar: umpan balik aksi (dibuat lebih dulu supaya callback aman).
     ui_widget_t* sb = ui_statusbar_create(win_);
     ui_widget_set_size(sb, static_cast<int>(kWinW), kStatusH);
-    ui_window_add_bar(win_, sb);
+    ui_window_add_bottom_bar(win_, sb);
 
     // Root: sidebar + halaman.
     const int content_h = kWinH - 160;

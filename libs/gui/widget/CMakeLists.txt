@@ -40,15 +40,31 @@ kyuzen_glob(_widget_layer_sources
     "${_widget_dir}/src/*/*.cpp"
 )
 list(SORT _widget_layer_sources)
+# TIPOGRAFI SISTEM DIKELUARKAN DARI GLOB.
+# src/services/uifont.cpp memanggil kz_font_* dan karenanya butuh arsip FreeType
+# saat link. Toolkit inti SENGAJA tidak men-link FreeType, jadi file itu tidak
+# boleh masuk glob ini — kalau masuk, SETIAP aplikasi toolkit ikut menyeret
+# FreeType dan invarian arsitekturnya rusak. Ia dibangun sebagai objek terpisah
+# (kyuzen-widget-uifont) yang hanya di-link aplikasi yang memang mau tipografi.
+list(FILTER _widget_layer_sources EXCLUDE REGEX "src/services/uifont\\.cpp$")
 
 add_library(kyuzen-widget-src OBJECT ${_widget_layer_sources})
 target_link_libraries(kyuzen-widget-src PRIVATE kyuzen-flags-widget)
+
+# --- font UI sistem (OPSIONAL) ----------------------------------------------
+# Di-link eksplisit oleh aplikasi yang ingin teks toolkit memakai font pilihan
+# pengguna (font.ui). Butuh: kyuzen-text-manager kyuzen-text-raster kyuzen-freetype.
+add_library(kyuzen-widget-uifont OBJECT "${_widget_dir}/src/services/uifont.cpp")
+target_link_libraries(kyuzen-widget-uifont PRIVATE kyuzen-flags-widget)
+target_include_directories(kyuzen-widget-uifont PRIVATE
+    ${KYUZEN_ROOT}/libs/text/include
+)
 
 # --- C ABI shim -------------------------------------------------------------
 add_library(kyuzen-widget-abi OBJECT "${_widget_dir}/abi/libui_abi.cpp")
 target_link_libraries(kyuzen-widget-abi PRIVATE kyuzen-flags-widget)
 
-foreach(_t kyuzen-widget-src kyuzen-widget-abi)
+foreach(_t kyuzen-widget-src kyuzen-widget-abi kyuzen-widget-uifont)
     target_include_directories(${_t} PUBLIC
         ${_widget_dir}/include
         ${KYUZEN_ROOT}/include

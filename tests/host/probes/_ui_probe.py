@@ -15,7 +15,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 QEMU = r"E:\Tools\msys2\mingw64\bin\qemu-system-x86_64.exe"
 PORT = 4461
 DISK = os.path.join(ROOT, "test_disk.img")
+# ISO: build CMake menaruh image di build/target/. Path build/boot_image.iso
+# adalah sisa era Makefile — dicoba kedua agar probe tetap jalan di pohon
+# build lama tanpa perubahan.
 ISO = os.path.join(ROOT, "build", "boot_image.iso")
+_ISO_CMAKE = os.path.join(ROOT, "build", "target", "boot_image.iso")
+if os.path.exists(_ISO_CMAKE):
+    ISO = _ISO_CMAKE
 LOG = os.path.join(ROOT, "serial.log")
 OUT = os.path.join(ROOT, "tests", "host", "probes", "_ui_out")
 

@@ -30,6 +30,10 @@
 #include "containers/scrollview.hpp"
 #include "containers/grid.hpp"
 #include "containers/section.hpp"
+#include "chrome/menu.hpp"
+#include "chrome/menubar.hpp"
+#include "chrome/toolbar.hpp"
+#include "chrome/statusbar.hpp"
 #include "window/window.hpp"
 
 namespace ui {
@@ -141,6 +145,8 @@ static int parse_icon(const char* s, int* out) {
         { "info", UI_ICON_INFO },
         { "warning", UI_ICON_WARNING },
         { "error", UI_ICON_ERROR },
+        { "list", UI_ICON_LIST },
+        { "grid", UI_ICON_GRID },
         { 0, 0 }
     };
     for (int i = 0; tab[i].name; i++)
@@ -195,8 +201,11 @@ Widget* find(Context* ctx, const char* id) {
 
 int add_id(Context* ctx, const char* id, Widget* w, Error* err) {
     if (find(ctx, id)) {
+        // set_error() memanggil scopy(err->element/attribute, ...) yang
+        // MENIMPA argumen dengan elemen/atribut pemanggil. Untuk DUP_ID yang
+        // berguna, nama id-nya ditulis SETELAH set_error().
         set_error(err, DUP_ID, 0, 0, 0, 0);
-        // element diisi pemanggil (tahu node-nya)
+        scopy(err->attribute, id, (int)sizeof(err->attribute));
         return 0;
     }
     if (ctx->nids >= MAX_IDS) {
@@ -206,7 +215,14 @@ int add_id(Context* ctx, const char* id, Widget* w, Error* err) {
     scopy(ctx->ids[ctx->nids].id, id, (int)sizeof(ctx->ids[0].id));
     ctx->ids[ctx->nids].w = w;
     ctx->ids[ctx->nids].kind = 0;   // diisi pemanggil
+    ctx->ids[ctx->nids].index = -1; // widget biasa: bukan sub-elemen
     ctx->nids++;
+    return 1;
+}
+int add_menu_item_id(Context* ctx, const char* id, Widget* owner, int index,
+                     Error* err) {
+    if (!add_id(ctx, id, owner, err)) return 0;
+    ctx->ids[ctx->nids - 1].index = index;
     return 1;
 }
 
@@ -251,7 +267,18 @@ void commit(Context* ctx) {
         cfg.custom = color_hex((uint32_t)ctx->theme_custom);
         ctx->win->set_config(&cfg);
     }
-    for (int i = 0; i < ctx->nroots; i++) ctx->win->add(ctx->roots[i]);
+    // Penempatan: elemen chrome dipasang sebagai PITA supaya urutan di
+    // puncak/dasar window benar dan root layout otomatis tergeser. Menubar dan
+    // toolbar ke puncak; statusbar ke DASAR (bukan ke puncak — itu yang terjadi
+    // kalau semuanya lewat add_bar, dan statusbar akan muncul di bawah toolbar).
+    for (int i = 0; i < ctx->nroots; i++) {
+        switch (ctx->root_place[i]) {
+        case PLACE_BAR:  ctx->win->add_bar(ctx->roots[i]); break;
+        case PLACE_BBAR: ctx->win->add_bottom_bar(ctx->roots[i]); break;
+        case PLACE_ROOT:
+        default:         ctx->win->add(ctx->roots[i]); break;
+        }
+    }
     ctx->committed = true;
 }
 
@@ -271,8 +298,10 @@ static int apply_generic(Context* ctx, Node* nd, Widget* w, int kind,
             return 0;
         }
         if (!add_id(ctx, id, w, err)) {
+            // JANGAN timpa attribute: add_id() sudah menaruh NAMA id yang
+            // bentrok di sana, dan itulah satu-satunya petunjuk yang berguna
+            // untuk DUP_ID (line/col-nya memang 0).
             scopy(err->element, nd->name, (int)sizeof(err->element));
-            scopy(err->attribute, "id", (int)sizeof(err->attribute));
             return 0;
         }
         ctx->ids[ctx->nids - 1].kind = kind;
@@ -574,6 +603,204 @@ static Built make_section(Context* ctx, Node* nd, Error* err) {
     if (!reject_extra(nd, keep, err)) { delete s; return fail_built(); }
     if (!apply_generic(ctx, nd, s, K_SECTION, 1, 1, err)) { delete s; return fail_built(); }
     return make_built(s, K_SECTION);
+}
+
+// ------------------------------------------------------------
+// Chrome: menubar / menu / toolbar / statusbar
+//
+// Elemen ini bukan "kontrol", melainkan PITA aplikasi. Bentuknya deklaratif
+// supaya chrome aplikasi (menu, tombol toolbar) bisa dibaca sebagai dokumen —
+// dan supaya tidak ada lagi enum index item menu yang harus dijaga manual
+// seiring bertambahnya item.
+//
+// ID di dalam menu/toolbar didaftarkan seperti widget lain, jadi binding
+// callback memakai NAMA, bukan posisi:
+//   ui_xml_bind(cx, "view_list", UI_XML_ON_CLICK, cb, ud);
+// ------------------------------------------------------------
+
+// Menu: anak = <item> / <sep>. Atribut item: id/text/acc/checked/enabled.
+// Menu yang dipasang di <menubar> memakai atribut `title`; menu popup mandiri
+// (tanpa title) juga diterima. Item TIDAK punya bounds sendiri (Menu menggambar
+// barisnya), jadi ia bukan Widget: id-nya didaftarkan sebagai entri menu dan
+// binding-nya lewat ui_xml_bind().
+static Built make_menu(Context* ctx, Node* nd, Error* err) {
+    Menu* m = new Menu(ctx->win);
+    if (!m) { set_error(err, OOM, nd->line, nd->column, nd->name, 0); return fail_built(); }
+    for (int i = 0; i < nd->nchild; i++) {
+        Node* ch = nd->children[i];
+        if (seq(ch->name, "sep")) {
+            if (!reject_extra(ch, 0, err)) { delete m; return fail_built(); }
+            if (!no_children(ch, err)) { delete m; return fail_built(); }
+            m->add_sep();
+            continue;
+        }
+        if (!seq(ch->name, "item")) {
+            set_error(err, BAD_CHILD, ch->line, ch->column, ch->name, 0);
+            delete m;
+            return fail_built();
+        }
+        const char* t = getattr(ch, "text");
+        if (!t) {
+            set_error(err, MISSING_ATTRIBUTE, ch->line, ch->column, ch->name, "text");
+            delete m;
+            return fail_built();
+        }
+        const char* acc = getattr(ch, "acc");
+        const char* iid = getattr(ch, "id");
+        // id disimpan DI ITEM (bukan hanya di tabel konteks): aplikasi bisa
+        // menyetel centang/enabled lewat nama kapan saja setelah inflasi,
+        // tanpa menyimpan index baris sendiri.
+        int idx = m->add_item_id(iid, t, acc, 0, 0);
+        if (idx < 0) {                       // menu penuh
+            set_error(err, LIMIT, ch->line, ch->column, ch->name, 0);
+            delete m;
+            return fail_built();
+        }
+        const char* ck = getattr(ch, "checked");
+        if (ck) {
+            int v = 0;
+            if (!parse_boolval(ck, &v)) {
+                set_error(err, INVALID_VALUE, ch->line, ch->column, ch->name, "checked");
+                delete m;
+                return fail_built();
+            }
+            m->set_checked(idx, v);
+        }
+        const char* en = getattr(ch, "enabled");
+        if (en) {
+            int v = 0;
+            if (!parse_boolval(en, &v)) {
+                set_error(err, INVALID_VALUE, ch->line, ch->column, ch->name, "enabled");
+                delete m;
+                return fail_built();
+            }
+            m->set_enabled(idx, v);
+        }
+        static const char* ikeep[] = { "text", "acc", "checked", "enabled", "id", 0 };
+        if (!reject_extra(ch, ikeep, err)) { delete m; return fail_built(); }
+        if (!no_children(ch, err)) { delete m; return fail_built(); }
+        // id item menu: didaftarkan dengan pointer MENU + index baris, karena
+        // item bukan Widget. `kind` khusus supaya binding tahu cara mengikat.
+        if (iid) {
+            if (slen(iid) == 0 || slen(iid) > MAX_ID) {
+                set_error(err, INVALID_VALUE, ch->line, ch->column, ch->name, "id");
+                delete m;
+                return fail_built();
+            }
+            if (!add_menu_item_id(ctx, iid, m, idx, err)) {
+                scopy(err->element, ch->name, (int)sizeof(err->element));
+                scopy(err->attribute, "id", (int)sizeof(err->attribute));
+                delete m;
+                return fail_built();
+            }
+            ctx->ids[ctx->nids - 1].kind = K_MENU;
+        }
+    }
+    // `title` diizinkan karena <menu> adalah anak <menubar>; untuk menu popup
+    // mandiri atribut itu sekadar tidak dipakai.
+    static const char* mkeep[] = { "title", 0 };
+    if (!reject_extra(nd, mkeep, err)) { delete m; return fail_built(); }
+    return make_built(m, K_MENU);
+}
+
+// MenuBar: anak = <menu title="...">. Menubar memasang tiap menu ke window.
+static Built make_menubar(Context* ctx, Node* nd, Error* err) {
+    MenuBar* bar = new MenuBar(ctx->win, (int)ctx->win->gw->width);
+    if (!bar) { set_error(err, OOM, nd->line, nd->column, nd->name, 0); return fail_built(); }
+    for (int i = 0; i < nd->nchild; i++) {
+        Node* ch = nd->children[i];
+        if (!seq(ch->name, "menu")) {
+            set_error(err, BAD_CHILD, ch->line, ch->column, ch->name, 0);
+            delete bar;
+            return fail_built();
+        }
+        const char* t = getattr(ch, "title");
+        if (!t) {
+            set_error(err, MISSING_ATTRIBUTE, ch->line, ch->column, ch->name, "title");
+            delete bar;
+            return fail_built();
+        }
+        // Menu anak dibangun sendiri, lalu DISERAHKAN ke bar (bar yang memiliki
+        // menu itu — MenuBar::~MenuBar menghapusnya). Karena itu make_menu()
+        // tidak boleh mendaftarkannya sebagai root.
+        Built mb = make_menu(ctx, ch, err);
+        if (!mb.w) { delete bar; return fail_built(); }
+        Menu* m = reinterpret_cast<Menu*>(mb.w);
+        if (bar->n >= MenuBar::MAX_TITLES) {
+            set_error(err, LIMIT, ch->line, ch->column, ch->name, 0);
+            delete m;
+            delete bar;
+            return fail_built();
+        }
+        bar->titles[bar->n].label = _ui_strdup(t);
+        bar->titles[bar->n].menu = m;
+        bar->n++;
+        // id pada <menu> = id untuk MenuBar-nya (menu itu sendiri tetap bisa
+        // ditemukan lewat id item-itemnya).
+        const char* mid = getattr(ch, "id");
+        if (mid) {
+            if (!add_id(ctx, mid, m, err)) { delete bar; return fail_built(); }
+            ctx->ids[ctx->nids - 1].kind = K_MENU;
+        }
+    }
+    if (!reject_extra(nd, 0, err)) { delete bar; return fail_built(); }
+    return make_built(bar, K_MENUBAR);
+}
+
+// Toolbar: anak = <button text icon> (elemen `button` dipakai ulang supaya
+// bahasa XML-nya konsisten: tombol ya `button`).
+static Built make_toolbar(Context* ctx, Node* nd, Error* err) {
+    Toolbar* tb = new Toolbar((int)ctx->win->gw->width);
+    if (!tb) { set_error(err, OOM, nd->line, nd->column, nd->name, 0); return fail_built(); }
+    for (int i = 0; i < nd->nchild; i++) {
+        Node* ch = nd->children[i];
+        if (!seq(ch->name, "button")) {
+            set_error(err, BAD_CHILD, ch->line, ch->column, ch->name, 0);
+            delete tb;
+            return fail_built();
+        }
+        const char* t = getattr(ch, "text");
+        int icon = ICON_NONE;
+        const char* ic = getattr(ch, "icon");
+        if (ic && !parse_icon(ic, &icon)) {
+            set_error(err, INVALID_VALUE, ch->line, ch->column, ch->name, "icon");
+            delete tb;
+            return fail_built();
+        }
+        int bidx = tb->add_button_icon(t ? t : "", icon, 0, 0);
+        if (bidx < 0) {                      // toolbar penuh
+            set_error(err, LIMIT, ch->line, ch->column, ch->name, 0);
+            delete tb;
+            return fail_built();
+        }
+        const char* bid = getattr(ch, "id");
+        if (bid) {
+            if (!add_id(ctx, bid, tb, err)) { delete tb; return fail_built(); }
+            // Binding tombol toolbar: didaftarkan sebagai entri TOOLBAR + index,
+            // karena Toolbar::Btn bukan Widget.
+            ctx->ids[ctx->nids - 1].kind = K_TOOLBAR;
+            ctx->ids[ctx->nids - 1].index = bidx;
+        }
+        static const char* tkeep[] = { "text", "icon", "id", 0 };
+        if (!reject_extra(ch, tkeep, err)) { delete tb; return fail_built(); }
+        if (!no_children(ch, err)) { delete tb; return fail_built(); }
+    }
+    if (!reject_extra(nd, 0, err)) { delete tb; return fail_built(); }
+    return make_built(tb, K_TOOLBAR);
+}
+
+// StatusBar: teks kiri/kanan dari atribut (bisa diubah runtime lewat id).
+static Built make_statusbar(Context* ctx, Node* nd, Error* err) {
+    StatusBar* sb = new StatusBar();
+    if (!sb) { set_error(err, OOM, nd->line, nd->column, nd->name, 0); return fail_built(); }
+    const char* l = getattr(nd, "text");
+    const char* r = getattr(nd, "right");
+    if (l || r) sb->set_text(l ? l : "", r ? r : "");
+    static const char* keep[] = { "text", "right", 0 };
+    if (!reject_extra(nd, keep, err)) { delete sb; return fail_built(); }
+    if (!apply_generic(ctx, nd, sb, K_STATUSBAR, 1, 1, err)) { delete sb; return fail_built(); }
+    if (!no_children(nd, err)) { delete sb; return fail_built(); }
+    return make_built(sb, K_STATUSBAR);
 }
 
 static Built make_radio(Context* ctx, Node* nd, Error* err) {
@@ -1117,6 +1344,11 @@ static Built inflate_widget(Context* ctx, Node* nd, Error* err) {
     if (seq(n, "grid")) return make_grid(ctx, nd, err);
     if (seq(n, "tab")) return make_tab(ctx, nd, err);
     if (seq(n, "scrollview")) return make_scrollview(ctx, nd, err);
+    // Chrome: pita aplikasi (menubar/toolbar/statusbar). Ditempatkan otomatis
+    // sebagai bar lewat peran penempatan di Context (lihat commit()).
+    if (seq(n, "menubar")) return make_menubar(ctx, nd, err);
+    if (seq(n, "toolbar")) return make_toolbar(ctx, nd, err);
+    if (seq(n, "statusbar")) return make_statusbar(ctx, nd, err);
     // item/page/window di posisi anak = BAD_CHILD (struktural, bukan widget).
     if (seq(n, "item") || seq(n, "page") || seq(n, "window"))
         set_error(err, BAD_CHILD, nd->line, nd->column, nd->name, 0);
@@ -1198,6 +1430,12 @@ int inflate(Context* ctx, const Document* doc, Error* err) {
         if (!c.w) { rollback(ctx); return 0; }
         // Lacak SEGERA: saudara yang sudah sukses ikut terbuang saat
         // anak berikutnya gagal (tanpa ini = leak di jalur gagal).
+        // Peran penempatan ditentukan oleh KIND (chrome -> pita), bukan oleh
+        // urutan: XML boleh menaruh <menubar> di mana saja di dalam <window>.
+        ctx->root_place[ctx->nroots] =
+            (c.kind == K_MENUBAR || c.kind == K_TOOLBAR) ? PLACE_BAR
+          : (c.kind == K_STATUSBAR)                      ? PLACE_BBAR
+                                                         : PLACE_ROOT;
         ctx->roots[ctx->nroots++] = c.w;
     }
     return 1;

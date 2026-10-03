@@ -27,9 +27,15 @@ class Menu : public Widget {
 public:
     // Item gaya menu desktop: label kiri, accelerator rata kanan, garis
     // pemisah, tanda centang, dan status enabled/disabled (redup).
+    //
+    // `id` = nama dari XML (opsional). Ini yang memungkinkan aplikasi menyetel
+    // state item dengan NAMA ("view_list") alih-alih menjaga enum index baris
+    // manual yang harus disinkronkan dengan urutan penambahan — sumber bug
+    // yang nyata saat menu bertambah.
     struct Item {
         char* label;
         char* acc;          // teks shortcut rata kanan ("Ctrl+S"); 0 = tak ada
+        char* id;           // id dari XML; 0 = tanpa id
         ui_click_cb cb;
         void* data;
         bool sep;           // 1 = garis pemisah (label/cb diabaikan)
@@ -46,7 +52,37 @@ public:
         h = 4;
     }
     virtual ~Menu() {
-        for (int i = 0; i < n; i++) { _ui_free(items[i].label); _ui_free(items[i].acc); }
+        for (int i = 0; i < n; i++) {
+            _ui_free(items[i].label);
+            _ui_free(items[i].acc);
+            _ui_free(items[i].id);
+        }
+    }
+    // Index baris dengan id ini; -1 bila tidak ada. Dipakai set_checked_id()/
+    // set_enabled_id() sehingga aplikasi tidak menyimpan index sendiri.
+    int index_of_id(const char* id) const {
+        if (!id || !id[0]) return -1;
+        for (int i = 0; i < n; i++) {
+            const char* a = items[i].id;
+            if (!a) continue;
+            int k = 0;
+            while (a[k] && a[k] == id[k]) k++;
+            if (a[k] == id[k]) return i;
+        }
+        return -1;
+    }
+    // Set state lewat id. Return 1 bila item ketemu.
+    int set_checked_id(const char* id, int on) {
+        int i = index_of_id(id);
+        if (i < 0) return 0;
+        set_checked(i, on);
+        return 1;
+    }
+    int set_enabled_id(const char* id, int on) {
+        int i = index_of_id(id);
+        if (i < 0) return 0;
+        set_enabled(i, on);
+        return 1;
     }
     int row_h(int i) const {
         return items[i].sep ? chrome::MENU_SEP_H : chrome::MENU_ROW_H;
@@ -72,9 +108,9 @@ public:
         for (int i = 0; i < n; i++) {
             hh += row_h(i);
             if (items[i].sep) continue;
-            int t = _ui_strlen(items[i].label) * glyph::ADVANCE + 2 * m.md;
+            int t = text_measure(items[i].label) + 2 * m.md;
             if (gutter) t += m.icon_md + m.sm;
-            if (items[i].acc) t += _ui_strlen(items[i].acc) * glyph::ADVANCE + m.lg;
+            if (items[i].acc) t += text_measure(items[i].acc) + m.lg;
             if (t > need) need = t;
         }
         // Menu bisa MENGCIL setelah relayout (w awal 150 → 130 untuk item
@@ -90,6 +126,7 @@ public:
         if (n >= MAX_ITEMS) return;
         items[n].label = _ui_strdup(label ? label : "");
         items[n].acc = acc ? _ui_strdup(acc) : 0;
+        items[n].id = 0;
         items[n].cb = cb; items[n].data = u;
         items[n].sep = false; items[n].checked = false; items[n].disabled = false;
         n++;
@@ -97,9 +134,25 @@ public:
         mark_dirty();
     }
     void add_item(const char* label, ui_click_cb cb, void* u) { add_item_acc(label, 0, cb, u); }
+    // Item ber-id (dipakai inflater XML supaya binding memakai nama).
+    // Return index item, atau -1 bila menu penuh — pemanggil TIDAK boleh
+    // menebak index dari `n - 1` (saat penuh, n tidak bertambah dan index itu
+    // menunjuk item SEBELUMNYA).
+    int add_item_id(const char* id, const char* label, const char* acc,
+                    ui_click_cb cb, void* u) {
+        if (n >= MAX_ITEMS) return -1;
+        add_item_acc(label, acc, cb, u);
+        if (n == 0) return -1;                  // jaga-jaga
+        int idx = n - 1;
+        if (id && id[0]) {
+            _ui_free(items[idx].id);
+            items[idx].id = _ui_strdup(id);
+        }
+        return idx;
+    }
     void add_sep() {
         if (n >= MAX_ITEMS) return;
-        items[n].label = _ui_strdup(""); items[n].acc = 0;
+        items[n].label = _ui_strdup(""); items[n].acc = 0; items[n].id = 0;
         items[n].cb = 0; items[n].data = 0;
         items[n].sep = true; items[n].checked = false; items[n].disabled = false;
         n++;
@@ -180,7 +233,7 @@ public:
             color_t fg = items[i].disabled ? p.theme.text_disabled : p.theme.text;
             int ty = ry + text_vcenter(chrome::MENU_ROW_H);
             if (items[i].acc) {
-                int aw = _ui_strlen(items[i].acc) * glyph::ADVANCE;
+                int aw = text_measure(items[i].acc);
                 // Accelerator dipotong agar tidak menabrak label.
                 int lw = w - (tx - x) - aw - 2 * m.md;
                 p.text_ellipsis(items[i].label, tx, ty, lw, fg, role);

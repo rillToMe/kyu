@@ -59,7 +59,8 @@ public:
 private:
     // --- state ------------------------------------------------------------
     ui_window_t* win_ = nullptr;
-    ui_widget_t* menubar_ = nullptr;
+    // Konteks inflasi XML: hidup selama window (ID map + grup radio miliknya).
+    ui_xml_ctx_t* xml_ = nullptr;
     ui_widget_t* menu_file_ = nullptr;
     ui_widget_t* menu_view_ = nullptr;
     ui_widget_t* menu_go_ = nullptr;
@@ -68,7 +69,7 @@ private:
     ui_widget_t* rename_bar_ = nullptr;
     ui_widget_t* rename_label_ = nullptr;
     ui_widget_t* rename_box_ = nullptr;
-    ui_widget_t* content_ = nullptr;
+    ui_widget_t* view_slot_ = nullptr;
     ui_widget_t* sidebar_ = nullptr;
     ui_widget_t* table_ = nullptr;
     ui_widget_t* grid_ = nullptr;
@@ -105,9 +106,14 @@ private:
     int last_click_row_ = -1;
 
     // --- view -------------------------------------------------------------
-    void buildMenus();
-    void buildToolbar();
-    void buildContent();
+    // Chrome + kerangka isi datang dari ui/xml/filemanager.xml (di-embed build).
+    // Yang tetap native: tabel/kisi (diisi ulang dari model tiap refresh) dan
+    // daftar shortcut sidebar (isinya hasil verifikasi direktori).
+    bool buildFromXml();
+    void bindXml();
+    void buildViewWidgets();
+    // Semua widget wajib sudah terpasang (dicek sebelum UI dijalankan).
+    bool uiComplete() const;
     void buildContextMenus();
     void collectShortcuts();
     void reloadView(const char* keep_selected);
@@ -127,6 +133,14 @@ private:
     bool childPath(int index, std::string& out) const;
     void openEntry(int index);
     void releaseFocus();
+    // Sidebar memakai ListView yang focusable; File Manager ingin fokus
+    // keyboard tetap di daftar ISI (panah memilih berkas, F2/Delete milik
+    // aplikasi). Sidebar tetap bisa diklik — hanya tidak jadi stop Tab.
+    void makeSidebarMouseOnly();
+    // Sidebar tanpa mouse: pindah pilihan shortcut dengan panah kiri/kanan
+    // saat fokus keyboard ada di daftar isi. Tanpa ini sidebar hanya bisa
+    // dipakai dengan mouse (daftar shortcut tidak pernah memegang fokus).
+    void cycleShortcut(int dir);
 
     // --- operasi berkas ---------------------------------------------------
     void beginRename(const char* label, const std::string& initial, const std::string& from);

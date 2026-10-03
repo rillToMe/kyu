@@ -13,7 +13,7 @@ namespace ui {
 class Label : public Widget {
 public:
     char* text;
-    Label(const char* t) : text(_ui_strdup(t)) { w = _ui_strlen(text) * 8; h = 16; }
+    Label(const char* t) : text(_ui_strdup(t)) { w = text_measure(text); h = text_line_height(); }
     virtual ~Label() { _ui_free(text); }
     void set_text(const char* t) {
         char* n = _ui_strdup(t);
@@ -21,7 +21,7 @@ public:
         mark_dirty();               // bounds lama (w bisa menyusut)
         _ui_free(text);
         text = n;
-        w = _ui_strlen(text) * 8;
+        w = text_measure(text);
         mark_dirty();               // bounds baru
     }
     virtual void draw(Painter& p) override { p.text(text, x, y, p.theme.text); }

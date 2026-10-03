@@ -62,7 +62,7 @@ public:
     // Lebar tab mengikuti JUDUL (padding token), bukan dibagi rata: tab
     // "Umum" tidak boleh selebar tab "Personalization".
     int title_w(int i) const {
-        return _ui_strlen(titles[i]) * glyph::ADVANCE + 2 * space::LG;
+        return text_measure(titles[i]) + 2 * space::LG;
     }
     int title_x(int i) const {
         int tx = x;
@@ -147,7 +147,7 @@ public:
             bool act = (i == active);
             bool hov = (i == hover_idx);
             if (hov && !act) p.rect(tx, y, tw, STRIP_H, p.theme.surface_hover);
-            int tl = _ui_strlen(titles[i]) * glyph::ADVANCE;
+            int tl = text_measure(titles[i]);
             color_t tc = tab_disabled[i] ? p.theme.text_disabled
                        : act             ? p.theme.text
                                          : p.theme.text_secondary;

@@ -28,7 +28,7 @@ public:
           toggle_cb(0), toggle_data(0) {
         const Metrics m;
         h = m.control_h_sm;
-        w = text_width(label, Typography().label) + m.control_h_sm + m.sm;
+        w = text_measure_role(label, Typography().label) + m.control_h_sm + m.sm;
     }
     virtual ~CheckBox() { _ui_free(label); }
     void set_checked(bool c) {

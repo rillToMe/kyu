@@ -35,18 +35,21 @@ public:
         add_button_icon(label, ICON_NONE, cb, u);
     }
     // Tombol ber-ikon. label boleh "" (tombol ikon saja).
-    void add_button_icon(const char* label, int icon, ui_click_cb cb, void* u) {
-        if (n >= MAX_BTNS) return;
+    // Return index tombol, atau -1 bila penuh — pemanggil tidak boleh menebak
+    // index dari `n - 1` (saat penuh, n tidak bertambah).
+    int add_button_icon(const char* label, int icon, ui_click_cb cb, void* u) {
+        if (n >= MAX_BTNS) return -1;
         btns[n].label = _ui_strdup(label ? label : "");
         btns[n].icon = (icon > ICON_NONE && icon < ICON_COUNT) ? icon : ICON_NONE;
         btns[n].cb = cb; btns[n].data = u;
         n++;
+        return n - 1;
     }
     // Lebar tombol mengikuti ISI (ikon + teks), bukan dibagi rata: tombol
     // "Buka" tidak boleh selebar tombol "Simpan Sebagai".
     int btn_w(int i) const {
         const Metrics m;
-        int tw = _ui_strlen(btns[i].label) * glyph::ADVANCE;
+        int tw = text_measure(btns[i].label);
         int iw = (btns[i].icon != ICON_NONE) ? m.icon_md : 0;
         int gap = (iw && tw) ? m.sm : 0;
         return iw + gap + tw + 2 * m.sm;
@@ -97,7 +100,7 @@ public:
                 p.surface(bx, y + space::XS, bw, h - 2 * space::XS,
                           p.theme.surface_hover, m.radius_control);
             }
-            int tw = _ui_strlen(btns[i].label) * glyph::ADVANCE;
+            int tw = text_measure(btns[i].label);
             int iw = (btns[i].icon != ICON_NONE) ? m.icon_md : 0;
             int gap = (iw && tw) ? m.sm : 0;
             int cx = bx + (bw - (iw + gap + tw)) / 2;

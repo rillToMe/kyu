@@ -460,6 +460,11 @@ endif()
 set(_widget_srcs "")
 kyuzen_glob(_widget_srcs "${KYUZEN_ROOT}/libs/gui/widget/src/*/*.cpp")
 list(APPEND _widget_srcs "${KYUZEN_ROOT}/libs/gui/widget/abi/libui_abi.cpp")
+# src/services/uifont.cpp DIKELUARKAN: ia memanggil kz_font_* dan butuh arsip
+# FreeType, sedangkan toolkit inti (dan test host ini) sengaja bebas FreeType.
+# Sama seperti CMakeLists toolkit: layanan font adalah objek OPSIONAL
+# (kyuzen-widget-uifont) yang hanya di-link aplikasi yang memakainya.
+list(FILTER _widget_srcs EXCLUDE REGEX "src/services/uifont\\.cpp$")
 
 foreach(_t IN ITEMS theme xml fileman_widgets owner)
     set(_src "${KYUZEN_UNIT_DIR}/libui_${_t}_test.cpp")
@@ -484,7 +489,7 @@ foreach(_t IN ITEMS theme xml fileman_widgets owner)
         # string di dalam test — supaya dokumen asli dan test tidak bisa
         # berbeda diam-diam (drift).
         if(_t STREQUAL "xml")
-            kyuzen_embed_xml(test-libui-xml SOURCES xml_demo.xml)
+            kyuzen_embed_xml(test-libui-xml SOURCES xml_demo.xml filemanager.xml)
         endif()
     endif()
 endforeach()

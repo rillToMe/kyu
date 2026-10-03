@@ -348,10 +348,23 @@ kyuzen_add_sdk_app(kyuzen-fileman
         kyuzen-widget-abi
         kyuzen-widget-src
         kyuzen-media
+        # Tipografi: File Manager memasang font UI sistem (font.ui) sebagai text
+        # provider toolkit lewat ui::uifont_install() — lihat
+        # libs/gui/widget/src/services/uifont.cpp. Objek font UI di-link
+        # EKSPLISIT di sini supaya toolkit inti tetap bebas FreeType.
+        kyuzen-widget-uifont
+        kyuzen-text-manager
+        kyuzen-text-raster
+        kyuzen-freetype
     INCLUDES
         "${KYUZEN_ROOT}/libs/gui/widget/include"
+        "${KYUZEN_ROOT}/libs/text/include"
 )
 set_target_properties(kyuzen-fileman PROPERTIES OUTPUT_NAME "fileman")
+# Chrome + kerangka isi File Manager dideklarasikan di ui/xml/filemanager.xml
+# dan di-embed saat build (lihat cmake/KyuzenUiXml.cmake). Tabel/kisi dan
+# daftar shortcut sidebar tetap dibangun native — keduanya berisi data runtime.
+kyuzen_embed_xml(kyuzen-fileman SOURCES filemanager.xml)
 list(APPEND KYUZEN_APP_TARGETS kyuzen-fileman)
 
 # --- settings ----------------------------------------------------------------
@@ -371,7 +384,14 @@ kyuzen_add_sdk_app(kyuzen-settings
         kyuzen-color-utils
         kyuzen-widget-abi
         kyuzen-widget-src
-    INCLUDES "${KYUZEN_ROOT}/libs/text/include"
+        # Font UI sistem untuk UI Settings sendiri (halaman Fonts mengubah font
+        # yang sama; pratinjau dan UI harus memakai font yang sama).
+        kyuzen-widget-uifont
+    INCLUDES
+        "${KYUZEN_ROOT}/libs/text/include"
+        # Header toolkit (services/uifont.hpp) — Settings meng-include-nya
+        # langsung, jadi butuh jalur include toolkit, bukan hanya objeknya.
+        "${KYUZEN_ROOT}/libs/gui/widget/include"
 )
 set_target_properties(kyuzen-settings PROPERTIES OUTPUT_NAME "settings")
 # Form deklaratif Settings hidup sebagai file .xml di ui/xml/ dan di-embed

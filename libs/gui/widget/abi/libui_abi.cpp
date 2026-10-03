@@ -102,6 +102,21 @@ ui_widget_t* ui_label_create(ui_window_t* win, const char* text) {
     return reinterpret_cast<ui_widget_t*>(new ui::Label(text));
 }
 
+// Text provider: jembatan C untuk tipografi dari font sistem. Struktur ABI
+// dipetakan 1:1 ke ui::TextProvider; toolkit menyimpan POINTER-nya (bukan
+// salinan), jadi struct milik pemanggil harus hidup selama dipakai — itu
+// didokumentasikan di libui.h.
+void ui_text_provider_set(const ui_text_provider_t* provider) {
+    if (!provider) { ui::text_provider_set(0); return; }
+    static ui::TextProvider tp;
+    tp.measure = provider->measure;
+    tp.line_height = provider->line_height;
+    tp.ascent = provider->ascent;
+    tp.draw = provider->draw;
+    tp.ud = provider->ud;
+    ui::text_provider_set(&tp);
+}
+
 void ui_label_set_text(ui_widget_t* widget, const char* text) {
     reinterpret_cast<ui::Label*>(widget)->set_text(text);
 }
@@ -157,6 +172,14 @@ void ui_widget_set_enabled(ui_widget_t* widget, int enabled) {
     // Fokus yang sedang dipegang widget yang baru di-disable dilepas.
     if (!w->enabled && w->owner && w->owner->focused == w)
         w->owner->set_focus(0);
+}
+
+void ui_widget_set_focusable(ui_widget_t* widget, int focusable) {
+    ui::Widget* w = reinterpret_cast<ui::Widget*>(widget);
+    if (!w) return;
+    w->set_focus_opt_out(focusable == 0);
+    // Melepas opt-out saat widget memegang fokus akan membuat fokus menunjuk
+    // widget yang tak bisa difokuskan — set_focus_opt_out() sudah melepasnya.
 }
 
 // Menu konteks: klik kanan + koordinat window-local (lihat include/libui.h).
@@ -618,6 +641,11 @@ void ui_window_add_bar(ui_window_t* win, ui_widget_t* bar) {
     reinterpret_cast<ui::Window*>(win)->add_bar(reinterpret_cast<ui::Widget*>(bar));
 }
 
+void ui_window_add_bottom_bar(ui_window_t* win, ui_widget_t* bar) {
+    reinterpret_cast<ui::Window*>(win)->add_bottom_bar(
+        reinterpret_cast<ui::Widget*>(bar));
+}
+
 // --- ScrollView ---
 ui_widget_t* ui_scrollview_create(ui_window_t* win, int w, int h) {
     (void)win;
@@ -944,6 +972,18 @@ void ui_menu_set_enabled(ui_widget_t* menu, int index, int enabled) {
     reinterpret_cast<ui::Menu*>(menu)->set_enabled(index, enabled);
 }
 
+// State item menu lewat ID (nama dari XML). Menghapus keharusan app menyimpan
+// enum index baris yang harus sinkron dengan urutan penambahan item.
+int ui_menu_set_checked_id(ui_widget_t* menu, const char* id, int checked) {
+    ui::Menu* m = reinterpret_cast<ui::Menu*>(menu);
+    return m ? m->set_checked_id(id, checked) : 0;
+}
+
+int ui_menu_set_enabled_id(ui_widget_t* menu, const char* id, int enabled) {
+    ui::Menu* m = reinterpret_cast<ui::Menu*>(menu);
+    return m ? m->set_enabled_id(id, enabled) : 0;
+}
+
 // --- StatusBar ---
 ui_widget_t* ui_statusbar_create(ui_window_t* win) {
     (void)win;
@@ -1230,13 +1270,40 @@ int ui_xml_bind(ui_xml_ctx_t* ctx, const char* id, int event,
     if (!c || !id || !cb) return 0;
     ui::Widget* w = 0;
     int kind = 0;
+    int index = -1;
     for (int i = 0; i < c->nids; i++) {
         const char* a = c->ids[i].id;
         int k = 0;
         while (a[k] && a[k] == id[k]) k++;
-        if (a[k] == id[k]) { w = c->ids[i].w; kind = c->ids[i].kind; break; }
+        if (a[k] == id[k]) {
+            w = c->ids[i].w; kind = c->ids[i].kind; index = c->ids[i].index;
+            break;
+        }
     }
     if (!w) return 0;
+
+    // --- Sub-elemen: satu BARIS di dalam Menu / satu tombol di Toolbar ---
+    // Keduanya bukan Widget (tidak punya bounds sendiri), jadi binding-nya
+    // memakai (pemilik, index) yang dicatat inflater. Ini yang membuat
+    // aplikasi menyebut item dengan NAMA ("view_list") alih-alih menjaga
+    // enum index baris manual seperti sebelumnya.
+    if (kind == ui::xml::K_MENU) {
+        if (event != UI_XML_ON_CLICK) return 0;
+        ui::Menu* m = reinterpret_cast<ui::Menu*>(w);
+        if (index < 0 || index >= m->n) return 0;
+        m->items[index].cb = cb;
+        m->items[index].data = userdata;
+        return 1;
+    }
+    if (kind == ui::xml::K_TOOLBAR) {
+        if (event != UI_XML_ON_CLICK) return 0;
+        ui::Toolbar* tb = reinterpret_cast<ui::Toolbar*>(w);
+        if (index < 0 || index >= tb->n) return 0;
+        tb->btns[index].cb = cb;
+        tb->btns[index].data = userdata;
+        return 1;
+    }
+
     if (event == UI_XML_ON_CLICK) {
         switch (kind) {
         case ui::xml::K_BUTTON:
