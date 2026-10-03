@@ -17,5 +17,6 @@ extern "C" {
 #include "kzfont.h"        // teks FreeType (preview font)
 #include "kzfonts.h"       // registry font UI (single source of truth)
 #include "kzfontcfg.h"     // format font.ui (tag + id)
+#include "kztime.h"        // zona waktu + format /time.ui (tag + id)
 
 #endif // SETTINGS_PLATFORM_HPP

@@ -22,6 +22,7 @@
 
 #include "about.hpp"
 #include "appearance.hpp"
+#include "datetime.hpp"
 #include "fonts.hpp"
 #include "personalization.hpp"
 #include "platform.hpp"
@@ -34,6 +35,7 @@ enum class SettingsPage : std::uint8_t {
     System = 0,
     Personalization,
     Appearance,
+    DateTime,
     Fonts,
     About,
     Count
@@ -73,6 +75,7 @@ private:
     SystemPage system_;
     PersonalizationPage personalization_;
     AppearancePage appearance_;
+    DateTimePage datetime_;
     FontsPage fonts_;
     AboutPage about_;
 

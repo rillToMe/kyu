@@ -23,10 +23,16 @@ const NavigationItem kNav[] = {
     {SettingsPage::System, "System", UI_ICON_DISPLAY},
     {SettingsPage::Personalization, "Personalization", UI_ICON_IMAGE},
     {SettingsPage::Appearance, "Appearance", UI_ICON_PALETTE},
+    {SettingsPage::DateTime, "Date & Time", UI_ICON_REFRESH},
     {SettingsPage::Fonts, "Fonts", UI_ICON_FONT},
     {SettingsPage::About, "About", UI_ICON_INFO},
 };
-constexpr int kNavCount = 5;
+// Dihitung dari array, bukan angka yang ditulis ulang: entri kNav dan nilai
+// enum SettingsPage WAJIB sejajar (showPage memakai (int)page sebagai indeks),
+// jadi jumlahnya harus berasal dari satu tempat. Versi sebelumnya menulis 6
+// secara manual sementara array masih 5 entri - akibatnya kNav[5] membaca di
+// luar array dan sidebar memilih halaman yang salah.
+constexpr int kNavCount = (int)(sizeof(kNav) / sizeof(kNav[0]));
 
 constexpr int kWinW = 780;
 constexpr int kWinH = 560;
@@ -125,12 +131,14 @@ void SettingsApp::buildUi() {
     system_.build(win_);
     personalization_.build(win_);
     appearance_.build(win_);
+    datetime_.build(win_);
     fonts_.build(win_);
     about_.build(win_);
 
     ui_layout_add(pages, system_.root);
     ui_layout_add(pages, personalization_.root);
     ui_layout_add(pages, appearance_.root);
+    ui_layout_add(pages, datetime_.root);
     ui_layout_add(pages, fonts_.root);
     ui_layout_add(pages, about_.root);
 
@@ -144,7 +152,7 @@ void SettingsApp::showPage(SettingsPage page) {
     const int idx = static_cast<int>(page);
     ui_widget_t* roots[kNavCount] = {
         system_.root, personalization_.root, appearance_.root,
-        fonts_.root, about_.root,
+        datetime_.root, fonts_.root, about_.root,
     };
     for (int i = 0; i < kNavCount; i++)
         ui_widget_set_visible(roots[i], i == idx);
@@ -165,7 +173,10 @@ void SettingsApp::onSidebarChanged() {
 // headless via sendkey QEMU — dipakai tools/fontdemo/run-qemu-sysfont.sh dan
 // tests/host/probes/_settings_probe.py.)
 void SettingsApp::onKey(std::uint32_t ascii) {
-    if (ascii >= '1' && ascii <= '5') {
+    // '1'..'9' memilih font ke-n. Batasnya KZ_FONT_COUNT, bukan 5 yang
+    // ditulis manual: kalau font bertambah, shortcut ikut bertambah tanpa
+    // perubahan di sini (dan tidak ada angka yang bisa menyimpang).
+    if (ascii >= '1' && ascii < (std::uint32_t)('1' + KZ_FONT_COUNT)) {
         showPage(SettingsPage::Fonts);
         fonts_.select((int)(ascii - '1'));
     } else if (ascii == 's' || ascii == 'S') {

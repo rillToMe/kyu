@@ -38,24 +38,64 @@ THEME_BGS = [
     (0x1A, 0x1A, 0x2E),
 ]
 
+# Sidebar Settings (apps/settings/settings.cpp kNav), dalam URUTAN:
+#   0 System  1 Personalization  2 Appearance  3 Date & Time  4 Fonts  5 About
+# Probe mengklik baris relatif terhadap baris yang ter-highlight. Baris itu
+# adalah Personalization (probe memilihnya lewat tombol 'n'), jadi offset tiap
+# target dihitung dari index(Personalization) - bukan angka tetap seperti +40,
+# yang akan mengenai halaman salah begitu ada halaman baru disisipkan.
+SIDEBAR_ROWS = ["System", "Personalization", "Appearance", "Date & Time",
+                "Fonts", "About"]
+SIDEBAR_HIGHLIGHTED = "Personalization"
+
+
+def row_offset_to(name):
+    """Jarak baris (dalam satuan baris) dari baris ter-highlight ke `name`."""
+    return (SIDEBAR_ROWS.index(name)
+            - SIDEBAR_ROWS.index(SIDEBAR_HIGHLIGHTED))
+
 
 def window_width(ppm, step=2):
+    """Lebar jendela Settings, diukur dari PITA CHROME-nya.
+
+    Kenapa bukan dari warna bg tema: wallpaper desktop bisa memuat warna yang
+    sama dengan bg tema (foto apa pun punya area gelap/terang), sehingga
+    mengumpulkan "semua piksel berwarna tema" mengukur SELURUH LAYAR - dulu
+    mengembalikan 814 untuk jendela 780 px, dan nilai salah itu membuat semua
+    klik sidebar berikutnya meleset.
+
+    Pita chrome (#2D2D2D, lebar jendela) jauh lebih andal: hanya menubar/toolbar
+    yang membentuk run horizontal panjang selebar jendela, dan taskbar
+    (selebar layar) dibuang dengan batas atas.
+    """
     w, h, px = ST.read_ppm(ppm)
 
     def rgb(x, y):
         i = (y * w + x) * 3
         return (px[i], px[i + 1], px[i + 2])
 
+    CHROME = (0x2D, 0x2D, 0x2D)
     best = None
-    for color in THEME_BGS:
-        xs = []
-        for y in range(0, h, step):
-            for x in range(0, w, step):
-                if rgb(x, y) == color:
-                    xs.append(x)
-        if xs and (best is None or len(xs) > best[1]):
-            best = (max(xs) - min(xs), len(xs))
-    return best
+    for y in range(0, h, step):
+        run = 0
+        bx = 0
+        for x in range(0, w):
+            if rgb(x, y) == CHROME:
+                run += 1
+                if run > (best[0] if best else 0):
+                    best = (run, bx)
+                # track start of this run
+                if run == 1:
+                    bx = x
+            else:
+                run = 0
+    if best is None:
+        return None
+    run_len = best[0]
+    # Taskbar membentang selebar layar -> bukan jendela.
+    if run_len >= w - 8:
+        return None
+    return (run_len, run_len)
 
 
 def sidebar_selected_y(ppm):
@@ -324,7 +364,10 @@ def main():
         print("PASS: settings launched ([settings] start)")
         time.sleep(2.0)
         ww = window_width(shot(m, "st_main"))
-        if ww is None or not (640 <= ww[0] <= 730):
+        # Lebar jendela Settings (kWinW di apps/settings/settings.cpp).
+        # Nilai diukur dari pita chrome, jadi angkanya harus PERSIS - jendela
+        # yang melebar karena kontennya berubah adalah sinyal, bukan noise.
+        if ww is None or not (760 <= ww[0] <= 800):
             print("FAIL: bbox jendela (ww=%s)" % (ww,))
             ok = False
         else:
@@ -435,7 +478,7 @@ def main():
             # Sanity: highlight harus di baris Personalization (idx 1).
             # Posisi list dari screenshot: cari tepi atas ListView = baris
             # System (teks), lalu idx = (sel_y - y0) // 20 harus 1.
-            click_at(m, 180, sel_y + 20)  # Appearance
+            click_at(m, 180, sel_y + 20 * row_offset_to("Appearance"))  # Appearance
             if not wait_count("[settings] Appearance", 0):
                 print("FAIL: klik Appearance tak berpindah halaman")
                 ok = False
@@ -448,7 +491,11 @@ def main():
                 else:
                     print("PASS: no ghost on Appearance")
             n_fonts = P.serial_text().count("[settings] Fonts")
-            click_at(m, 180, sel_y + 40)  # Fonts
+            # Offset dihitung dari JUMLAH BARIS ANTARA, bukan angka tetap:
+            # menyisipkan halaman baru di sidebar pernah membuat klik ini
+            # mengenai halaman yang salah, dan itu terlihat seperti regresi
+            # UI padahal hanya probe yang usang.
+            click_at(m, 180, sel_y + 20 * row_offset_to("Fonts"))  # Fonts
             if not wait_count("[settings] Fonts", n_fonts):
                 print("FAIL: klik Fonts tak berpindah halaman")
                 ok = False

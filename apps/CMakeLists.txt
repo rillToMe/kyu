@@ -431,8 +431,13 @@ kyuzen_add_sdk_app(kyuzen-settings
         # Font UI sistem untuk UI Settings sendiri (halaman Fonts mengubah font
         # yang sama; pratinjau dan UI harus memakai font yang sama).
         kyuzen-widget-uifont
+        # Waktu sipil + zona waktu: halaman Date & Time memilih zona dan format
+        # jam, lalu menyimpannya ke /time.ui (dibaca desktop, shell, dan Clock).
+        kyuzen-time
+        kyuzen-time-io
     INCLUDES
         "${KYUZEN_ROOT}/libs/text/include"
+        "${KYUZEN_ROOT}/libs/time/include"
         # Header toolkit (services/uifont.hpp) — Settings meng-include-nya
         # langsung, jadi butuh jalur include toolkit, bukan hanya objeknya.
         "${KYUZEN_ROOT}/libs/gui/widget/include"
