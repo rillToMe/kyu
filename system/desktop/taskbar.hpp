@@ -3,7 +3,13 @@
 // Kiri: satu slot per window (ikon 28px + status fokus/hover; TANPA judul —
 // judul pindah ke kartu preview). Kanan: area sistem (jam "HH:MM" +
 // tanggal numerik "DD MM YYYY"). Query window via WindowManager framework;
-// ikon via Launcher + IconCache terpusat; jam via sys_get_time.
+// ikon via Launcher + IconCache terpusat; jam via sys_get_time (UTC).
+//
+// ZONA WAKTU: sys_get_time melaporkan UTC (drivers/rtc.c tidak lagi
+// menambahkan WIB). Taskbar menerjemahkannya ke waktu lokal memakai aturan
+// zona dari /time.ui, yang dipasang desktop lewat set_zone(). Tanpa
+// set_zone(), zona default = UTC — itu menjaga kelas ini tetap murni dan
+// bisa diuji di host tanpa filesystem.
 //
 // Tidak ada sistem tracking window kedua: status fokus dari WindowInfo,
 // hover dari event MouseMove (update_hover), jam dari RTC kernel.
@@ -21,6 +27,7 @@
 #include <kyuzen/desktop/window_manager.hpp>
 #include "app_icons.hpp"
 #include "launcher.hpp"
+#include "kztime.h"   // KZ_TZ_MAX (aturan zona untuk jam lokal)
 
 namespace desktop_impl {
 
@@ -65,6 +72,10 @@ public:
     const char* clock_time() const { return time_; }
     const char* clock_date() const { return date_; }
 
+    // Aturan zona waktu POSIX untuk waktu lokal (mis. "WIB-7"). Desktop
+    // memanggil ini sekali saat startup dari /time.ui. String disalin.
+    void set_zone(const char* rule);
+
     // Gambar strip + ikon + jam/tanggal ke canvas window. w×h = ukuran layar
     // (eksplisit; host test bisa menguji tanpa window). Ikon bergambar
     // (RLE fill_rect) dihitung di nilai balik (diagnostik serial).
@@ -79,6 +90,7 @@ private:
     int hovered_;  // slot, atau -1
     char time_[8];   // "HH:MM"
     char date_[16];  // "DD MM YYYY"
+    char zone_[KZ_TZ_MAX];   // aturan zona lokal ("" = UTC)
     void rebuild_slots(const Launcher& launcher, int w);
 };
 

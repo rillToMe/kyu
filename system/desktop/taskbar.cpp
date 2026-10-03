@@ -52,6 +52,14 @@ Taskbar::Taskbar() : nwins_(0), nslots_(0), hovered_(-1) {
     }
     time_[0] = '\0';
     date_[0] = '\0';
+    zone_[0] = '\0';
+}
+
+void Taskbar::set_zone(const char* rule) {
+    if (!rule) { zone_[0] = '\0'; return; }
+    int k = 0;
+    for (; rule[k] && k < KZ_TZ_MAX - 1; k++) zone_[k] = rule[k];
+    zone_[k] = '\0';
 }
 
 Rect Taskbar::slot_rect(int s, int w, int h) {
@@ -107,19 +115,33 @@ bool Taskbar::poll(WindowManager& wm, const Launcher& launcher) {
 
     // Jam RTC: berubah tiap menit ( + tanggal). Granularitas menit =
     // Partial sekali per menit, bukan tiap detik.
+    //
+    // sys_get_time melaporkan UTC; waktu LOKAL dihitung di sini memakai aturan
+    // zona dari /time.ui. Sebelumnya kernel sendiri yang menambahkan WIB dan
+    // taskbar memakai hasilnya langsung — itu membuat zona waktu tidak bisa
+    // dikonfigurasi dan tanggalnya salah 7 jam setiap hari.
     uint32_t t[6];
     sys_get_time(t);
+    kz_civil_t utc;
+    utc.year = (int32_t)t[0]; utc.month = (int32_t)t[1];
+    utc.day = (int32_t)t[2];  utc.hour = (int32_t)t[3];
+    utc.minute = (int32_t)t[4]; utc.second = (int32_t)t[5];
+    utc.weekday = 0; utc.yday = 0;
+    int64_t unix_sec = kz_civil_to_unix(&utc);
+    kz_civil_t loc;
+    kz_civil_local(zone_, unix_sec, &loc);
+
     char nt[8];
-    put2(nt, t[3]);
+    put2(nt, (unsigned)loc.hour);
     nt[2] = ':';
-    put2(nt + 3, t[4]);
+    put2(nt + 3, (unsigned)loc.minute);
     nt[5] = '\0';
     char nd[16];
-    put2(nd, t[2]);
+    put2(nd, (unsigned)loc.day);
     nd[2] = ' ';
-    put2(nd + 3, t[1]);
+    put2(nd + 3, (unsigned)loc.month);
     nd[5] = ' ';
-    put4(nd + 6, t[0]);
+    put4(nd + 6, (unsigned)loc.year);
     nd[10] = '\0';
     if (!title_eq(time_, nt) || !title_eq(date_, nd)) {
         for (int i = 0; i < 8; i++) {

@@ -46,6 +46,8 @@ set(_terminal_libs
     kyuzen-userutil
     kyuzen-netutil
     kyuzen-shellcore
+    # Perintah `time` di shell_core memakai libs/time untuk waktu lokal.
+    kyuzen-time
     kyuzen-libgui
     kyuzen-widget
     kyuzen-png
@@ -58,7 +60,7 @@ set(_terminal_libs
 # Most GUI apps are compiled -O0 (CFLAGS_APP). Two exceptions:
 #   viewer  -O2  (it decodes images; deliberately optimised)
 #   clock        (uses the C SDK — built separately below)
-foreach(_app calc notepad widget_demo)
+foreach(_app calc widget_demo)
     kyuzen_add_plain_app(kyuzen-${_app}
         SOURCES "${_apps_dir}/${_app}.c"
         LIBS    ${_gui_libs}
@@ -67,13 +69,24 @@ foreach(_app calc notepad widget_demo)
 endforeach()
 
 # xml_demo memakai DOKUMEN XML nyata (ui/xml/xml_demo.xml) yang di-embed saat
-# build — bukan string literal di .c. Lihat cmake/KyuzenUiXml.cmake.
+# build - bukan string literal di .c. Lihat cmake/KyuzenUiXml.cmake.
 kyuzen_add_plain_app(kyuzen-xml_demo
     SOURCES "${_apps_dir}/xml_demo.c"
     LIBS    ${_gui_libs}
 )
 kyuzen_embed_xml(kyuzen-xml_demo SOURCES xml_demo.xml)
 list(APPEND KYUZEN_APP_TARGETS kyuzen-xml_demo)
+
+# ---------------------------------------------------------------------------
+# notepad - Edit > Waktu/Tanggal menampilkan waktu LOKAL, jadi ia membaca
+# zona dari /time.ui (libs/time). Lihat apps/notepad.c menu_time().
+# ---------------------------------------------------------------------------
+kyuzen_add_plain_app(kyuzen-notepad
+    SOURCES "${_apps_dir}/notepad.c"
+    LIBS    ${_gui_libs} kyuzen-time kyuzen-time-io
+    INCLUDES "${KYUZEN_ROOT}/libs/time/include"
+)
+list(APPEND KYUZEN_APP_TARGETS kyuzen-notepad)
 
 # viewer is the one GUI app compiled with CFLAGS_LIB (-O2) because it decodes
 # images. Using the app flag set (-O0) here changes the generated code and
@@ -178,6 +191,7 @@ list(APPEND KYUZEN_APP_TARGETS kyuzen-fontdemo)
 kyuzen_add_plain_app(kyuzen-terminal
     SOURCES "${_apps_dir}/terminal.c"
     LIBS    ${_terminal_libs}
+    INCLUDES "${KYUZEN_ROOT}/libs/time/include"
 )
 list(APPEND KYUZEN_APP_TARGETS kyuzen-terminal)
 
@@ -318,10 +332,16 @@ kyuzen_add_sdk_app(kyuzen-desktop
         kyuzen-text-manager
         kyuzen-text-raster
         kyuzen-freetype
+        # Waktu sipil + zona waktu: jam taskbar menerjemahkan UTC dari RTC ke
+        # waktu lokal memakai /time.ui (lihat libs/time). Hanya logika murninya
+        # (kyuzen-time) - desktop membaca config lewat sys_* sendiri, sesuai
+        # batas isolasi di sys_abi.hpp.
+        kyuzen-time
     INCLUDES
         "${KYUZEN_ROOT}/libs/gui/libdesktop/include"
         "${KYUZEN_ROOT}/system/desktop"
         "${KYUZEN_ROOT}/libs/text/include"
+        "${KYUZEN_ROOT}/libs/time/include"
 )
 # Output must be exactly desktop.elf regardless of which implementation fills it.
 set_target_properties(kyuzen-desktop PROPERTIES OUTPUT_NAME "desktop")

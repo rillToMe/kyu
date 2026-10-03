@@ -26,6 +26,7 @@
 // ============================================================
 #include "userlib.h"
 #include "libui.h"
+#include "kztime.h"   // waktu lokal untuk Edit > Waktu/Tanggal
 // Palet warna (libs/gui/color): tema ditulis hex satu-token lewat
 // COLOR_HEX (bentuk initializer untuk tabel `static const`).
 #include "color_types.h"
@@ -346,15 +347,32 @@ static void menu_sel_all(void* ud) { (void)ud; ui_textedit_sel_all(g_edit); }
 // tombol fungsi datang tanpa ASCII sehingga tak bisa jadi shortcut).
 static void menu_time(void* ud) {
     (void)ud;
-    uint32_t t[6];   // [year, month, day, hour, min, sec]
+    uint32_t t[6];   // [year, month, day, hour, min, sec] UTC
     sys_get_time(t);
+    // Waktu LOKAL: sys_get_time melaporkan UTC, jadi zona dari /time.ui
+    // diterapkan di sini (dulu kernel yang menambahkan WIB, dan tanggalnya
+    // tidak ikut bergeser - itu bug yang diperbaiki libs/time).
+    kz_time_cfg_t cfg;
+    kz_time_cfg_load(&cfg);
+    int nz = 0;
+    const kz_zone_t* zt = kz_zone_table(&nz);
+    const char* rule = (cfg.zone >= 0 && cfg.zone < nz) ? zt[cfg.zone].rule : 0;
+
+    kz_civil_t utc;
+    utc.year = (int32_t)t[0]; utc.month = (int32_t)t[1];
+    utc.day = (int32_t)t[2];  utc.hour = (int32_t)t[3];
+    utc.minute = (int32_t)t[4]; utc.second = (int32_t)t[5];
+    utc.weekday = 0; utc.yday = 0;
+    kz_civil_t loc;
+    kz_civil_local(rule, kz_civil_to_unix(&utc), &loc);
+
     char stamp[32];
     int n = 0;
-    n = put_num(stamp, n, (int)t[2]); stamp[n++] = '/';
-    n = put_num(stamp, n, (int)t[1]); stamp[n++] = '/';
-    n = put_num(stamp, n, (int)t[0]); stamp[n++] = ' ';
-    n = put_num(stamp, n, (int)t[3]); stamp[n++] = ':';
-    n = put_num(stamp, n, (int)t[4]);
+    n = put_num(stamp, n, loc.day); stamp[n++] = '/';
+    n = put_num(stamp, n, loc.month); stamp[n++] = '/';
+    n = put_num(stamp, n, loc.year); stamp[n++] = ' ';
+    n = put_num(stamp, n, loc.hour); stamp[n++] = ':';
+    n = put_num(stamp, n, loc.minute);
     stamp[n] = '\0';
     if (!ui_textedit_insert(g_edit, stamp)) toast("Tidak bisa menyisipkan");
 }

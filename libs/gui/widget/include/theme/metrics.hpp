@@ -116,6 +116,49 @@ constexpr int XL = 24;   // navigasi besar
 }  // namespace icon
 
 // ------------------------------------------------------------
+// Muka jam (AnalogClock) dan progres melingkar (CircularProgress).
+//
+// Kenapa jadi token, bukan angka di dalam widget (UI-2.1): ini GEOMETRI
+// BENTUK, sama sifatnya dengan geometri ikon - nilainya menentukan proporsi
+// sebuah gambar, bukan jarak antar elemen. Menaruhnya di sini membuat
+// "jam terlihat benar" bisa ditinjau di satu tempat, dan mencegah dua widget
+// melingkar memakai proporsi yang berbeda.
+//
+// Panjang dinyatakan PERSEN dari radius supaya satu set proporsi berlaku untuk
+// semua ukuran: jam 120px dan 260px terlihat sama, bukan versi yang berbeda.
+// ------------------------------------------------------------
+namespace clockface {
+constexpr int RING_W = 1;             // tebal cincin tepi
+constexpr int TICK_COUNT_MAJOR = 12;  // penanda jam
+constexpr int TICK_COUNT_MINOR = 60;  // penanda menit
+constexpr int TICK_MAJOR_W = 2;       // goresan jam lebih tegas dari menit
+constexpr int TICK_MINOR_W = 1;
+constexpr int TICK_MAJOR_LEN_PCT = 11;  // % radius, diukur dari tepi ke dalam
+constexpr int TICK_MINOR_LEN_PCT = 5;
+constexpr int TICK_INSET = 2;         // jarak goresan dari cincin (px)
+// Jarum: jam paling pendek & tebal, detik paling panjang & tipis - hierarki
+// dibaca dari panjang dan bobot, bukan dari warna.
+constexpr int HAND_HOUR_LEN_PCT = 48;
+constexpr int HAND_MIN_LEN_PCT = 70;
+constexpr int HAND_SEC_LEN_PCT = 84;
+constexpr int HAND_HOUR_W = 4;
+constexpr int HAND_MIN_W = 3;
+constexpr int HAND_SEC_W = 1;
+constexpr int HAND_TAIL_PCT = 12;     // ekor pendek di seberang pusat
+constexpr int PIVOT_R = 3;            // penutup pusat
+constexpr int PIVOT_INNER_R = 1;      // inti aksen di tengah pivot
+// Langkah kuantisasi sudut jarum detik (satuan 1/65536 putaran).
+// Jarum hanya ditandai kotor saat sudutnya berubah lebih dari ini, sehingga
+// gerak halus tidak memicu render tiap milidetik. 24 unit ~= 0.23 px pada
+// radius 100 px - di bawah persepsi, tapi cukup untuk mencegah render
+// berlebihan saat loop lebih cepat dari 60 Hz.
+constexpr int SWEEP_STEP = 24;
+// Progres melingkar: tebal busur, dan celah antara busur dan tepi.
+constexpr int PROGRESS_W = 4;
+constexpr int PROGRESS_GAP = 2;
+}  // namespace clockface
+
+// ------------------------------------------------------------
 // Border. Selalu 1px di toolkit ini (skala piksel); token ada supaya
 // kebijakan "berapa banyak border" bisa dibaca di satu tempat.
 // ------------------------------------------------------------
@@ -144,6 +187,15 @@ struct Metrics {
     // Fokus & ikon
     int focus_ring, focus_outline;
     int icon_sm, icon_md, icon_lg, icon_xl;
+    // Muka jam & progres melingkar (proporsi relatif radius).
+    int face_ring_w;
+    int face_tick_major, face_tick_minor;
+    int face_tick_major_w, face_tick_minor_w;
+    int face_tick_major_pct, face_tick_minor_pct, face_tick_inset;
+    int hand_hour_pct, hand_min_pct, hand_sec_pct;
+    int hand_hour_w, hand_min_w, hand_sec_w, hand_tail_pct;
+    int face_pivot_r, face_pivot_inner_r, face_sweep_step;
+    int progress_w, progress_gap;
     // Layar (diisi Window dari ukuran window; dipakai layout adaptif)
     int content_pad;        // margin tepi konten halaman
 
@@ -164,6 +216,26 @@ struct Metrics {
           focus_ring(focus::RING_W), focus_outline(focus::OUTLINE_W),
           icon_sm(icon::SM), icon_md(icon::MD), icon_lg(icon::LG),
           icon_xl(icon::XL),
+          face_ring_w(clockface::RING_W),
+          face_tick_major(clockface::TICK_COUNT_MAJOR),
+          face_tick_minor(clockface::TICK_COUNT_MINOR),
+          face_tick_major_w(clockface::TICK_MAJOR_W),
+          face_tick_minor_w(clockface::TICK_MINOR_W),
+          face_tick_major_pct(clockface::TICK_MAJOR_LEN_PCT),
+          face_tick_minor_pct(clockface::TICK_MINOR_LEN_PCT),
+          face_tick_inset(clockface::TICK_INSET),
+          hand_hour_pct(clockface::HAND_HOUR_LEN_PCT),
+          hand_min_pct(clockface::HAND_MIN_LEN_PCT),
+          hand_sec_pct(clockface::HAND_SEC_LEN_PCT),
+          hand_hour_w(clockface::HAND_HOUR_W),
+          hand_min_w(clockface::HAND_MIN_W),
+          hand_sec_w(clockface::HAND_SEC_W),
+          hand_tail_pct(clockface::HAND_TAIL_PCT),
+          face_pivot_r(clockface::PIVOT_R),
+          face_pivot_inner_r(clockface::PIVOT_INNER_R),
+          face_sweep_step(clockface::SWEEP_STEP),
+          progress_w(clockface::PROGRESS_W),
+          progress_gap(clockface::PROGRESS_GAP),
           content_pad(space::XL) {}
 
     // Tinggi baris daftar yang memuat peran teks tertentu (satu tempat).

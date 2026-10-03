@@ -86,7 +86,7 @@ static void tls_profile_init(tls_conn_t *c) {
     br_ssl_engine_set_default_aes_gcm(&c->sc.eng);
 }
 
-// RTC (WIB) -> detik Unix UTC. days_from_civil ala Hinnant (public domain).
+// RTC (UTC) -> detik Unix. days_from_civil ala Hinnant (public domain).
 static long tls_civil_days(long y, unsigned m, unsigned d) {
     long era;
     y -= (m <= 2);
@@ -100,7 +100,7 @@ static long tls_civil_days(long y, unsigned m, unsigned d) {
 }
 
 static int tls_set_time(tls_conn_t *c) {
-    uint32_t t[6];   // [year, month, day, hour, min, sec] WIB
+    uint32_t t[6];   // [year, month, day, hour, min, sec] UTC
     long days, unix;
     unsigned long secs;
 
@@ -109,8 +109,11 @@ static int tls_set_time(tls_conn_t *c) {
         t[2] < 1u || t[2] > 31u || t[3] > 23u || t[4] > 59u || t[5] > 60u)
         return TLS_ERR_TIME;
     days = tls_civil_days((long)t[0], t[1], t[2]);
+    // sys_get_time SUDAH UTC sejak drivers/rtc.c diperbaiki (dulu kernel
+    // menambahkan +7 jam WIB dan di sini dikurangi lagi). Menambahkan
+    // kompensasi apa pun di sini akan menggeser waktu validasi sertifikat.
     unix = days * 86400L + (long)t[3] * 3600L + (long)t[4] * 60L +
-        (long)t[5] - 7L * 3600L;   // WIB -> UTC
+        (long)t[5];
     if (unix < 0)
         return TLS_ERR_TIME;
     secs = (unsigned long)unix;

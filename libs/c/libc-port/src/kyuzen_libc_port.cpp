@@ -269,12 +269,13 @@ extern "C" long __llvm_libc_stdio_write(void *cookie, const char *buf,
 //            sipil→epoch memakai days-from-civil (Howard Hinnant, integer
 //            murni, tanpa tabel). Presisi detik (tv_nsec = 0).
 //
-// Kualifikasi RTC (drivers/rtc.c, jujur didokumentasikan, bukan diperbaiki di
-// sini karena kernel tidak boleh diubah fase ini):
-//   - CMOS dibaca sebagai UTC lalu +7 jam (WIB); jam yang overflow dibungkus
-//     mod 24 TANPA carry ke hari. Konversi di bawah setia pada field yang
-//     dilaporkan — di sekitar tengah malam WIB bisa selisih satu hari.
-//   - Tahun = BCD + 2000 (rentang efektif 2000–2099).
+// Kualifikasi RTC (drivers/rtc.c):
+//   - sys_get_time (#20) melaporkan UTC APA ADANYA dari CMOS. Sebelumnya
+//     kernel menambahkan +7 jam (WIB) dan membungkus jam mod 24 TANPA carry
+//     ke hari, sehingga tanggal salah selama 7 jam setiap hari. Itu sudah
+//     diperbaiki: zona waktu kini urusan user-space (libs/time), dan field
+//     yang dilaporkan di sini konsisten.
+//   - Tahun = BCD + 2000 (rentang efektif 2000-2099).
 // ------------------------------------------------------------
 struct kyuzen_timespec {
   long tv_sec;

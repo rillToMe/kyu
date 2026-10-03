@@ -413,6 +413,21 @@ if(EXISTS "${KYUZEN_UNIT_DIR}/text_test.c")
     )
 endif()
 
+# --- time: civil calendar + POSIX timezone rules ---
+# Sumber asli libs/time (bukan salinan) supaya test mengunci kode yang benar-
+# benar dikirim ke ISO. Mengunci aritmetika kalender + rollover tanggal: bug
+# kernel lama (+7 jam tanpa menggeser hari) tidak tertangkap test mana pun.
+if(EXISTS "${KYUZEN_UNIT_DIR}/time_test.c")
+    kyuzen_host_test(test-time
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/time_test.c"
+            "${KYUZEN_ROOT}/libs/time/src/kztime.c"
+        INCLUDES
+            "${KYUZEN_ROOT}/libs/time/include"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
 # --- Lexbor freestanding archive smoke test ---
 if(EXISTS "${KYUZEN_UNIT_DIR}/lexbor_html_test.c")
     kyuzen_host_test(test-lexbor-host
@@ -569,12 +584,14 @@ if(EXISTS "${KYUZEN_UNIT_DIR}/desktop_manifest_test.cpp")
             "${KYUZEN_ROOT}/libs/gui/libdesktop/src/canvas.cpp"
             "${KYUZEN_ROOT}/libs/text/src/kzfont.c"
             "${KYUZEN_ROOT}/libs/text/src/kzraster_ft.c"
+            "${KYUZEN_ROOT}/libs/time/src/kztime.c"
         IQUOTE "${KYUZEN_ROOT}/include"
         INCLUDES
             "${KYUZEN_ROOT}/libs/text/include"
             "${KYUZEN_ROOT}/libs/gui/libdesktop/include"
             "${KYUZEN_ROOT}/system/desktop"
             "${KYUZEN_ROOT}/libs/gui/color/include"
+            "${KYUZEN_ROOT}/libs/time/include"
         COMPILE_OPTIONS -O1 -Wall
     )
 endif()

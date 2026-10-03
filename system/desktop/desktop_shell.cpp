@@ -2,6 +2,7 @@
 #include "desktop_shell.hpp"
 #include "sys_abi.hpp"
 #include "theme.hpp"
+#include "kztime.h"   // zona waktu lokal untuk jam taskbar
 
 namespace desktop_impl {
 
@@ -34,6 +35,26 @@ void DesktopShell::on_start(Canvas& canvas) {
     int h = canvas.height();
     launcher_.discover();
     launcher_.ui_font_init();  // UI font (Inter default; font.ui bila ada)
+    // Zona waktu jam taskbar dari /time.ui (default zona sistem bila absen).
+    // Dibaca lewat sys_* (sys_abi.hpp), BUKAN kz_time_cfg_load: batas isolasi
+    // desktop melarang modul inti menyentuh helper userlib (sama seperti
+    // pembacaan /font.ui di launcher.cpp). Hanya FORMAT validasinya yang
+    // dibagi, bukan kode IO-nya.
+    {
+        kz_time_cfg_t tcfg;
+        kz_time_cfg_default(&tcfg);
+        if (sys_file_size((char*)KZ_TIME_CFG_PATH) == KZ_TIME_CFG_LEN) {
+            char buf[KZ_TIME_CFG_LEN];
+            for (int i = 0; i < KZ_TIME_CFG_LEN; i++) buf[i] = 0;
+            if (sys_read_file_to_buffer((char*)KZ_TIME_CFG_PATH, buf,
+                                        KZ_TIME_CFG_LEN) == 1)
+                kz_time_cfg_decode(buf, KZ_TIME_CFG_LEN, &tcfg);
+        }
+        int nz = 0;
+        const kz_zone_t* zt = kz_zone_table(&nz);
+        taskbar_.set_zone((tcfg.zone >= 0 && tcfg.zone < nz)
+                          ? zt[tcfg.zone].rule : 0);
+    }
     print(const_cast<char*>("[desktop] layar "));
     print_num(static_cast<uint32_t>(w));
     print(const_cast<char*>("x"));

@@ -17,6 +17,7 @@
 #include "core/theme.hpp"
 #include "core/text_provider.hpp"
 #include "theme/icons.hpp"
+#include "theme/trig.hpp"
 
 namespace ui {
 
@@ -376,6 +377,183 @@ public:
         rect(x, y + h - 1, w, 1, c);
         rect(x, y, 1, h, c);
         rect(x + w - 1, y, 1, h, c);
+    }
+
+    // ------------------------------------------------------------
+    // Geometri lingkaran (jam analog, progres melingkar).
+    //
+    // Coverage dihitung ANALITIS dari jarak, bukan supersample 4×4 seperti
+    // aa_cov: tutup jam berdiameter ~200 px berarti ~31 ribu piksel, dan 16
+    // sampel per piksel akan menjadi 500 ribu operasi per frame — terlalu
+    // mahal untuk komponen yang digambar ulang tiap detik. Ramp linear selebar
+    // 1 px di sekitar tepi memberi kualitas yang sama terlihat pada radius
+    // besar dengan biaya konstan per piksel.
+    //
+    // Semua koordinat memakai 1/8 piksel (subpiksel 3 bit) supaya tepi tidak
+    // "bergerak" saat pusat lingkaran jatuh di antara dua piksel.
+    // ------------------------------------------------------------
+
+    // Coverage 0..255 untuk jarak `d8` (1/8 px) terhadap tepi `edge8`.
+    // Transisi linear selebar 1 px yang terpusat di tepi.
+    static uint32_t cov_edge(int64_t d8, int64_t edge8) {
+        int64_t c = (edge8 + 4 - d8) * 255 / 8;
+        if (c <= 0) return 0;
+        if (c >= 255) return 255;
+        return (uint32_t)c;
+    }
+
+    // Cakram penuh berpusat (cx,cy) radius r.
+    void circle_fill(int cx, int cy, int r, color_t c) {
+        if (r <= 0) return;
+        int x0 = cx - r - 1, y0 = cy - r - 1;
+        int x1 = cx + r + 1, y1 = cy + r + 1;
+        int cw = x1 - x0, ch = y1 - y0;
+        if (!clip_rect(x0, y0, cw, ch)) return;
+        const int64_t rr = (int64_t)r * 8;
+        for (int py = y0; py < y1; py++) {
+            int64_t dy = (int64_t)(py - cy) * 8 + 4;   // pusat piksel
+            for (int px = x0; px < x1; px++) {
+                int64_t dx = (int64_t)(px - cx) * 8 + 4;
+                // Bandingkan kuadrat jarak dalam satuan 1/64 px agar akurat.
+                int64_t d2 = dx * dx + dy * dy;
+                // Isqrt integer: cukup untuk radius layar (<= 4096 px).
+                int64_t d = isqrt64(d2);
+                uint32_t a = cov_edge(d, rr);
+                if (a) blend(px, py, c, a);
+            }
+        }
+        gui_damage_rect(win, x0, y0, x1 - x0, y1 - y0);
+    }
+
+    // Cincin (annulus): tepi luar r, tebal t ke arah dalam.
+    void circle_ring(int cx, int cy, int r, int t, color_t c) {
+        if (r <= 0 || t <= 0) return;
+        int ri = r - t;
+        if (ri < 0) ri = 0;
+        int x0 = cx - r - 1, y0 = cy - r - 1;
+        int x1 = cx + r + 1, y1 = cy + r + 1;
+        int cw = x1 - x0, ch = y1 - y0;
+        if (!clip_rect(x0, y0, cw, ch)) return;
+        const int64_t ro8 = (int64_t)r * 8, ri8 = (int64_t)ri * 8;
+        for (int py = y0; py < y1; py++) {
+            int64_t dy = (int64_t)(py - cy) * 8 + 4;
+            for (int px = x0; px < x1; px++) {
+                int64_t dx = (int64_t)(px - cx) * 8 + 4;
+                int64_t d = isqrt64(dx * dx + dy * dy);
+                uint32_t ao = cov_edge(d, ro8);
+                if (!ao) continue;
+                // Tepi dalam: coverage penuh bila jarak DI ATAS ri.
+                uint32_t ai = (ri8 > 0) ? (255 - cov_edge(d, ri8)) : 255;
+                uint32_t a = ao * ai / 255;
+                if (a) blend(px, py, c, a);
+            }
+        }
+        gui_damage_rect(win, x0, y0, x1 - x0, y1 - y0);
+    }
+
+    // Busur tebal dari `start` sepanjang `sweep` (satuan 1/65536 putaran,
+    // searah jarum jam karena sumbu Y layar mengarah ke bawah).
+    //
+    // Pengujian sudut memakai dua perkalian silang terhadap sinar AWAL dan
+    // AKHIR, bukan atan2 per piksel: titik berada di dalam busur bila ia
+    // searah-jarum-jam dari sinar awal DAN berlawanan dari sinar akhir. Itu
+    // benar selama sweep <= 180 derajat, jadi sweep besar dipecah dua.
+    void arc_stroke(int cx, int cy, int r, int t, int32_t start, int32_t sweep,
+                    color_t c) {
+        if (r <= 0 || t <= 0 || sweep <= 0) return;
+        if (sweep >= ANGLE_FULL) { circle_ring(cx, cy, r, t, c); return; }
+        if (sweep > ANGLE_HALF) {
+            arc_stroke(cx, cy, r, t, start, ANGLE_HALF, c);
+            arc_stroke(cx, cy, r, t, angle_norm(start + ANGLE_HALF),
+                       sweep - ANGLE_HALF, c);
+            return;
+        }
+        int ri = r - t;
+        if (ri < 0) ri = 0;
+        int x0 = cx - r - 1, y0 = cy - r - 1;
+        int x1 = cx + r + 1, y1 = cy + r + 1;
+        int cw = x1 - x0, ch = y1 - y0;
+        if (!clip_rect(x0, y0, cw, ch)) return;
+        const int64_t ro8 = (int64_t)r * 8, ri8 = (int64_t)ri * 8;
+        const int32_t s0 = sin_q15(start), c0 = cos_q15(start);
+        const int32_t se = sin_q15(start + sweep), ce = cos_q15(start + sweep);
+        for (int py = y0; py < y1; py++) {
+            int64_t dy = (int64_t)(py - cy) * 8 + 4;
+            for (int px = x0; px < x1; px++) {
+                int64_t dx = (int64_t)(px - cx) * 8 + 4;
+                int64_t d = isqrt64(dx * dx + dy * dy);
+                uint32_t ao = cov_edge(d, ro8);
+                if (!ao) continue;
+                uint32_t ai = (ri8 > 0) ? (255 - cov_edge(d, ri8)) : 255;
+                // cross0 > 0: titik searah jarum jam dari sinar awal.
+                int64_t cross0 = (int64_t)c0 * dy - (int64_t)s0 * dx;
+                if (cross0 < 0) continue;
+                int64_t crosse = (int64_t)ce * dy - (int64_t)se * dx;
+                if (crosse > 0) continue;
+                uint32_t a = ao * ai / 255;
+                if (a) blend(px, py, c, a);
+            }
+        }
+        gui_damage_rect(win, x0, y0, x1 - x0, y1 - y0);
+    }
+
+    // Garis tebal anti-alias dari (x0,y0) ke (x1,y1) — jarum jam.
+    // Coverage dari jarak titik ke SEGMEN (bukan ke garis tak hingga), jadi
+    // ujungnya tidak melebar keluar.
+    void line_thick(int x0, int y0, int x1, int y1, int t, color_t c) {
+        if (t <= 0) return;
+        int half = t / 2;
+        int bx0 = (x0 < x1 ? x0 : x1) - half - 1;
+        int by0 = (y0 < y1 ? y0 : y1) - half - 1;
+        int bx1 = (x0 > x1 ? x0 : x1) + half + 2;
+        int by1 = (y0 > y1 ? y0 : y1) + half + 2;
+        int bw = bx1 - bx0, bh = by1 - by0;
+        if (!clip_rect(bx0, by0, bw, bh)) return;
+        int64_t vx = (int64_t)(x1 - x0) * 8, vy = (int64_t)(y1 - y0) * 8;
+        int64_t vlen2 = vx * vx + vy * vy;
+        if (vlen2 == 0) return;
+        const int64_t half8 = (int64_t)t * 8 / 2;
+        for (int py = by0; py < by1; py++) {
+            int64_t dy = (int64_t)(py - y0) * 8 + 4;
+            for (int px = bx0; px < bx1; px++) {
+                int64_t dx = (int64_t)(px - x0) * 8 + 4;
+                // Proyeksi titik ke segmen, dijepit 0..1.
+                int64_t proj = dx * vx + dy * vy;
+                int64_t d2;
+                if (proj <= 0) {
+                    d2 = dx * dx + dy * dy;
+                } else if (proj >= vlen2) {
+                    int64_t ex = dx - vx, ey = dy - vy;
+                    d2 = ex * ex + ey * ey;
+                } else {
+                    // Jarak tegak lurus: |cross| / |v|. Kuadratkan agar tidak
+                    // perlu akar di sini.
+                    int64_t cross = dx * vy - dy * vx;
+                    d2 = cross * cross / vlen2;
+                }
+                int64_t d = isqrt64(d2);
+                uint32_t a = cov_edge(d, half8);
+                if (a) blend(px, py, c, a);
+            }
+        }
+        gui_damage_rect(win, bx0, by0, bx1 - bx0, by1 - by0);
+    }
+
+    // Akar kuadrat integer (Newton). Dipakai jalur coverage lingkaran; nilai
+    // di sini selalu < 2^32 (radius layar), jadi 32 iterasi sudah cukup.
+    static int64_t isqrt64(int64_t v) {
+        if (v <= 0) return 0;
+        int64_t x = v, y = 1;
+        // Perkiraan awal: setengah bit tertinggi.
+        int64_t bit = 1;
+        while (bit * 4 <= v) bit *= 4;
+        x = bit;
+        while (x > 0) {
+            int64_t nx = (x + v / x) / 2;
+            if (nx >= x) break;
+            x = nx;
+        }
+        return x;
     }
 
     // ------------------------------------------------------------

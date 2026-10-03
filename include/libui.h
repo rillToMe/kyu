@@ -699,8 +699,7 @@ void ui_widget_set_drop_target(ui_widget_t* widget, ui_drop_cb cb, void* userdat
 enum { UI_CURSOR_ARROW = 0, UI_CURSOR_IBEAM = 1, UI_CURSOR_HAND = 2 };
 void ui_widget_set_cursor(ui_widget_t* widget, int kind);
 
-// --- Settings (persist theme ke KyuzenFS "settings.ui") ---
-// Format file (tiga versi, ukuran beda sehingga bisa dibedakan):
+// --- Settings (persist theme ke KyuzenFS "settings.ui") ---// Format file (tiga versi, ukuran beda sehingga bisa dibedakan):
 //   v2 — tag "KTH2" (4 byte) + mode(1) + aksen(1) + custom(r,g,b,a) = 10 byte
 //          (ditulis bila tema terakhir dari ui_window_set_theme_config;
 //          palet diturunkan saat load)
@@ -711,6 +710,40 @@ void ui_widget_set_cursor(ui_widget_t* widget, int kind);
 // Return 1 sukses, 0 gagal/tak ada file.
 int ui_settings_save(ui_window_t* win);
 int ui_settings_load(ui_window_t* win);
+
+// ============================================================
+// Muka jam & progres melingkar (aditif)
+//
+// Ditambahkan karena aplikasi TIDAK bisa menggambar keduanya dengan benar:
+// bentuknya butuh token tema + Painter (warna jarum, warna cincin, tone
+// goresan), dan aplikasi tidak punya akses yang sah ke sana (UI-2.1).
+// Menggambarnya di app akan mengunci warna visual di dalam kode aplikasi.
+//
+// Keduanya MENERIMA WAKTU/NILAI DARI LUAR, tidak pernah membaca jam sendiri:
+// widget toolkit tidak memanggil syscall (UI-13.3), dan pemisahan itu yang
+// membuat posisinya bisa diuji di host.
+// ============================================================
+
+// --- AnalogClock: muka jam (jarum jam/menit/detik + goresan) ---
+// `size` = sisi kotak (px); muka digambar sebagai lingkaran di tengahnya.
+ui_widget_t* ui_analogclock_create(ui_window_t* win, int size);
+void ui_analogclock_set_size(ui_widget_t* widget, int size);
+// Tampilkan jarum detik (default 1).
+void ui_analogclock_show_seconds(ui_widget_t* widget, int show);
+// Setel posisi jarum dari waktu LOKAL 24 jam. `ms_frac` (0..999) membuat jarum
+// detik bergerak halus, bukan melompat tiap detik.
+// Return 1 bila tampilan berubah (pemanggil hanya perlu render bila 1) —
+// tanpa ini, loop 60 Hz menggambar ulang muka jam 60x/detik tanpa alasan.
+int  ui_analogclock_set_time(ui_widget_t* widget, int hour24, int minute,
+                             int second, int ms_frac);
+
+// --- CircularProgress: busur progres 0..1000 (per-mil) ---
+// Per-mil, bukan persen: timer panjang yang diperbarui sering bergerak < 1%
+// per langkah, dan busur dengan persen bulat akan terlihat tersendat.
+ui_widget_t* ui_circularprogress_create(ui_window_t* win, int size);
+void ui_circularprogress_set_size(ui_widget_t* widget, int size);
+void ui_circularprogress_set_value(ui_widget_t* widget, int value);   // 0..1000
+int  ui_circularprogress_value(ui_widget_t* widget);
 
 #ifdef __cplusplus
 } // extern "C"

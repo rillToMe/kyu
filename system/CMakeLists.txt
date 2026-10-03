@@ -20,8 +20,11 @@ set(_sys_dir "${KYUZEN_ROOT}/system")
 # and (for host tests) compiled directly by tests/host.
 # ---------------------------------------------------------------------------
 add_library(kyuzen-shellcore OBJECT "${_sys_dir}/shell_core.c")
-target_link_libraries(kyuzen-shellcore PRIVATE kyuzen-flags-applib)
-target_include_directories(kyuzen-shellcore PUBLIC ${KYUZEN_ROOT}/include)
+target_link_libraries(kyuzen-shellcore PRIVATE kyuzen-flags-applib kyuzen-time)
+target_include_directories(kyuzen-shellcore PUBLIC
+    ${KYUZEN_ROOT}/include
+    ${KYUZEN_ROOT}/libs/time/include
+)
 
 # ---------------------------------------------------------------------------
 # Plain utilities: userlib only.
@@ -75,7 +78,8 @@ kyuzen_add_plain_app(kyuzen-login
 kyuzen_add_plain_app(kyuzen-shell
     SOURCES "${_sys_dir}/shell.c"
     FLAGS   kyuzen-flags-applib
-    LIBS    kyuzen-userlib kyuzen-userutil kyuzen-netutil kyuzen-shellcore
+    LIBS    kyuzen-userlib kyuzen-userutil kyuzen-netutil kyuzen-shellcore kyuzen-time
+    INCLUDES "${KYUZEN_ROOT}/libs/time/include"
 )
 
 # ---------------------------------------------------------------------------

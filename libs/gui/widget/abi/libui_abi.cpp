@@ -13,6 +13,8 @@
 #include "primitives/slider.hpp"
 #include "primitives/switch.hpp"
 #include "primitives/progressbar.hpp"
+#include "primitives/analogclock.hpp"
+#include "primitives/circularprogress.hpp"
 #include "primitives/combobox.hpp"
 #include "primitives/separator.hpp"
 #include "primitives/image.hpp"
@@ -1358,6 +1360,55 @@ int ui_xml_bind(ui_xml_ctx_t* ctx, const char* id, int event,
         }
     }
     return 0;
+}
+
+// --- AnalogClock ---
+// Waktu selalu datang dari aplikasi (widget tidak memanggil syscall).
+ui_widget_t* ui_analogclock_create(ui_window_t* win, int size) {
+    (void)win;
+    if (size < 24) size = 24;
+    return reinterpret_cast<ui_widget_t*>(new ui::AnalogClock(size));
+}
+
+void ui_analogclock_set_size(ui_widget_t* widget, int size) {
+    if (!widget) return;
+    reinterpret_cast<ui::AnalogClock*>(widget)->set_size(size);
+}
+
+void ui_analogclock_show_seconds(ui_widget_t* widget, int show) {
+    if (!widget) return;
+    ui::AnalogClock* c = reinterpret_cast<ui::AnalogClock*>(widget);
+    c->show_seconds = (show != 0);
+    c->mark_dirty();
+}
+
+int ui_analogclock_set_time(ui_widget_t* widget, int hour24, int minute,
+                            int second, int ms_frac) {
+    if (!widget) return 0;
+    return reinterpret_cast<ui::AnalogClock*>(widget)
+        ->set_time(hour24, minute, second, ms_frac) ? 1 : 0;
+}
+
+// --- CircularProgress ---
+ui_widget_t* ui_circularprogress_create(ui_window_t* win, int size) {
+    (void)win;
+    if (size < 16) size = 16;
+    return reinterpret_cast<ui_widget_t*>(new ui::CircularProgress(size));
+}
+
+void ui_circularprogress_set_size(ui_widget_t* widget, int size) {
+    if (!widget) return;
+    reinterpret_cast<ui::CircularProgress*>(widget)->set_size(size);
+}
+
+void ui_circularprogress_set_value(ui_widget_t* widget, int value) {
+    if (!widget) return;
+    reinterpret_cast<ui::CircularProgress*>(widget)->set_value(value);
+}
+
+int ui_circularprogress_value(ui_widget_t* widget) {
+    if (!widget) return 0;
+    return reinterpret_cast<ui::CircularProgress*>(widget)->value;
 }
 
 } // extern "C"

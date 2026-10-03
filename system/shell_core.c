@@ -12,6 +12,7 @@
 
 #include "shell.h"
 #include "userlib.h"
+#include "kztime.h"   // waktu lokal untuk perintah `time`
 
 #include <stddef.h>
 
@@ -390,17 +391,37 @@ static int cmd_sched(shell_t* sh, int argc, char** argv) {
 
 static int cmd_time(shell_t* sh, int argc, char** argv) {
     (void)argc; (void)argv;
-    uint32_t t[6];   // [year, month, day, hour, min, sec]
+    uint32_t t[6];   // [year, month, day, hour, min, sec] UTC
     sys_get_time(t);
-    char b[16]; int k = 0;
-    uint32_t p[3] = { t[3], t[4], t[5] };
-    for (int i = 0; i < 3; i++) {
-        if (i) b[k++] = ':';
-        if (p[i] < 10) b[k++] = '0';
-        char n[16]; u32_str(p[i], n);
-        for (int j = 0; n[j]; j++) b[k++] = n[j];
+    // Waktu LOKAL dari /time.ui. Dibaca lewat sys_* langsung (bukan
+    // kz_time_cfg_load) supaya shell_core tetap hanya bergantung pada API
+    // generik yang ada di userlib.h - file ini juga dipakai di beberapa
+    // frontend, dan helper IO libs/time adalah lapisan di atasnya.
+    kz_time_cfg_t cfg;
+    kz_time_cfg_default(&cfg);
+    if (sys_file_size(KZ_TIME_CFG_PATH) == KZ_TIME_CFG_LEN) {
+        char cbuf[KZ_TIME_CFG_LEN];
+        for (int i = 0; i < KZ_TIME_CFG_LEN; i++) cbuf[i] = 0;
+        if (sys_read_file_to_buffer(KZ_TIME_CFG_PATH, cbuf,
+                                    KZ_TIME_CFG_LEN) == 1)
+            kz_time_cfg_decode(cbuf, KZ_TIME_CFG_LEN, &cfg);
     }
-    b[k] = '\0';
+    int nz = 0;
+    const kz_zone_t* zt = kz_zone_table(&nz);
+    const char* rule = (cfg.zone >= 0 && cfg.zone < nz) ? zt[cfg.zone].rule : 0;
+
+    kz_civil_t utc;
+    utc.year = (int32_t)t[0]; utc.month = (int32_t)t[1];
+    utc.day = (int32_t)t[2];  utc.hour = (int32_t)t[3];
+    utc.minute = (int32_t)t[4]; utc.second = (int32_t)t[5];
+    utc.weekday = 0; utc.yday = 0;
+    kz_civil_t loc;
+    kz_civil_local(rule, kz_civil_to_unix(&utc), &loc);
+
+    // kz_fmt_hhmmss menangani nol di depan ("09:05:03"). Jangan pakai u32_str:
+    // fungsi itu tidak mem-pad, sehingga jam 9:5:3 akan tercetak "9:5:3".
+    char b[16];
+    kz_fmt_hhmmss(loc.hour, loc.minute, loc.second, cfg.hour12, b, (int)sizeof(b));
     shell_writeln(sh, b);
     return SHELL_OK;
 }
