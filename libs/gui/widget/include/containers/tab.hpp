@@ -26,8 +26,15 @@ public:
     Widget* panels[MAX_TABS];
     bool tab_disabled[MAX_TABS];
     int n, active, hover_idx;
+    // Pemberitahuan perubahan tab aktif. Tanpa ini aplikasi tidak punya cara
+    // tahu halaman mana yang terlihat — dan aplikasi yang menampilkan data
+    // berubah (jam, timer) perlu tahu itu supaya tidak memperbarui halaman
+    // yang tersembunyi. Pola yang sama dengan ListView/ComboBox set_change.
+    ui_click_cb change_cb;
+    void* change_data;
 
-    Tab(int width, int height) : n(0), active(0), hover_idx(-1) {
+    Tab(int width, int height) : n(0), active(0), hover_idx(-1),
+                                 change_cb(0), change_data(0) {
         w = width; h = height;
         for (int i = 0; i < MAX_TABS; i++) {
             titles[i] = 0; panels[i] = 0; tab_disabled[i] = false;
@@ -57,8 +64,20 @@ public:
         for (int i = 0; i < n; i++)
             if (panels[i]) panels[i]->set_owner(o);
     }
-    virtual int dirty_child_count() override { return n; }
-    virtual Widget* dirty_child(int i) override { return panels[i]; }
+    // Traversal/damage HANYA menelusuri panel AKTIF.
+    //
+    // Kenapa: panel yang tidak aktif tidak digambar dan tidak bisa diklik, jadi
+    // kontrol di dalamnya tidak boleh menjadi stop fokus keyboard. Kalau semua
+    // panel dilaporkan (perilaku sebelumnya), Tab dari strip akan mendarat di
+    // kontrol halaman LAIN yang sedang tidak terlihat - tombol yang ditekan
+    // lalu mengubah halaman yang salah. Itu bug nyata, bukan teoretis: pada
+    // aplikasi Clock, Tab pertama dari strip mendarat di switch halaman Home
+    // saat pengguna sedang melihat halaman Stopwatch.
+    virtual int dirty_child_count() override { return (active < n && panels[active]) ? 1 : 0; }
+    virtual Widget* dirty_child(int i) override {
+        (void)i;
+        return (active < n) ? panels[active] : 0;
+    }
     // Lebar tab mengikuti JUDUL (padding token), bukan dibagi rata: tab
     // "Umum" tidak boleh selebar tab "Personalization".
     int title_w(int i) const {
@@ -93,6 +112,7 @@ public:
                 mark_area(x, y, w, STRIP_H);   // strip lama + baru
                 active = i;
                 mark_dirty();
+                if (change_cb) change_cb(change_data);
             }
             return;
         }
@@ -114,7 +134,11 @@ public:
         int start = active;
         for (int k = 0; k < n; k++) {
             active = (active + dir + n) % n;
-            if (!tab_disabled[active]) { mark_dirty(); return; }
+            if (!tab_disabled[active]) {
+                mark_dirty();
+                if (change_cb) change_cb(change_data);
+                return;
+            }
         }
         active = start;                   // semua disabled: tak berubah
     }

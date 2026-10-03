@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Clock — kerangka aplikasi.
+
+  Yang dimiliki XML = STRUKTUR + SEMANTIK (UI-18.1):
+    - halaman apa saja dan urutannya (tab),
+    - kontrol apa dan perannya (variant, icon, spacing),
+    - id untuk binding callback dari C++.
+
+  Yang TIDAK ada di sini (dan memang tidak boleh, UI-18.2): warna, radius,
+  jarak px, ukuran font. Semua itu milik tema libui.
+
+  Elemen yang dipakai HANYA yang ada di himpunan tetap (UI-18.7). Widget yang
+  tidak ada padanannya di XML (muka jam analog, busur progres, FtText waktu
+  besar) DISUNTIKKAN secara native ke slot ber-id — pola yang sama dengan
+  tabel/kisi File Manager di <vbox id="view_slot">. Elemen seperti
+  <AnalogClock> akan ditolak inflater, dan itu memang benar: XML menyatakan
+  struktur, bukan daftar widget yang bisa ditambah sesuka hati.
+
+  Ukuran viewport (listview/scrollview) di-set native setelah inflasi karena
+  bergantung pada ukuran window yang baru diketahui saat runtime; di sini hanya
+  nilainya yang wajar sebagai placeholder.
+-->
+<window>
+
+    <!-- Navigasi halaman. Tab adalah pola navigasi toolkit sendiri
+         (UI-15.1): underline aksen untuk tab aktif, tanpa kotak. -->
+    <tab width="900" height="560" id="pages">
+
+        <!-- ===================== Home ===================== -->
+        <page title="Clock">
+            <vbox spacing="lg" id="home_root">
+
+                <label id="greeting" text=""/>
+
+                <!-- Komposisi VERTIKAL (spesifikasi §29 bentuk compact).
+                     Alasannya teknis, bukan selera: VBox/HBox di toolkit ini
+                     hanya MENEMPATKAN anak, tidak meregangkannya (HBox
+                     menetapkan w = lebar isi). Tata letak dua kolom akan
+                     menyusut ke kolom kiri dan menyisakan ruang mati.
+                     Susunan vertikal bekerja penuh dengan primitif yang ada,
+                     dan hierarkinya justru lebih jelas: waktu mendominasi. -->
+                <vbox spacing="xs" id="time_slot"/>
+
+                <vbox spacing="xs" id="meta_slot">
+                    <label id="date_line" text=""/>
+                    <label id="zone_line" text=""/>
+                </vbox>
+
+                <separator id="home_sep"/>
+
+                <vbox spacing="sm" id="analog_slot">
+                    <label id="analog_caption" text="Local time"/>
+                </vbox>
+
+                <switch id="sec_switch" text="Second hand" on="true"/>
+                <label id="home_hint"
+                       text="Time comes from the system clock, shown in the
+                             timezone selected in World Clock."/>
+
+            </vbox>
+        </page>
+
+        <!-- ===================== World Clock ===================== -->
+        <page title="World Clock">
+            <vbox spacing="lg" id="world_root">
+                <label id="world_lead"
+                       text="The same instant, in other timezones."/>
+                <!-- Daftar kota: diisi native (baris kaya) karena isinya data
+                     runtime, sama seperti sidebar File Manager. -->
+                <vbox spacing="sm" id="world_slot"/>
+                <label id="world_hint" text=""/>
+            </vbox>
+        </page>
+
+        <!-- ===================== Stopwatch ===================== -->
+        <page title="Stopwatch">
+            <vbox spacing="lg" id="stopwatch_root">
+                <!-- Waktu besar (FtText) + keadaan berjalan/jeda. -->
+                <vbox spacing="xs" id="sw_display_slot"/>
+                <label id="sw_state" text="Ready"/>
+
+                <hbox spacing="sm">
+                    <button id="sw_start" text="Start" variant="primary"/>
+                    <button id="sw_lap" text="Lap"/>
+                    <button id="sw_reset" text="Reset" variant="tertiary"/>
+                </hbox>
+
+                <separator id="sw_sep"/>
+                <label id="sw_laps_title" text="Laps"/>
+                <listview width="520" height="240" id="sw_laps"/>
+            </vbox>
+        </page>
+
+        <!-- ===================== Timer ===================== -->
+        <page title="Timer">
+            <vbox spacing="lg" id="timer_root">
+
+                <!-- Busur progres + sisa waktu, vertikal (alasan sama dengan
+                     halaman Clock: VBox/HBox tidak meregangkan anak). -->
+                <vbox spacing="sm" id="tm_ring_slot"/>
+                <vbox spacing="xs" id="tm_display_slot"/>
+
+                <label id="tm_state" text="Ready"/>
+
+                <hbox spacing="sm">
+                    <button id="tm_minus" text="" icon="minus"
+                            tooltip="One minute less"/>
+                    <button id="tm_start" text="Start" variant="primary"/>
+                    <button id="tm_plus" text="" icon="plus"
+                            tooltip="One minute more"/>
+                    <button id="tm_reset" text="Reset" variant="tertiary"/>
+                </hbox>
+
+                <label id="tm_hint"
+                       text="Adjust with the plus and minus buttons, then start."/>
+
+            </vbox>
+        </page>
+
+    </tab>
+
+    <statusbar id="status"/>
+
+</window>

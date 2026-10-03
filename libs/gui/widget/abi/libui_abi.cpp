@@ -167,6 +167,11 @@ void ui_button_set_icon(ui_widget_t* widget, int icon) {
     if (b) b->set_icon(icon);
 }
 
+void ui_button_set_text(ui_widget_t* widget, const char* text) {
+    ui::Button* b = reinterpret_cast<ui::Button*>(widget);
+    if (b) b->set_text(text);
+}
+
 void ui_widget_set_enabled(ui_widget_t* widget, int enabled) {
     ui::Widget* w = reinterpret_cast<ui::Widget*>(widget);
     if (!w) return;
@@ -794,6 +799,23 @@ void ui_listview_set_row_disabled(ui_widget_t* widget, int index, int disabled) 
     if (lv) lv->set_row_disabled(index, disabled != 0);
 }
 
+void ui_listview_set_row_title(ui_widget_t* widget, int index,
+                               const char* title) {
+    ui::ListView* lv = reinterpret_cast<ui::ListView*>(widget);
+    if (lv) lv->set_row_title(index, title);
+}
+
+void ui_listview_set_row_description(ui_widget_t* widget, int index,
+                                     const char* description) {
+    ui::ListView* lv = reinterpret_cast<ui::ListView*>(widget);
+    if (lv) lv->set_row_description(index, description);
+}
+
+void ui_listview_clear(ui_widget_t* widget) {
+    ui::ListView* lv = reinterpret_cast<ui::ListView*>(widget);
+    if (lv) lv->clear();
+}
+
 int ui_listview_selected(ui_widget_t* widget) {
     return reinterpret_cast<ui::ListView*>(widget)->selected;
 }
@@ -882,6 +904,28 @@ void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel) {
 void ui_tab_set_enabled(ui_widget_t* widget, int index, int enabled) {
     ui::Tab* t = reinterpret_cast<ui::Tab*>(widget);
     if (t) t->set_tab_enabled(index, enabled);
+}
+
+int ui_tab_active(ui_widget_t* widget) {
+    ui::Tab* t = reinterpret_cast<ui::Tab*>(widget);
+    return t ? t->active : -1;
+}
+
+void ui_tab_set_active(ui_widget_t* widget, int index) {
+    ui::Tab* t = reinterpret_cast<ui::Tab*>(widget);
+    if (!t || index < 0 || index >= t->n || index == t->active) return;
+    // Diam (tanpa change_cb) — pola set_selected widget lain: pemanggil yang
+    // mengubah tahu konsekuensinya, dan callback bisa memicu rekursi.
+    t->mark_area(t->x, t->y, t->w, ui::Tab::STRIP_H);
+    t->active = index;
+    t->mark_dirty();
+}
+
+void ui_tab_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    ui::Tab* t = reinterpret_cast<ui::Tab*>(widget);
+    if (!t) return;
+    t->change_cb = cb;
+    t->change_data = userdata;
 }
 
 // --- Grid (Phase D) ---

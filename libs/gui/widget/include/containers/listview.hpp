@@ -121,11 +121,64 @@ public:
         mark_dirty();
         return idx;
     }
-    void set_row_icon(int i, int icon) {
-        if (i < 0 || i >= n) return;
-        rows[i].icon = icon;
-        mark_dirty();
-    }
+        void set_row_icon(int i, int icon) {
+            if (i < 0 || i >= n) return;
+            rows[i].icon = icon;
+            mark_dirty();
+        }
+        // Ganti judul satu baris di tempat (tanpa membangun ulang daftar).
+        // `items[i]` adalah cermin judul untuk API lama, jadi keduanya
+        // diperbarui bersama - kalau tidak, kode lama akan membaca judul basi.
+        void set_row_title(int i, const char* title) {
+            if (i < 0 || i >= n) return;
+            char* s = _ui_strdup(title ? title : "");
+            if (!s) return;
+            mark_row(i);
+            _ui_free(items[i]);
+            items[i] = s;
+            rows[i].title = s;
+            mark_row(i);
+        }
+        // Deskripsi menentukan TINGGI baris (dua baris bila ada isi), jadi
+        // mengubahnya mengubah total tinggi konten -> batas scroll dihitung
+        // ulang. Tanpa ini, baris terakhir tidak bisa di-scroll ke view.
+        void set_row_description(int i, const char* desc) {
+            if (i < 0 || i >= n) return;
+            bool had = rows[i].description && rows[i].description[0];
+            bool want = desc && desc[0];
+            char* s = want ? _ui_strdup(desc) : 0;
+            if (want && !s) return;
+            mark_row(i);            // tinggi lama (dua baris) ikut dibersihkan
+            _ui_free(rows[i].description);
+            rows[i].description = s;
+            if (had != want) set_scroll_max(content_height());
+            mark_row(i);
+        }
+        // Buang semua baris. Dipakai daftar yang isinya diganti seluruhnya.
+        void clear() {
+            if (n == 0) return;
+            for (int i = 0; i < n; i++) {
+                _ui_free(items[i]);
+                _ui_free(rows[i].description);
+                items[i] = 0;
+                rows[i].title = 0;
+                rows[i].description = 0;
+            }
+            n = 0;
+            selected = -1;
+            hover_row = -1;
+            focus_row = -1;
+            scroll = 0;
+            set_scroll_max(0);
+            mark_dirty();
+        }
+        // Tandai rect SATU baris kotor (bukan seluruh daftar): itu yang membuat
+        // pembaruan satu baris murah.
+        void mark_row(int i) {
+            if (i < 0 || i >= n) return;
+            int o = row_offset(i) - scroll;
+            mark_area(x, y + o, w, row_height(i));
+        }
     void set_row_trailing(int i, int icon) {
         if (i < 0 || i >= n) return;
         rows[i].trailing = icon;

@@ -99,29 +99,16 @@ kyuzen_add_plain_app(kyuzen-viewer
 list(APPEND KYUZEN_APP_TARGETS kyuzen-viewer)
 
 # ---------------------------------------------------------------------------
-# clock — HYBRID: entry is main (apps/app.ld) but it calls snprintf/strlen from
-# the C SDK. So it uses the SDK's CRT and libc.a while keeping ENTRY(main) and
-# the toolkit link set.
+# clock - DIGANTIKAN oleh aplikasi Clock multi-halaman (lihat bagian D, SDK
+# apps). Dulu: jam digital satu-halaman dari apps/clock.c, hybrid
+# ENTRY(main) + CRT C SDK. Sekarang target yang sama dibangun sebagai SDK app
+# C++ supaya bisa memakai libs/time, XML deklaratif, dan font hero.
 #
-# Compiled -O2 (the old rule used CFLAGS_LIB, not CFLAGS_APP) against the SDK
-# headers. Archive order matters: libc.a goes LAST because a static archive
-# only resolves symbols referenced by things already on the command line.
+# Target, manifest, dan entri limine.conf tetap bernama "clock" sehingga
+# launcher dan shell tidak berubah. Sumber lamanya dihapus agar tidak ada dua
+# aplikasi jam yang berbeda di image.
 # ---------------------------------------------------------------------------
-if(KYUZEN_BUILD_LIBC_SDK)
-    kyuzen_add_plain_app(kyuzen-clock
-        SOURCES "${_apps_dir}/clock.c"
-        FLAGS   kyuzen-flags-applib
-        LINKER_SCRIPT "${KYUZEN_SDK_C_LD}"
-        LIBS
-            ${_gui_libs}
-            "${KYUZEN_SDK_C_CRT}"
-            "${KYUZEN_SDK_C_LIB}"
-    )
-    # The app source compiles against the SDK headers, not third_party.
-    add_dependencies(kyuzen-clock kyuzen-sdk-c)
-    target_include_directories(kyuzen-clock-objects SYSTEM PRIVATE "${KYUZEN_SDK_C_INC}")
-    list(APPEND KYUZEN_APP_TARGETS kyuzen-clock)
-endif()
+
 
 # ---------------------------------------------------------------------------
 # fontdemo — toolkit + libs/text + the FreeType archive + embedded font blobs.
@@ -387,6 +374,43 @@ set_target_properties(kyuzen-fileman PROPERTIES OUTPUT_NAME "fileman")
 kyuzen_embed_xml(kyuzen-fileman SOURCES filemanager.xml)
 list(APPEND KYUZEN_APP_TARGETS kyuzen-fileman)
 
+# --- clock --------------------------------------------------------------------
+# Aplikasi Clock multi-halaman (Clock / World Clock / Stopwatch / Timer).
+# Menggantikan apps/clock.c; lihat catatan di bagian A.
+#
+# Font UI di-link EKSPLISIT (kyuzen-widget-uifont) karena toolkit inti sengaja
+# bebas FreeType, dan Clock memuat font hero-nya sendiri untuk waktu besar
+# (apps/clock/bigtime.cpp) sehingga butuh libs/text juga.
+kyuzen_glob(_clock_sources "${_apps_dir}/clock/*.cpp")
+kyuzen_add_sdk_app(kyuzen-clock
+    SOURCES ${_clock_sources}
+    LIBS
+        kyuzen-userlib
+        kyuzen-libgui
+        kyuzen-netutil
+        kyuzen-png
+        kyuzen-color-utils
+        kyuzen-widget-abi
+        kyuzen-widget-src
+        kyuzen-media
+        kyuzen-widget-uifont
+        kyuzen-text-manager
+        kyuzen-text-raster
+        kyuzen-freetype
+        # Waktu sipil + zona waktu (/time.ui): jam dinding dan World Clock.
+        kyuzen-time
+        kyuzen-time-io
+    INCLUDES
+        "${KYUZEN_ROOT}/libs/gui/widget/include"
+        "${KYUZEN_ROOT}/libs/text/include"
+        "${KYUZEN_ROOT}/libs/time/include"
+)
+set_target_properties(kyuzen-clock PROPERTIES OUTPUT_NAME "clock")
+# Struktur UI deklaratif di ui/xml/clock.xml (UI-18.4: dokumen nyata di
+# ui/xml/, bukan string literal di dalam .cpp).
+kyuzen_embed_xml(kyuzen-clock SOURCES clock.xml)
+list(APPEND KYUZEN_APP_TARGETS kyuzen-clock)
+
 # --- settings ----------------------------------------------------------------
 # Order: ST_OBJS, USERAPP_LIB_OBJS, TEXT_USER_OBJS, FT archive, then the same
 # `ls`-sorted toolkit globs (colour first, then widget).
@@ -528,7 +552,7 @@ endif() # KYUZEN_BUILD_LIBC_SDK
 # dependency are wired up by kyuzen_add_sdk_app itself.
 # ===========================================================================
 if(KYUZEN_BUILD_LIBC_SDK)
-    foreach(_t kyuzen-desktop kyuzen-fileman kyuzen-settings kyuzen-taskmgr kyuzen-browser)
+    foreach(_t kyuzen-desktop kyuzen-fileman kyuzen-settings kyuzen-taskmgr kyuzen-browser kyuzen-clock)
         if(TARGET ${_t})
             kyuzen_verify_user_elf(${_t})
         endif()

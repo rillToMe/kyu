@@ -1192,6 +1192,64 @@ int main(void) {
         }
     }
 
+    // ==========================================================
+    // J. DOKUMEN SUNGGUHAN Clock (ui/xml/clock.xml).
+    //
+    //    Sama seperti bagian I: menguji file yang BENAR-BENAR dikirim
+    //    aplikasi. Yang penting di sini bukan hanya "parse sukses", tapi
+    //    bahwa SETIAP id yang di-bind aplikasi ADA - id yang hilang berarti
+    //    aplikasi memasang callback ke widget null dan jam tampil kosong.
+    //
+    //    Catatan desain: muka jam analog dan busur progres TIDAK ada di XML
+    //    (mereka tidak ada di himpunan elemen tetap, UI-18.7). Keduanya
+    //    disuntikkan native ke slot ber-id, jadi yang diuji di sini adalah
+    //    slot-nya.
+    // ==========================================================
+    {
+        ui_xml_doc_t* d = pd(ui_xml_clock, &e);
+        check(d != 0, "J01: clock.xml parse");
+        if (d) {
+            ui_window_t* win = ui_window_create(GW_W, GW_H);
+            ui_xml_ctx_t* cx = ui_xml_ctx_create(win);
+            int r = ui_xml_inflate(cx, d, &e);
+            check(r == 1, "J02: clock.xml inflate");
+            // Statusbar jadi pita bawah (placement by kind, UI-18.11).
+            ui::Window* w = (ui::Window*)win;
+            check(w->n_bbars == 1, "J03: statusbar clock di dasar window");
+            static const char* need[] = {
+                "pages",
+                // Home
+                "home_root", "greeting", "time_slot", "meta_slot",
+                "date_line", "zone_line", "home_sep", "analog_slot",
+                "analog_caption", "sec_switch", "home_hint",
+                // World
+                "world_root", "world_lead", "world_slot", "world_hint",
+                // Stopwatch
+                "stopwatch_root", "sw_display_slot", "sw_state",
+                "sw_start", "sw_lap", "sw_reset", "sw_sep",
+                "sw_laps_title", "sw_laps",
+                // Timer
+                "timer_root", "tm_ring_slot", "tm_display_slot", "tm_state",
+                "tm_minus", "tm_start", "tm_plus", "tm_reset", "tm_hint",
+                // chrome
+                "status", 0
+            };
+            int missing = 0;
+            for (int i = 0; need[i]; i++)
+                if (!ui_xml_find(cx, need[i])) missing++;
+            check(missing == 0, "J04: semua id yang dibutuhkan Clock ada");
+            // Tab harus memuat tepat 4 halaman (Clock/World/Stopwatch/Timer).
+            ui_widget_t* tabs = ui_xml_find(cx, "pages");
+            check(tabs != 0 && ((ui::Tab*)tabs)->n == 4,
+                  "J05: clock.xml punya 4 halaman");
+            check(ui_tab_active(tabs) == 0, "J06: halaman awal = Clock");
+            ui_xml_ctx_destroy(cx);
+            ui_xml_doc_destroy(d);
+            ui_window_destroy(win);
+            check(balanced(), "J07: clock.xml seimbang");
+        }
+    }
+
     printf("XML: %d PASS, %d FAIL | allocs=%d frees=%d\n", PASS, FAIL, g_allocs, g_frees);
     return FAIL ? 1 : 0;
 }

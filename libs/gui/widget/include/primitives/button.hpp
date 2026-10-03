@@ -51,6 +51,19 @@ public:
         apply_metrics();
         mark_dirty();
     }
+    // Ganti label. Ukuran dihitung ULANG (lebar tombol mengikuti isi, UI-12.2),
+    // jadi tombol yang berubah "Start" -> "Pause" tidak menyisakan ruang salah.
+    void set_text(const char* t) {
+        char* n = _ui_strdup(t ? t : "");
+        if (!n) return;
+        // Ukuran berubah -> area lama DAN baru harus digambar ulang; tandai
+        // keduanya sebelum menimpa rect (mark_dirty memakai x/y/w/h saat ini).
+        mark_dirty();
+        _ui_free(text);
+        text = n;
+        apply_metrics();
+        mark_dirty();
+    }
     // Ukuran dari isi: teks + padding token, atau persegi untuk tombol ikon.
     // Memakai Metrics() langsung (bukan Theme(): palet tidak dibutuhkan untuk
     // geometri, dan membangun Theme penuh di sini hanya membuang kerja).

@@ -428,6 +428,21 @@ if(EXISTS "${KYUZEN_UNIT_DIR}/time_test.c")
     )
 endif()
 
+# --- clock model: stopwatch/timer state machines ---
+# Murni logika, tanpa UI: membuktikan "tidak melenceng" (no drift) memakai jam
+# palsu dengan langkah tidak beraturan. Kalau implementasinya menambah elapsed
+# per frame (cara yang salah), test ini gagal.
+if(EXISTS "${KYUZEN_UNIT_DIR}/clock_model_test.cpp")
+    kyuzen_host_test(test-clock-model
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/clock_model_test.cpp"
+            "${KYUZEN_ROOT}/apps/clock/model.cpp"
+        INCLUDES
+            "${KYUZEN_ROOT}/apps/clock"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
 # --- Lexbor freestanding archive smoke test ---
 if(EXISTS "${KYUZEN_UNIT_DIR}/lexbor_html_test.c")
     kyuzen_host_test(test-lexbor-host
@@ -501,10 +516,11 @@ foreach(_t IN ITEMS theme xml fileman_widgets owner)
                 -O1 -Wall
         )
         # Test XML memakai DOKUMEN SUNGGUHAN dari ui/xml/, bukan salinan
-        # string di dalam test — supaya dokumen asli dan test tidak bisa
+        # string di dalam test - supaya dokumen asli dan test tidak bisa
         # berbeda diam-diam (drift).
         if(_t STREQUAL "xml")
-            kyuzen_embed_xml(test-libui-xml SOURCES xml_demo.xml filemanager.xml)
+            kyuzen_embed_xml(test-libui-xml
+                SOURCES xml_demo.xml filemanager.xml clock.xml)
         endif()
     endif()
 endforeach()

@@ -251,6 +251,10 @@ void ui_button_set_variant(ui_widget_t* widget, int variant);
 // Ikon pada tombol (aditif). icon = nilai UI_ICON_* (libui.h). 0 = hapus ikon.
 // Tombol tanpa teks + berikon menjadi tombol ikon persegi (ukuran kontrol).
 void ui_button_set_icon(ui_widget_t* widget, int icon);
+// Ganti teks tombol (aditif). Ukuran tombol dihitung ULANG dari teks baru
+// (lebar mengikuti isi, UI-12.2) dan hanya tombol itu yang ditandai kotor.
+// Dipakai tombol yang labelnya mencerminkan keadaan (Start <-> Pause).
+void ui_button_set_text(ui_widget_t* widget, const char* text);
 // Phase B: enabled generik per-widget (aditif, default enabled). Disabled =
 // digambar redup + tak menerima hover/klik/fokus; fokus yang sedang dipegang
 // dilepas. Berlaku untuk Button/TextBox/CheckBox/Slider (widget lain
@@ -504,6 +508,18 @@ int  ui_listview_add_row(ui_widget_t* widget, const char* title,
 void ui_listview_set_row_icon(ui_widget_t* widget, int index, int icon);
 void ui_listview_set_row_trailing(ui_widget_t* widget, int index, int icon);
 void ui_listview_set_row_disabled(ui_widget_t* widget, int index, int disabled);
+// Teks baris yang diperbarui di tempat (aditif): aplikasi yang menampilkan
+// data berubah (jam dunia, daftar putaran) memperbarui isinya tanpa membangun
+// ulang daftar. Setiap setter menyalin teksnya dan menandai HANYA baris itu
+// kotor, jadi memperbarui satu baris tidak menggambar ulang seluruh daftar.
+// index di luar rentang → tanpa efek.
+void ui_listview_set_row_title(ui_widget_t* widget, int index,
+                               const char* title);
+void ui_listview_set_row_description(ui_widget_t* widget, int index,
+                                     const char* description);
+// Hapus semua baris (aditif). Dipakai daftar yang isinya diganti seluruhnya
+// (mis. daftar putaran yang direset).
+void ui_listview_clear(ui_widget_t* widget);
 int ui_listview_selected(ui_widget_t* widget);   // index item terpilih, -1 = tak ada
 // Pilih item dari kode (mis. viewer membuka berkas dari Explorer); baris
 // bergulir ke dalam view bila di luar. Index di luar rentang → tanpa efek.
@@ -580,6 +596,15 @@ void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel);
 // Phase C: judul disabled (tak bisa klik/panah/fokus, tampil redup).
 // Index di luar rentang → tanpa efek.
 void ui_tab_set_enabled(ui_widget_t* widget, int index, int enabled);
+// Index tab aktif (0-based). -1 bila tab kosong.
+int  ui_tab_active(ui_widget_t* widget);
+// Pilih tab aktif dari kode (tanpa memanggil change_cb, pola set_selected
+// lain di toolkit). Index di luar rentang → tanpa efek.
+void ui_tab_set_active(ui_widget_t* widget, int index);
+// Tab aktif berubah (klik atau panah kiri/kanan). Aplikasi yang menampilkan
+// data berubah memerlukannya supaya tidak memperbarui halaman yang
+// tersembunyi.
+void ui_tab_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 
 // --- Grid (Phase D) ---
 // Kontainer baris × kolom (subclass Layout: ownership/dirty/traversal sama).
