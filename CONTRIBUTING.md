@@ -13,6 +13,12 @@ For the short binding rules on commits, branches, and pull requests, read
 architecture, error handling, memory safety, synchronization, documentation —
 read [`.rules/`](.rules/RULES.md). Both sets are binding.
 
+If you are changing anything under `libs/gui/widget/`, `include/libui*.h`,
+`apps/`, `system/desktop/`, or `ui/xml/`, also read
+[`.rules/UI.md`](.rules/UI.md). It is binding too: the design-system rules are
+numbered (`UI-n.m`) so a review comment can cite one, and a violation is a bug
+even if it compiles and looks fine on screen.
+
 ## Contents
 
 - [Before You Start](#before-you-start)

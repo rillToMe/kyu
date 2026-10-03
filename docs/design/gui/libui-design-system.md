@@ -1,5 +1,9 @@
 # KyuzenOS Design System (libui)
 
+> **Aturan yang MENGIKAT ada di [`.rules/UI.md`](../../../.rules/UI.md).**
+> Dokumen ini panduan cara-pakai dan penjelasan; `UI.md` yang normatif.
+> Bila keduanya berbeda, `UI.md` yang menang.
+>
 > Dokumen ini untuk **penulis aplikasi**. Ia menjelaskan bahasa visual KyuzenOS
 > dan cara memakainya. Untuk riwayat audit & keputusan arsitektur, lihat
 > `libui-redesign-report.md` di folder yang sama.
@@ -411,6 +415,11 @@ widget produksi yang sama, jadi ia selalu menunjukkan tampilan yang benar.
 
 ## 10. Checklist sebelum merge
 
+Checklist lengkap (dan yang mengikat) ada di
+[`.rules/UI.md` §24](../../../.rules/UI.md) dan
+[`.rules/REVIEW_CHECKLIST.md`](../../../.rules/REVIEW_CHECKLIST.md).
+Ringkasnya:
+
 - [ ] Tidak ada warna/radius/jarak/ukuran font hardcoded di widget atau app.
 - [ ] Semua state relevan terlihat: normal, hover, pressed, focused, disabled.
 - [ ] Fokus keyboard terlihat dan urutannya masuk akal (Tab/Shift+Tab).
@@ -418,3 +427,17 @@ widget produksi yang sama, jadi ia selalu menunjukkan tampilan yang benar.
 - [ ] Kedua mode tema diperiksa (terang **dan** gelap).
 - [ ] Biaya render tidak melampaui anggaran (`ctest -R test-libui-perf-qa`).
 - [ ] `ctest --test-dir build/host` hijau.
+
+## 11. Penyimpangan yang diketahui
+
+Ada beberapa pelanggaran nyata terhadap aturan di atas yang BELUM diperbaiki.
+Daftarnya di [`.rules/UI.md` §25](../../../.rules/UI.md) — dibaca supaya tidak
+dikira preseden. Yang paling sering tersandung:
+
+- `textedit.hpp` masih menaruh warna prompt terminal hardcoded.
+- Inflater XML masih menerima integer mentah untuk `spacing` dan `<grid padding>`.
+- `system/desktop/theme.hpp` menyimpan konstanta yang MENCERMIN nilai libui
+  (`== libui surface_hover`, dst.) — kalau token libui berubah, cermin itu wajib
+  ikut berubah di commit yang sama.
+- `TypeRole::ft_size_px`/`ft_weight` baru niat, belum diterapkan toolkit.
+- Baru Settings dan File Manager yang memanggil `ui::uifont_install()`.

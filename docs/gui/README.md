@@ -28,7 +28,8 @@ radii, or type sizes themselves.
 
 | Document | Description |
 | --- | --- |
-| [Design System](../design/gui/libui-design-system.md) | **Start here.** Tokens, states, icons, XML rules, how to build a page |
+| [UI Rules](../../.rules/UI.md) | **Binding.** The normative design-system rules (`UI-n.m`). A violation is a bug |
+| [Design System](../design/gui/libui-design-system.md) | How to build a page: tokens, states, icons, XML, recipes |
 | [Redesign Audit & Report](../design/gui/libui-redesign-report.md) | What was wrong before, what changed, what was measured and validated |
 | [Theme System](../design/gui/ui-theme-system.md) | Mode × accent model and `settings.ui` persistence |
 

@@ -2,6 +2,67 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Binding Rules (read before changing anything)
+
+`.rules/` holds the mandatory development rules. They are **binding**: violating
+one is a bug, not a style disagreement. This file (`CLAUDE.md`) is orientation -
+when the two disagree, `.rules/` wins.
+
+Read the file that matches what you are about to touch. Do not read all of them
+up front; pick by task.
+
+| File | Read it when you are about to... |
+|---|---|
+| [`RULES.md`](.rules/RULES.md) | start any task - entry point, general principles, AI agent rules |
+| [`STYLE_GUIDE.md`](.rules/STYLE_GUIDE.md) | write or refactor code - clean code, comments (keep them short; no WHAT, only non-obvious WHY), naming, performance |
+| [`ARCHITECTURE.md`](.rules/ARCHITECTURE.md) | touch kernel APIs, drivers, error handling, memory safety, synchronization, logging, or refactor an existing subsystem |
+| [`UI.md`](.rules/UI.md) | change anything under `libs/gui/widget/`, `include/libui*.h`, `apps/`, `system/desktop/`, or `ui/xml/` |
+| [`BUILD.md`](.rules/BUILD.md) | finish a task - build verification, testing, the wrong-clang trap |
+| [`DOCUMENTATION.md`](.rules/DOCUMENTATION.md) | change behavior - what docs must be updated in the same commit |
+| [`REVIEW_CHECKLIST.md`](.rules/REVIEW_CHECKLIST.md) | declare a task done - completion checklist + the UI checklist |
+
+Commit, branch, and pull request rules live at the repository root in
+[`RULES.md`](RULES.md), not in `.rules/`.
+
+### Auditing compliance (how to check, not just read)
+
+The rules are written to be checkable. Before claiming a UI change is done,
+grep for the anti-patterns instead of eyeballing the screen. Run these from the
+repo root; every command below is verified to produce meaningful output.
+
+```sh
+# Hardcoded colors outside the token owner. Expected hits ONLY in:
+#   theme.hpp      - the token table itself (it owns the palette)
+#   xml_inflate.cpp - parses theme-custom from XML
+#   textedit.hpp:54 - KNOWN deviation UI-25.1 (terminal prompt color)
+grep -rn 'color_hex(\|COLOR_HEX(' libs/gui/widget/src libs/gui/widget/include \
+  | grep -v '/theme/'
+
+# Visual attributes in XML. Must be EMPTY - the inflater rejects them (UI-18.2).
+grep -rn 'padding=\|radius=\|shadow=\|color=' ui/xml/
+
+# Off-scale spacing in XML. Only spacing="0" (collapse) is legitimate (UI-3.4).
+grep -rn 'spacing="' ui/xml/
+
+# Widgets branching on theme mode to pick a color. Must be EMPTY (UI-2.4);
+# the only legitimate hits are ABI parsing and settings deserialization.
+grep -rn 'UI_THEME_DARK\|UI_THEME_LIGHT' libs/gui/widget/src libs/gui/widget/include \
+  | grep -v 'theme.hpp\|colors.hpp\|xml_inflate\|window.hpp'
+
+# Gradients in new UI. Must be EMPTY outside painter.hpp itself (UI-10.4).
+grep -rn 'vgrad\|rrect_grad' libs/gui/widget/src libs/gui/widget/include \
+  | grep -v 'painter.hpp'
+```
+
+`ui/xml/` must contain real files that the build embeds (`kyuzen_embed_xml` in
+`apps/CMakeLists.txt`). An XML document that only exists as a string literal in
+a `.cpp` violates UI-18.4 - check with `grep -rn 'ui_xml_parse' apps/` and
+confirm the argument is a generated `ui_xml_*` symbol, not an inline string.
+
+`.rules/UI.md` §25 lists the KNOWN, current deviations. If a grep above hits one
+of those, it is a known bug, not a precedent - do not copy it, and do not
+"fix" it as a drive-by in an unrelated commit.
+
 ## Language Policy (mandatory)
 
 Development is restricted to **C, C++, and Rust** — the languages already used in this repo. Do not introduce other languages or compilers.
@@ -64,6 +125,22 @@ bug in the kernel or library code shows up here:
 ./build.sh test
 ./build.sh test && ctest --test-dir build/host -R test-color   # a single test
 ```
+
+**Running `ctest` directly fails with `0xc0000135` (DLL not found) unless
+`E:\Tools\msys2\clang64\bin` is on `PATH`.** The host test binaries link against
+clang64 runtime DLLs, so a bare `ctest` from a plain PowerShell window reports
+`BAD_COMMAND` or `Exit code 0xc0000135` for every test - that is a missing DLL,
+NOT a test failure, and NOT a reason to disable a test. Either go through
+`./build.sh test` (which sets PATH for you) or prefix PATH yourself:
+
+```powershell
+$env:PATH = "E:\Tools\msys2\clang64\bin;E:\Tools\msys2\usr\bin;" + $env:PATH
+& "E:\Tools\msys2\clang64\bin\ctest.exe" --test-dir build/host -R libui
+```
+
+Calling `ctest` from inside `bash -lc` also fails differently: MSYS rewrites the
+absolute test path and you get `BAD_COMMAND` on every test. Use native
+PowerShell for `ctest`, or use `./build.sh test`.
 
 Most other tests run inside QEMU as kernel tasks.
 
@@ -157,6 +234,8 @@ Modules (all zero-dynamic-allocation, no locks — the heap and scheduler are no
 - Command lanes: `./build.sh run` (window + `serial.log`), `./build.sh run-serial` (COM1 on stdio), `./build.sh run-wd` (COM1 to `serial.log`). `serial.log` survives the run — read its tail after a freeze.
 - `ctest --test-dir build/host -R test-desktop` compiles `tests/host/unit/desktop_manifest_test.cpp`, which builds `system/desktop/*.cpp` with the FS/syscalls stubbed: it covers `discover_apps()`/manifests and the crash-notice lifecycle (card closes via click-inside (consumed, spawns the File Manager), click-outside (not consumed) or timeout; `notice_close()` is idempotent; `NOTIF_MS` stays human-scale). Keep this target wired up: the test silently failed to **link** for a while after `print`/`print_num`/`sys_crash_notice`/`gui_flush` entered `desktop.c`, and nothing noticed because the file had no build rule — using a new syscall in `desktop.c` means adding its stub here.
 - **Widget toolkit ada di `libs/gui/widget/`** (dulu satu `apps/libui.cpp` 3.798 baris — lihat `DOCUMENTATION/design/widget-split.md`): `include/<layer>/` + `src/<layer>/` per layer, `core` (Theme/Painter/Widget) ← `primitives`/`layout` ← `containers`/`chrome`/`dialog` ← `window` (composition root) ← `abi/libui_abi.cpp` (satu-satunya tempat yang `reinterpret_cast` antara handle `ui_*` dan objek `ui::*`). Dua invarian wajib saat menambah widget: (a) layer bawah **tidak pernah** meng-include `window/window.hpp` — cukup `class Window;`, hanya `.cpp` yang benar-benar memanggil method `Window` yang meng-include-nya; (b) `operator new/delete` + `__cxa_pure_virtual` hanya boleh ada di SATU file, `src/runtime/runtime.cpp` (ODR), dan tidak ada global/static object dengan constructor non-trivial (ELF loader tidak menjalankan `.init_array`). `runtime/platform.hpp` adalah satu-satunya tempat yang membungkus `userlib.h`/`libgui.h`/libs-color dengan `extern "C"` (header-header itu tidak punya guard sendiri). Build: `apps/Makefile` mengompilasi `libs/gui/widget/src/*/*.cpp` + `abi/` jadi objek terpisah di `libs/gui/widget/build/` (di-gitignore) lalu link via `$(LIBUI_OBJ)`; test host nge-link sumber yang sama.
+- **Aturan UI MENGIKAT ada di [`.rules/UI.md`](.rules/UI.md)** (bernomor `UI-n.m`, bahasa Inggris, "melanggar = bug"). Wajib dibaca sebelum menyentuh apa pun di `libs/gui/widget/`, `include/libui*.h`, `apps/`, `system/desktop/`, atau `ui/xml/`. Ringkasnya: semua nilai visual datang dari token di `theme/` (tidak ada warna/radius/jarak/ukuran font hardcoded di widget maupun app); XML hanya struktur & semantik (atribut visual `padding`/`radius`/`color`/`shadow` DITOLAK inflater); bayangan hanya `ELEV_POPUP`/`ELEV_DIALOG`; hover/press tidak dianimasikan; baris daftar tidak dibungkus kartu; maksimal satu tombol primary per permukaan; emoji bukan ikon. Checklist PR-nya di `.rules/UI.md` §24 dan `.rules/REVIEW_CHECKLIST.md`. Panduan cara-pakai (Indonesia) di `docs/design/gui/libui-design-system.md`; kalau berbeda, `UI.md` yang menang.
+- **Teks harus IDEMPOTEN saat digambar ulang.** `kz_text_draw()` (libs/text) mengomposit coverage ke piksel yang SUDAH ada, jadi menggambar string yang sama dua kali membuat tepi antialias makin gelap - gejalanya "teks terlihat bold/membesar sampai kursor mendekat" (hover me-repaint latar dan mereset tinta). Pakai `kz_text_draw_on()` untuk apa pun yang bisa di-repaint, dan widget yang menggambar latarnya sendiri WAJIB memakai `Painter::surface_rect()` (bukan `rect()`) supaya teks dikomposit terhadap bg yang benar. Kontainer yang butuh anaknya ter-layout dulu memanggil `settle()` (arrange saja) - JANGAN menggambar anak dua kali per frame sebagai cara memicu layout; itulah yang dulu mengubah bug ini jadi kelihatan. Dikunci `tests/host/unit/text_test.c` (blok 3b).
 - **TextEdit is the only editor widget** (`libs/gui/widget/include/editor/textedit.hpp`): notepad and terminal share it. Two rules when extending it: (a) **every text mutation goes through `apply_replace()`** — it is the single place that edits the buffer, records the undo op and fires the change callback, so typing/backspace/delete/paste/replace-all/undo/redo can never disagree about history or leave the modified flag stale; (b) **display rows are not document lines** once word wrap is on (`row_limit`/`disp_rows`/`disp_pos`/`disp_to_idx`) so scrolling, click-to-place-caret and the caret itself must all use those helpers — with `wrap == false` they collapse to the old line-based behaviour, which is what keeps the terminal/readonly path byte-identical. Undo is **operation-based** (del/ins pair per edit) instead of whole-buffer snapshots: 60 keystrokes = 60 undo steps without 60 copies of an 8K buffer. `ui_textedit_set_text()` clears the undo history on purpose (loading a file starts a new document). Selection comes from the widget (mouse drag + Shift+arrows/Home/End/PgUp/PgDn); cut/copy/paste/select-all/undo/redo are app-level calls, because window shortcuts are matched **before** widget keys — that is also why notepad's Ctrl+A is Select All while the widget still has its Emacs Ctrl+A/Ctrl+E line-start/end for the terminal.
 - `ctest --test-dir build/host -R test-textedit` links the toolkit sources (`libs/gui/widget/src/*/*.cpp` + `libs/gui/widget/abi/libui_abi.cpp`) as-is against 20 stubbed symbols (syscalls + libgui + png) and drives the editor through the public C API: undo/redo (multi-step, redo branch dropped on a new edit), selection + clipboard, find/replace_all (longer/shorter replacement), word-wrap row arithmetic (10-column widget: 26 chars = 3 rows, break at the space, over-long word still cut), readonly refusals and the 8K cap. **This is the place to test editor logic** — QEMU/click testing can confirm a button works, but cannot cheaply check that wrap math or the undo ring is right.
 - `ctest --test-dir build/host -R test-panic` compiles `kernel/panic/*.c` (orchestrator + draw + hw + explain), `panic_log.c`, `crashdump.c` and `drivers/acpi.c` with `-DPANIC_HOST_TEST` (privileged `cli`/`hlt`/CR2/CR3/in-out stubbed, clock = `g_panic_test_ms`, keys = `g_panic_test_key`) and mocks the framebuffer + ATA disk. Covered: fault verdicts, lockdown, "no auto-reboot" (loop exits only on a key), user-fault safety (no user-memory reads), draw-before-persist ordering, `[R]`/`[S]` (and that D no longer triggers anything), mouse-byte-does-not-block-key regression, crash-report publishing (file created / idempotent / no garbage file) plus its desktop-notice record (pending 0 before a publish, 1 after, with the path/task/vector fields filled) over a mocked KyuzenFS (incl. release-code/`0xE0`-prefix handling), RAM-log round-trip, crashdump header/payload/checksum + recursion guard, and the pure FADT parser (rev 1.0 / bad checksum / bogus port rejected). Layout regressions: build it manually and run `./test/panic_test --dump` — the framebuffer is decoded back into text with the real `font8x16`, so the BSOD hierarchy/alignment is visible without booting QEMU.

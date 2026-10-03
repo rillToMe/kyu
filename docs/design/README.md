@@ -34,6 +34,9 @@ implementation wins.
 
 | Document | Description |
 | --- | --- |
+| [UI Rules](../../.rules/UI.md) | **Binding.** Design-system rules: tokens, states, XML, rendering correctness, UI performance |
+| [Design System](gui/libui-design-system.md) | How to build a page with libui: tokens, states, icons, XML, recipes |
+| [libui Redesign Report](gui/libui-redesign-report.md) | Audit of the previous UI architecture and what replaced it |
 | [Widget Split](widget-split.md) | The layered structure of the widget toolkit |
 | [UI Theme System](gui/ui-theme-system.md) | Theme representation and application |
 | [Color API Audit](gui/color-api-audit.md) | Audit of the color API surface |

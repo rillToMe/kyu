@@ -10,6 +10,7 @@ This is the entry-point file. Detailed rules live in the other files under `.rul
 
 - `STYLE_GUIDE.md` — clean code, comments, naming
 - `ARCHITECTURE.md` — architecture, kernel APIs, drivers, error handling, memory safety, synchronization, logging, performance
+- `UI.md` — design system, theme tokens, widget states, XML, rendering correctness, UI performance
 - `BUILD.md` — build verification & testing
 - `DOCUMENTATION.md` — documentation requirements
 - `../RULES.md` — commit, branch, and pull request rules (repository root)
