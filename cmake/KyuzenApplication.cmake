@@ -450,8 +450,9 @@ endfunction()
 #   - entry point must be _start
 #   - no unresolved symbols (a missing archive member)
 #   - no exception/thread runtime pulled in (there is none on this target)
-#   - no SSE / x87 instructions (the kernel never enables CR4.OSFXSR, so any
-#     such instruction faults at runtime)
+#   - no SSE / x87 instructions (the whole OS is built -mno-sse -msoft-float,
+#     so the generated code stays free of FPU state that a context switch
+#     might have replaced)
 #
 # Implemented as a CMake script so it works without grep/sed/bash.
 # ---------------------------------------------------------------------------

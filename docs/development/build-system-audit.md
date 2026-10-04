@@ -179,8 +179,12 @@ bare-metal ABI. `-mcmodel=kernel` is added on top. This matters for CMake:
 
 ### 3.3 `-mno-sse` is load-bearing across the whole OS
 
-The kernel never sets `CR4.OSFXSR`, so **any SSE instruction faults**. Every
-user-space component inherits `-mno-sse -mno-sse2 -mno-mmx -msoft-float`:
+SSE is usable at runtime since ARCH-10 sets `CR4.OSFXSR` and `CR4.OSXMMEXCPT`
+(`kernel/sched/fpu.c`) with per-task `FXSAVE64` state, so an SSE instruction no
+longer faults. The flag is still load-bearing for a different reason: with
+`-mno-sse` no component's generated code touches FPU state at all, so nothing
+depends on state that a context switch might have replaced. Every user-space
+component inherits `-mno-sse -mno-sse2 -mno-mmx -msoft-float`:
 
 - kernel `CFLAGS`
 - `apps/Makefile` `CFLAGS_COMMON`

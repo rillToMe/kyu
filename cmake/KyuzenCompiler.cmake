@@ -29,8 +29,11 @@
 # Adding them would be harmless but redundant.
 #
 # NOTE on -mno-sse / -msoft-float: these are CORRECTNESS flags, not tuning.
-# The kernel never sets CR4.OSFXSR, so any SSE instruction faults. Every flag
-# set below must keep them (docs/development/build-system-audit.md §3.3).
+# SSE is usable at runtime since ARCH-10 sets CR4.OSFXSR (kernel/sched/fpu.c),
+# but the kernel is still built without SSE on purpose: no SSE instruction is
+# generated, so the code stays deterministic and never depends on FPU state a
+# context switch might have replaced. Every flag set below must keep them
+# (docs/development/build-system-audit.md §3.3).
 # ============================================================================
 
 include_guard(GLOBAL)

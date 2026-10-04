@@ -82,9 +82,9 @@ endif()
 # ---------------------------------------------------------------------------
 # 4. No SSE / x87 instructions.
 #
-# The kernel never sets CR4.OSFXSR, so any SSE instruction faults with #UD at
-# runtime. Every component is built -mno-sse -msoft-float precisely to prevent
-# this. Checking the disassembly catches a flag that silently got dropped.
+# Every component is built -mno-sse -msoft-float, so no component's generated
+# code depends on FPU state that a context switch might have replaced.
+# Checking the disassembly catches a flag that silently got dropped.
 # ---------------------------------------------------------------------------
 execute_process(
     COMMAND ${KYUZEN_OBJDUMP} -d "${ELF}"
@@ -100,7 +100,8 @@ string(REGEX MATCH "%(xmm|ymm|zmm)[0-9]+" sse_hit "${objdump_out}")
 if(sse_hit)
     message(FATAL_ERROR
         "verify_user_elf: ${ELF} contains SSE instructions (${sse_hit}) — "
-        "the kernel does not enable CR4.OSFXSR, so this would fault at runtime")
+        "the OS is built -mno-sse -msoft-float, so this component's FPU state "
+        "would not survive a context switch")
 endif()
 
 string(REGEX MATCH
