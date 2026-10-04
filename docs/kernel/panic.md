@@ -28,6 +28,43 @@ explicit `panic()` calls. Once entered:
 - A nested-panic guard prevents recursive panics from corrupting the display.
 - The compositor stops and hides the cursor (`compositor_panic_cursor_off`).
 
+### Ring-3 faults do not panic
+
+A fault from **CPL=3** belonging to a `TASK_KIND_SPAWNED` task **kills that task
+only**. `kz_try_kill_faulting_user_task()` runs at the very top of
+`exception_handler()` — before any panic state is touched — and calls
+`proc_exit_kill()`. The kernel, the desktop, and every other task keep running.
+
+This is checked **first**, so one application segfaulting cannot take down the
+system. The event is still recorded on COM1 so a crashing application can be
+diagnosed without reproducing it under a debugger:
+
+```text
+[FAULT] task 7 "browser" vektor=14 err=0x6 rip=0x0000000004001A2F -> task dibunuh, kernel lanjut
+```
+
+**Still panics, deliberately:**
+
+| Condition | Why |
+| --- | --- |
+| CPL=0 | A kernel fault is a kernel bug; nothing can be safely recovered |
+| NMI (2), `#DF` (8), `#MC` (18) | Machine conditions, not process faults |
+| No user task active | Nothing to blame; the fault must not be swallowed |
+
+This is safe because the faulting task is RUNNING on this CPU (it cannot run
+elsewhere), a user-mode path holds **zero** kernel locks when it enters ring 0
+(so the exit path cannot self-deadlock), and `proc_exit_kill()` performs a single
+authoritative transition. See [Arch Hardening](arch-hardening.md).
+
+### IST — faults that need their own stack
+
+`#DF`, NMI, and `#MC` run on dedicated IST stacks, because they may fire when
+the current stack is already unusable. Without IST, a kernel stack overflow
+produces `#PF` (overflow) → `#DF` (no stack for the frame) → **triple fault:
+reset with no BSOD, no crashdump, no log**. Task stacks additionally have a
+guard page, so an overflow faults on the first instruction that touches it with
+`CR2` pointing exactly at the guard.
+
 ### No-interrupt panic path
 
 In panic mode, the system must still be able to respond to keyboard input
@@ -35,10 +72,25 @@ In panic mode, the system must still be able to respond to keyboard input
 machinery, which may be the very thing that failed. The panic path therefore
 polls hardware directly:
 
-- PIT channel 2 (PS/2) polling for input
-- Direct framebuffer access via the scanout surface
+- **PIT channel 2** as a rate generator (~100 Hz) — programmed with `0xB6`
+  (channel 2, lobyte/hibyte, mode 3), with the gate enabled via port `0x61`.
+  Channel 2 is used because channel 0 is the IRQ0 source and the panic path has
+  already executed `cli`; channel 2 produces no IRQ and its output level can be
+  polled from port `0x61`. Time is derived from level transitions
+  (`PIT2_MS_PER_EDGE` = 5 ms).
+- **PS/2 keyboard** polled directly for the operator's keypress.
+- Direct framebuffer access via the scanout surface.
 
 Panic mode performs **no auto-reboot** by design; it waits for the operator.
+
+> **Note on channel 2 sharing.** The panic path programs PIT channel 2 as a
+> rate generator and enables its gate via port `0x61`. LAPIC calibration must
+> therefore **not** use channel 2 — an early revision did, and two different
+> measurement approaches disagreed by 9× with no way to tell which was right.
+> Calibration reads **channel 0** instead (see
+> [Arch Hardening](arch-hardening.md)). The two do not conflict in practice:
+> calibration runs once at boot, and the panic path reprograms channel 2 only
+> after a fault.
 
 ## BSOD Display
 

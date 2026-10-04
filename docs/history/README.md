@@ -34,6 +34,7 @@ repository history and the historical documents here:
 6. **Networking and browser** — lwIP integration, the e1000 driver, the socket
    layer, DNS, and a from-scratch browser with BearSSL TLS.
 7. **Acceleration** — the VirtIO-GPU and Intel integrated GPU backends.
+8. **Architecture-layer hardening** — an audit of `arch/x86/` for production readiness found 15 issues (interrupt entry not normalizing `RFLAGS`, no IST, an incomplete IDT, ring-3 faults killing the whole system, no W^X). 12 were fixed. See [`milestones/FIX_008_arch_hardening.md`](milestones/FIX_008_arch_hardening.md) and the current-state reference [Arch Hardening](../kernel/arch-hardening.md).
 
 ## Reading Historical Documents
 

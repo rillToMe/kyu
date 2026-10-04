@@ -83,16 +83,21 @@ stages depend on earlier ones:
    higher-half direct map.
 5. **Kernel heap** — initialize the kernel's `kmalloc`/`kfree` allocator,
    which all later allocations depend on.
-6. **CPU setup** — GDT and TSS (including per-CPU TSS entries), IDT, then
-   SMAP/SMEP and WP enforcement. See
-   [Interrupts & Timers](../kernel/interrupts.md).
+6. **CPU setup** — GDT and TSS (including per-CPU TSS entries **and the IST
+   stacks** for `#DF`/NMI/`#MC`), IDT (**all 256 vectors**), then SMAP/SMEP,
+   WP, NX, and SSE (`CR4.OSFXSR`). See
+   [Interrupts & Timers](../kernel/interrupts.md) and
+   [Arch Hardening](../kernel/arch-hardening.md).
 7. **Drivers** — PCI enumeration, ATA storage, PS/2 keyboard and mouse, RTC,
-   serial, PIT timer.
+   serial, PIT timer. **The PIT is programmed here, before the LAPIC is
+   calibrated.**
 8. **Subsystems** — filesystem mount, network stack initialization, graphics
    HAL initialization, KWM/compositor setup.
 9. **SMP bring-up** — start application processors via LAPIC. Each AP runs its
-   own init sequence (GDT/TSS/IDT, SMAP/SMEP, LAPIC timer) and joins the
-   scheduler.
+   own init sequence (GDT/TSS/IDT, **GS base**, SMAP/SMEP/WP/NX/SSE, LAPIC
+   timer) and joins the scheduler. Every feature in that sequence is
+   **per-core** — `CR4`, `EFER`, `GS base`, and `TR` are not shared between
+   cores, so an AP that skips one runs with weaker protection than the BSP.
 10. **Tasking initialization** — `tasking_init()` registers the kernel main
     thread as **Task 0**.
 11. **Module installation** — install Limine modules into the filesystem and
@@ -111,6 +116,16 @@ stages depend on earlier ones:
 > **Ordering constraint:** `tasking_init()` must be called after the timer is
 > initialized and before any `create_task()`. The kernel heap must exist before
 > the VMM can allocate page tables for user address spaces.
+>
+> **Ordering constraint (timer):** `init_timer()` must run **before**
+> `lapic_init_bsp()`. The LAPIC calibration measures the LAPIC against PIT
+> channel 0, so if the PIT has not been programmed yet the measurement uses
+> leftover firmware values — which produced an 18% spread between boots. See
+> [Arch Hardening](../kernel/arch-hardening.md).
+>
+> **Ordering constraint (NX):** `cpu_enable_nx()` must run **before the first
+> user mapping is created**, because the ELF loader sets the NX bit in PTEs and
+> that bit raises `#GP` if `EFER.NXE` is not already enabled.
 
 ## Framebuffer Handoff
 
@@ -148,5 +163,6 @@ ELF loader in [Process Model](../kernel/processes.md).
 - [Architecture Overview](overview.md)
 - [Memory Management](../kernel/memory.md)
 - [Interrupts & Timers](../kernel/interrupts.md)
+- [Arch Hardening](../kernel/arch-hardening.md)
 - [Building](../development/building.md)
 - [Running](../development/running.md)

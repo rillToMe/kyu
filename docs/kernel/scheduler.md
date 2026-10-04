@@ -15,7 +15,7 @@ stealing for load balancing.
 | Preemption quantum | 20 ms (scheduler), timer IRQ at the active refresh rate |
 | Timer | PIT (boot CPU), LAPIC timer (APs), vector `0xF0` |
 | Max tasks | `MAX_TASKS` = 16 |
-| Task stack | `TASK_STACK_SIZE` = 16384 (16 KB) |
+| Task stack | `TASK_STACK_SIZE` = 16384 (16 KB) **+ 4 KB guard page** |
 | Syscall stack | `SYSCALL_STACK_SIZE` = 16384 (16 KB) per CPU |
 | Max CPUs | `SMP_MAX_CPUS` = 16 |
 
@@ -26,9 +26,12 @@ structural split with no behavior change; `include/task.h` is unchanged.
 
 | File | Responsibility | Key symbols |
 | --- | --- | --- |
-| `core.c` | Context switch, CR3 switch, idle loop, globals | `schedule_on_cpu`, `schedule`, `scheduler_idle_loop`, `smp_current_task_id`, `yield`, `scheduler_remove_task` |
+| `core.c` | Context switch, CR3 switch, FPU switch, idle loop, globals | `schedule_on_cpu`, `schedule`, `scheduler_idle_loop`, `smp_current_task_id`, `yield`, `scheduler_remove_task` |
 | `runqueue.c` | Per-CPU run queue, placement, work stealing | `runq_push`, `runq_pop`, `runq_remove`, `pick_target_cpu`, `steal_task`, `runq_len` |
 | `lifecycle.c` | Task creation, exit, per-CPU stacks | `tasking_init`, `create_task`, `create_task_prio`, `create_user_task`, `task_fork`, `task_exit` |
+| `task_stack.c` | Task stack allocation with guard page | `task_stack_alloc`, `task_stack_free`, `task_stack_top` |
+| `fpu.c` | FPU/SSE state save and restore per task | `fpu_init_cpu`, `fpu_switch`, `fpu_state_reset` |
+| `context_validate.c` | Validation of a handler-returned RSP | `context_rsp_is_valid`, `context_rsp_fallback` |
 | `block.c` | Two-phase blocking and the sleep queue | `block_prepare`, `block_park`, `unblock_task`, `task_sleep_ms` |
 | `debug.c` | Diagnostic dump | `scheduler_dump` |
 | `sched_internal.h` | Internal contract (not included outside `kernel/sched/`) | — |
@@ -71,24 +74,42 @@ timer interrupt:
 ```text
 Timer IRQ (PIT on BSP, LAPIC on AP)
     └─→ timer ISR stub (ASM)
+            ├─ KZ_ENTRY_PROLOGUE        cld + clac (normalize RFLAGS)
             ├─ PUSHA64                  save all registers onto the stack
             ├─→ timer_handler(rsp)      C handler
             │       └─→ schedule_on_cpu(cpu, r)   choose next task
             │               └── return new RSP
+            ├─ KZ_VALIDATE_RSP          sanity-check the returned RSP
             ├─ mov rsp, rax             switch to the next task's stack
             ├─ POPA64                   restore the next task's registers
             └─ IRETQ                    jump to the next task's RIP
 ```
 
-`schedule_on_cpu` also performs two additional duties on every switch:
+`schedule_on_cpu` also performs four additional duties on every switch:
 
 - **RSP0 repoint.** TSS.RSP0 is set to the incoming task's kernel stack top
   (or the per-CPU syscall stack for kernel tasks with no private stack). This
   is required for correctness: if two Ring-3 tasks shared one CPU and RSP0 were
   a shared per-CPU stack, their preemption frames would overlap and corrupt
-  each other.
+  each other. The top must be computed with `task_stack_top()` — task stacks
+  have a guard page below them, so `stack_base + TASK_STACK_SIZE` would point
+  into the middle of the stack.
 - **CR3 switch.** A user task switches to its own PML4; a kernel task switches
   to the kernel PML4.
+- **FPU switch.** `fpu_switch(prev, next)` saves the outgoing task's x87/XMM
+  state with `FXSAVE64` and restores the incoming task's with `FXRSTOR64`.
+  Without it, XMM registers are global per-CPU state — the next task would see
+  the previous task's leftovers, which is a cross-process data leak invisible to
+  the page tables. See [Arch Hardening](arch-hardening.md).
+- **Kill observation.** A preempted ring-3 task with `kill_pending` set
+  converges on `proc_exit_kill()` instead of resuming.
+
+The `KZ_VALIDATE_RSP` step matters because the next task's RSP comes from a C
+handler's return value and is loaded directly into RSP. A bad value would crash
+the kernel far from its cause — usually as a `#DF` or triple fault, since the
+stack is no longer usable to report anything. The check rejects non-canonical,
+user-range, and misaligned values, then falls back to the current ISR frame's
+RSP so the task continues.
 
 ## Priorities and Aging
 

@@ -176,11 +176,13 @@ Details are in [Boot Process](boot.md).
 | GUI | `libs/gui/`, `system/desktop/` | [GUI](../gui/README.md) |
 | Panic handling | `kernel/panic/`, `kernel/debug/` | [Panic & Crash Handling](../kernel/panic.md) |
 | SMP | `kernel/smp/`, `arch/x86/` | [Interrupts & Timers](../kernel/interrupts.md) |
+| Arch hardening | `arch/x86/`, `kernel/sched/`, `kernel/mm/` | [Arch Hardening](../kernel/arch-hardening.md) |
 
 ## Related Documentation
 
 - [Boot Process](boot.md)
 - [Memory Management](../kernel/memory.md)
 - [Scheduler](../kernel/scheduler.md)
+- [Arch Hardening](../kernel/arch-hardening.md)
 - [Syscalls](../kernel/syscalls.md)
 - [Building](../development/building.md) — to build and run the system

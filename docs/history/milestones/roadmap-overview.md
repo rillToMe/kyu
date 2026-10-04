@@ -13,3 +13,4 @@ Patokan kerja: baca file FIX sebelum mulai; update status setelah selesai.
 | `FIX_005_user_apps_ring0.md` | P1 (epic) | App berjalan di Ring 0, pointer heap mentah lintas boundary | OPEN |
 | `FIX_006_ring3_rsp0_frame_clobber.md` | **P0** | Frame preemption ring-3 tertimpa di per-CPU syscall stack (RSP0 global) — BOSD di app ke-4 | **DONE** (2026-07-27) — RSP0 per-task di `schedule_on_cpu`; 6 app konkuren stabil |
 | `FIX_007_exec_from_spawned_task.md` | P2 | `sys_exec` dari task spawned (notepad→fileman dsb): app hasil exec mati senyap, task langsung DEAD | OPEN (2026-07-28) |
+| `FIX_008_arch_hardening.md` | **P0** | Hardening lapisan `arch/x86/`: 12 temuan produksi (DF→korupsi heap, AC→SMAP mati, IST, IDT 256 vektor, fault ring-3, W^X) | **DONE** (2026-10-03) — 252 stub prologue, IST per-CPU, guard page, NX/W^X, FPU save; 17/17 subsystem OK |

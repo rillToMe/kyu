@@ -13,13 +13,54 @@ Each entry cites the defining header or source file.
 | `HEAP_START_VADDR` | `0xFFFF900000000000` | `kernel/mm/heap.c` |
 | `HEAP_MAGIC` | `0xDEADC0DE` | `kernel/mm/heap.c` |
 | Reserved low zone | `< 0x04800000` (72 MB) | `kernel/mm/pmm.c` |
+| `KZ_TASK_STACK_VADDR_BASE` | `0xFFFF880000000000` | `kernel/sched/task_stack.c` |
+| `KZ_TASK_STACK_SLOTS` | 128 | `kernel/sched/task_stack.c` |
+| `KZ_REGISTERS_SIZE` | 176 (22 fields × 8) | `include/task.h` |
+| `KZ_FPU_STATE_SIZE` | 512 | `include/task.h` |
+| `KZ_IST_STACK_SIZE` | 8192 | `include/arch.h` |
+| `KZ_IST_COUNT` | 3 (`#DF`, NMI, `#MC`) | `include/arch.h` |
+| `KZ_FAKE_FRAME_PAD` | 8 | `kernel/sched/lifecycle.c` |
+| `KZ_REP_THRESHOLD` | 128 | `kernel/string.c` |
+
+### Architecture (`include/arch.h`)
+
+| Constant | Value | Notes |
+| --- | --- | --- |
+| `KZ_IST_DF` / `KZ_IST_NMI` / `KZ_IST_MC` | 1 / 2 / 3 | TSS `ist1..ist3` |
+| `KZ_SEL_KERNEL_CS` / `KZ_SEL_KERNEL_DS` | `0x08` / `0x10` | GDT selectors |
+| `KZ_SEL_USER_CS` / `KZ_SEL_USER_DS` | `0x1B` / `0x23` | `RPL 3` |
+| `KZ_VEC_DF` / `KZ_VEC_NMI` / `KZ_VEC_MC` | 8 / 2 / 18 | IST vectors |
+| `KZ_VEC_SYSCALL` | 128 (`0x80`) | DPL 3 |
+| `KZ_VEC_LAPIC_TIMER` | 240 (`0xF0`) | AP tick |
+| `KZ_VEC_LAPIC_RESCHED` | 253 (`0xFD`) | Reschedule IPI |
+| `KZ_VEC_LAPIC_SPURIOUS` | 255 (`0xFF`) | EOI only |
+
+### MSR (`include/msr.h`)
+
+| Constant | Value | Notes |
+| --- | --- | --- |
+| `MSR_IA32_APIC_BASE` | `0x1B` | |
+| `MSR_IA32_EFER` | `0xC0000080` | |
+| `EFER_NXE` | bit 11 | Gates the NX PTE bit |
+| `MSR_IA32_GS_BASE` | `0xC0000101` | Per-CPU pointer |
+
+### LAPIC calibration (`arch/x86/lapic.c`)
+
+| Constant | Value | Notes |
+| --- | --- | --- |
+| `LAPIC_TIMER_TARGET_HZ` | 100 | Target tick rate |
+| `LAPIC_TIMER_DIVIDER_VAL` | 16 | Divider config `0x3` |
+| `LAPIC_CALIB_PIT_TICKS` | 5 | Window = 5 PIT ticks @ 60 Hz ≈ 83 ms |
+| `PIT_FREQ_HZ` | 1193182 | PIT input clock |
+| Measured `INIT_COUNT` | ~19580 (QEMU) | Machine-dependent |
 
 ## Tasks & Scheduler
 
 | Constant | Value | Source |
 | --- | --- | --- |
 | `MAX_TASKS` | 16 | `include/task.h` |
-| `TASK_STACK_SIZE` | 16384 | `include/task.h` |
+| `TASK_STACK_SIZE` | 16384 (+ 4096 guard page) | `include/task.h` |
+| `KZ_TASK_STACK_GUARD_BYTES` | 4096 | `include/task.h` |
 | `SYSCALL_STACK_SIZE` | 16384 | `kernel/sched/lifecycle.c` |
 | `SMP_MAX_CPUS` | 16 | SMP |
 | `RUNQ_CAPACITY` | `MAX_TASKS` (16) | `kernel/sched/runqueue.c` |

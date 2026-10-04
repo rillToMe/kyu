@@ -640,16 +640,19 @@ converted to fork/exec).
   huge/empty entries are skipped exactly like
   `vmm_destroy_address_space`. Parent tables are only read (no parent
   TLB work); child tables were never loaded (no invalidation needed).
-  All current user mappings are plain 4KB `flags=7` (no W^X policy to
-  preserve beyond verbatim copying); no framebuffer/device/shared
+  User mappings carry per-segment permissions from the ELF `p_flags`
+  (W^X is enforced since FIX_008 — see
+  [Arch Hardening](../kernel/arch-hardening.md)), so the clone copies
+  the flag bits verbatim to preserve them. No framebuffer/device/shared
   mappings exist in the user half (verified: only ELF/stack/heap/argv
   mappers call into user-range mapping).
 - Context: the child's kernel stack carries a verbatim copy of the
   parent's syscall trap frame (`registers_t`, 1:1 with `isr_macro.inc`)
   with `rax` forced to 0 — it returns through the normal POPA64+iretq
-  path. Kernel stack never shared. No FPU/SSE context exists anywhere
-  (toolchain-wide `-mno-sse`), so none is cloned. TSS syscall stacks
-  are per-CPU, unaffected.
+  path. Kernel stack never shared. FPU/SSE state is per task since
+  FIX_008 ([Arch Hardening](../kernel/arch-hardening.md)); the child
+  starts with a clean FPU state rather than inheriting the parent's.
+  TSS syscall stacks are per-CPU, unaffected.
 - Task: dedicated `task_fork` (`kernel/sched/lifecycle.c`) — slot via
   the existing DEAD-scan, creds via `cred_inherit`, parent = caller,
   fresh AS cookie, argv pointer valid via the cloned stack, name copied

@@ -34,6 +34,7 @@ The big picture: how the pieces fit together.
 | [Synchronization](kernel/synchronization.md) | Spinlocks, mutex/semaphore/condvar, wait queues, blocking model |
 | [Syscalls](kernel/syscalls.md) | The `int 0x80` ABI, argument passing, dispatch, boundary copy |
 | [Interrupts & Timers](kernel/interrupts.md) | IDT, ISRs, PIT/LAPIC, SMP bring-up |
+| [Arch Hardening](kernel/arch-hardening.md) | IST, entry prologue, W^X, FPU state, guard pages, RSP validation |
 | [Panic & Crash Handling](kernel/panic.md) | BSOD, crash dump, recovery path |
 
 ### Userspace
