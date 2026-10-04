@@ -10,6 +10,27 @@
 #define PAGING_USER      (1ULL << 2)
 #define PAGING_DEFAULT   (PAGING_PRESENT | PAGING_WRITABLE | PAGING_USER)
 
+// ------------------------------------------------------------
+// ARCH-5: bit NX (No Execute) pada PTE/PDE/PDPTE.
+//
+// Hanya BERARTI bila EFER.NXE aktif (lihat cpu_enable_nx / g_nx_enabled).
+// Menyetel bit ini tanpa NXE = #GP pada CPU. Gunakan PAGING_NX_FLAG() yang
+// sudah mengecek g_nx_enabled sehingga tidak ada pemanggil yang perlu ingat.
+//
+// CATATAN: NX adalah bit "opt-out" — 1 = TIDAK executable. Jadi segmen ELF
+// yang punya PF_X harus DIKOSONGI bit NX-nya, bukan diset.
+// ------------------------------------------------------------
+#define PAGING_NX        (1ULL << 63)
+
+// Return bit NX hanya bila hardware mendukungnya, selain itu 0.
+// Dipakai loader ELF & pemetaan stack/heap user.
+uint64_t paging_nx_flag(void);
+
+// Flag untuk halaman user yang boleh dieksekusi (segmen .text ELF).
+#define PAGING_USER_RX (PAGING_PRESENT | PAGING_USER)
+// Flag untuk halaman user data (stack, heap, .data/.bss): NX bila didukung.
+uint64_t paging_user_rw_nx(void);
+
 // --- FUNGSI UTAMA PAGING 64-BIT ---
 void init_paging(uint32_t fb_phys_addr);
 
@@ -81,6 +102,13 @@ int  vmm_map_page_into(uint64_t vaddr, uint64_t paddr, uint64_t flags,
 // Allocate a physical page and map it into a SPECIFIC PML4.
 // target_pml4 == PHYS_NULL → kernel PML4. (FIX_002: target selalu eksplisit.)
 int  vmm_alloc_page_into(uint64_t vaddr, uint64_t flags, phys_addr_t target_pml4);
+
+// ARCH-5: ubah flag halaman yang sudah ter-map (bit alamat fisik dipertahankan).
+// Dipakai loader ELF untuk menegakkan W^X: halaman di-map writable agar bisa
+// diisi, lalu proteksinya diperketat setelah penulisan selesai. Bit NX ikut
+// ditulis di sini. Return 1 sukses, 0 bila tidak mapped / huge page.
+int  vmm_protect_page_into(uint64_t vaddr, uint64_t new_flags,
+                            phys_addr_t target_pml4_phys);
 
 // Check if vaddr is mapped in a SPECIFIC PML4 (SMP-safe).
 // pml4_phys == PHYS_NULL → kernel PML4.

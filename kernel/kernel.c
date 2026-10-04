@@ -169,28 +169,55 @@ static void boot_phase_memory(void) {
 
 // FIX_005 Tahap 4: SMEP/SMAP di BSP + pastikan CR0.WP. AP mengaktifkan
 // miliknya sendiri di smp_ap_main (CR4/CR0 per-core).
+// ARCH-5: EFER.NXE juga per-core dan WAJIB aktif sebelum mapping user pertama,
+// karena loader ELF menyetel bit NX di PTE — menyetelnya tanpa NXE = #GP.
 static void boot_phase_cpu_hardening(void) {
     extern void cpu_enable_smap_smep(void);
+    extern void cpu_enable_nx(void);
     extern int  cpu_verify_wp(void);
-    extern int  g_smap_enabled, g_smep_enabled;
+    extern void fpu_init_cpu(void);
+    extern int  g_smap_enabled, g_smep_enabled, g_nx_enabled;
     cpu_enable_smap_smep();
+    cpu_enable_nx();
     int wp = cpu_verify_wp();
+
+    // ARCH-10: CR4.OSFXSR + OSXMMEXCPT. Tanpa ini, instruksi SSE dari ring 3
+    // menghasilkan #UD, sehingga app Rust (target x86_64-unknown-none
+    // mengaktifkan SSE by default) dan apps/calc.c tidak bisa berjalan.
+    // Per-CPU — AP memanggilnya sendiri di smp_ap_main.
+    fpu_init_cpu();
+
     kprint("[CPU] SMEP=");  kprint(g_smep_enabled ? "on" : "off");
     kprint(" SMAP=");       kprint(g_smap_enabled ? "on" : "off");
+    kprint(" NX=");         kprint(g_nx_enabled ? "on" : "off");
     kprint(" WP=");         kprint(wp ? "on" : "off");
-    kprint("\n");
+    kprint(" SSE=on\n");
 }
 
 // FASE 2 — Interrupt controller, PCI, timer
 
 static void boot_phase_interrupts(void) {
     pic_remap();
-    lapic_init_bsp();
+
+    // ⚠ URUTAN PENTING (ARCH-12): PIT WAJIB diprogram SEBELUM LAPIC.
+    //
+    // lapic_init_bsp() mengkalibrasi LAPIC timer terhadap PIT kanal 0. Kalau
+    // init_timer() belum berjalan, kanal 0 masih berisi nilai sisa dari
+    // firmware/bootloader dengan rate yang tidak diketahui — kalibrasi jadi
+    // mengukur terhadap timebase acak. Gejalanya: hasil kalibrasi berbeda
+    // jauh antar boot (teramati 1.37M..1.62M, sebaran 18%) padahal mesinnya
+    // sama.
+    //
+    // Dengan PIT sudah stabil di TIMER_HZ, kanal 0 menjadi referensi yang
+    // deterministik — dan rate-nya sudah terbukti benar karena seluruh
+    // timekeeping OS (timer_get_ms, sleep queue, kuantum scheduler)
+    // bergantung padanya.
+    init_timer(TIMER_HZ);      // Inisialisasi PIT pada frekuensi dari timer.h
+
+    lapic_init_bsp();          // Kalibrasi LAPIC (butuh PIT di atas)
 
     extern void pci_probe(void);
     pci_probe();
-
-    init_timer(TIMER_HZ);      // Inisialisasi PIT pada frekuensi dari timer.h
 }
 
 // FASE 3 — Graphics HAL, scheduler awal, input

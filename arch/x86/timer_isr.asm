@@ -1,3 +1,4 @@
+bits 64
 ; ============================================================
 ; arch/x86/timer_isr.asm — Preemptive Timer ISR (IRQ0), Kyuzen OS
 ;
@@ -24,6 +25,7 @@ global timer_isr_stub
 extern timer_handler    ; registers_t* timer_handler(registers_t* r)
 
 timer_isr_stub:
+    KZ_ENTRY_PROLOGUE   ; ARCH-1: cld + clac
     push 0              ; error_code = 0 (timer tidak punya error code)
     push 32             ; int_num = 32 (IRQ0 = INT 0x20)
     PUSHA64             ; Simpan semua 15 GP register (lihat layout di isr_macro.inc)
@@ -36,7 +38,15 @@ timer_isr_stub:
     ; ── CONTEXT SWITCH ──
     ; RAX = RSP task berikutnya (mungkin sama dengan RSP saat ini jika tidak ada switch)
     ; Ini adalah "kunci" dari preemptive scheduling!
-    mov rsp, rax        ; Ganti RSP ke frame task berikutnya
+    ;
+    ; ARCH-8: VALIDASI sebelum RSP dipakai. Kalau handler mengembalikan nilai
+    ; yang tidak wajar, memuatnya ke RSP membuat kernel crash di tempat yang
+    ; jauh dari penyebabnya (#DF / triple fault, karena stack sudah rusak).
+    ; context_rsp_is_valid() memeriksa canonical + 16-byte aligned + di heap
+    ; kernel. Saat gagal, RSP frame ISR saat ini dipakai sebagai fallback
+    ; (sudah pasti valid — ISR baru saja berjalan di atasnya), task ini lanjut,
+    ; dan kegagalannya tercatat ke COM1 dengan nilai RSP-nya.
+    KZ_VALIDATE_RSP 32
 
     POPA64              ; Restore GP register dari frame task baru
     add rsp, 16         ; Buang int_num (8 byte) + error_code (8 byte)

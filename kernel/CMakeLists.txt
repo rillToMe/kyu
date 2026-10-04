@@ -20,6 +20,7 @@ set(_arch_sources
     arch/x86/gdt.c
     arch/x86/idt.c
     arch/x86/lapic.c
+    arch/x86/vectors.c
 )
 
 set(_driver_sources
@@ -60,10 +61,13 @@ set(_syscall_sources
 
 set(_sched_sources
     kernel/sched/block.c
+    kernel/sched/context_validate.c
     kernel/sched/core.c
     kernel/sched/debug.c
+    kernel/sched/fpu.c
     kernel/sched/lifecycle.c
     kernel/sched/runqueue.c
+    kernel/sched/task_stack.c
 )
 
 set(_fs_sources

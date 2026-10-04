@@ -44,6 +44,49 @@ typedef struct registers {
     uint64_t rip, cs, rflags, rsp, ss;
 } __attribute__((packed)) registers_t;
 
+// ============================================================
+// ARCH-11: KONTRAK LAYOUT — diverifikasi compiler, bukan komentar.
+//
+// `registers_t` adalah cermin dari frame yang dibangun PUSHA64 di
+// arch/x86/isr_macro.inc. Kalau salah satu sisi berubah tanpa sisi lain,
+// kernel rusak TANPA error kompilasi dan gejalanya adalah crash acak yang
+// sangat mahal didiagnosis. Assert di bawah membuat setiap drift menjadi
+// error build.
+//
+// Angka-angka ini adalah layout yang didokumentasikan di isr_macro.inc:4-35
+// dan dibangun oleh kernel/sched/lifecycle.c (fake ISR frame).
+// ============================================================
+#define KZ_REGISTERS_SIZE 176   // 22 field x 8 byte
+
+_Static_assert(sizeof(registers_t) == KZ_REGISTERS_SIZE,
+               "registers_t size drift - sinkronkan dengan PUSHA64 (isr_macro.inc)");
+
+// Offset PUSHA64 (urutan push: rax pertama = alamat tertinggi, r15 terakhir = RSP+0)
+_Static_assert(__builtin_offsetof(registers_t, r15)        ==   0, "off r15");
+_Static_assert(__builtin_offsetof(registers_t, r14)        ==   8, "off r14");
+_Static_assert(__builtin_offsetof(registers_t, r13)        ==  16, "off r13");
+_Static_assert(__builtin_offsetof(registers_t, r12)        ==  24, "off r12");
+_Static_assert(__builtin_offsetof(registers_t, r11)        ==  32, "off r11");
+_Static_assert(__builtin_offsetof(registers_t, r10)        ==  40, "off r10");
+_Static_assert(__builtin_offsetof(registers_t, r9)         ==  48, "off r9");
+_Static_assert(__builtin_offsetof(registers_t, r8)         ==  56, "off r8");
+_Static_assert(__builtin_offsetof(registers_t, rdi)        ==  64, "off rdi");
+_Static_assert(__builtin_offsetof(registers_t, rsi)        ==  72, "off rsi");
+_Static_assert(__builtin_offsetof(registers_t, rbp)        ==  80, "off rbp");
+_Static_assert(__builtin_offsetof(registers_t, rdx)        ==  88, "off rdx");
+_Static_assert(__builtin_offsetof(registers_t, rcx)        ==  96, "off rcx");
+_Static_assert(__builtin_offsetof(registers_t, rbx)        == 104, "off rbx");
+_Static_assert(__builtin_offsetof(registers_t, rax)        == 112, "off rax");
+// Slot yang di-push stub (bukan CPU):
+_Static_assert(__builtin_offsetof(registers_t, int_num)    == 120, "off int_num");
+_Static_assert(__builtin_offsetof(registers_t, error_code) == 128, "off error_code");
+// Slot yang di-push CPU (urutan tinggi -> rendah):
+_Static_assert(__builtin_offsetof(registers_t, rip)        == 136, "off rip");
+_Static_assert(__builtin_offsetof(registers_t, cs)         == 144, "off cs");
+_Static_assert(__builtin_offsetof(registers_t, rflags)     == 152, "off rflags");
+_Static_assert(__builtin_offsetof(registers_t, rsp)        == 160, "off rsp");
+_Static_assert(__builtin_offsetof(registers_t, ss)         == 168, "off ss");
+
 
 // ============================================================
 // TASK STATE
@@ -61,6 +104,34 @@ typedef struct registers {
 // rantai syscall app (exec → ELF → KFS → ATA) bisa dalam; ukuran disamakan
 // dengan per-CPU syscall stack (SYSCALL_STACK_SIZE) yang dulu menampungnya.
 #define TASK_STACK_SIZE 16384
+
+// ============================================================
+// ARCH-2b: STACK TASK DENGAN GUARD PAGE
+//
+// Stack task TIDAK lagi dialokasikan lewat kmalloc. Heap kernel tidak punya
+// guard page, jadi overflow stack yang tumbuh ke bawah akan menimpa blok heap
+// berikutnya secara senyap. task_stack.c mengalokasikan stack dari PMM dengan
+// satu halaman guard yang TIDAK di-map di bawahnya, sehingga overflow menjadi
+// #PF pada instruksi pertama yang menyentuhnya (CR2 = alamat guard) — bukan
+// korupsi data.
+//
+// KONTRAK:
+//   base      = nilai dari task_stack_alloc(); inilah yang disimpan di
+//               tasks[].stack_base dan diteruskan ke task_stack_free().
+//   stack_top = task_stack_top(base) = base + PAGE + TASK_STACK_SIZE.
+//               Ini yang dipakai membangun frame / mengisi TSS RSP0.
+//
+// JANGAN hitung stack_top sebagai `stack_base + TASK_STACK_SIZE` — dengan
+// guard page, rumus itu menunjuk 4 KB DI BAWAH ujung stack yang sebenarnya.
+// ============================================================
+void*    task_stack_alloc(void);
+void     task_stack_free(void* base);
+uint64_t task_stack_top(void* base);
+uint64_t task_stack_guard_addr(void* base);
+
+// Ukuran halaman guard (1 page). Dipakai pemanggil yang perlu menghitung
+// alamat awal area stack dari BASE: stack_lo = base + KZ_TASK_STACK_GUARD_BYTES.
+#define KZ_TASK_STACK_GUARD_BYTES 4096ULL
 
 // ============================================================
 // TASK CONTROL BLOCK (TCB)
@@ -88,7 +159,58 @@ typedef struct task {
     uint8_t  exit_reason;     // P0 Phase 3: PROC_EXIT_* (valid iff ZOMBIE)
     volatile uint8_t kill_pending; // P0 Phase 3: async kill requested (BLOCKED/
                              // SLEEPING/RUNNING target observes, then proc_exit_kill)
+
+    // ============================================================
+    // ARCH-10: STATE FPU/SSE PER TASK
+    //
+    // Area 512 byte yang di-save/restore dengan FXSAVE/FXRSTOR setiap context
+    // switch. Ukuran 512 byte adalah format FXSAVE standar (16 byte FCW/FSW/
+    // FTW/FOP + 8×16 byte register x87 + MXCSR + 8×16 byte XMM0..XMM7 pada
+    // mode 32-bit; pada mode 64-bit area XMM meluas ke XMM0..XMM15 sehingga
+    // totalnya tetap 512 byte dengan 16 byte reserved di akhir).
+    //
+    // WAJIB 16-byte aligned: FXSAVE/FXRSTOR #GP bila alamatnya tidak
+    // aligned. Atribut aligned(16) di bawah menjaminnya.
+    //
+    // KENAPA PERLU: tanpa ini, dua task yang memakai SSE saling menimpa
+    // register XMM — satu task bisa membaca sisa perhitungan task lain
+    // (kebocoran data antar proses), dan hasil komputasi jadi salah secara
+    // acak tergantung urutan penjadwalan.
+    //
+    // Kernel sendiri TIDAK memakai SSE (-mno-sse -msoft-float), jadi area ini
+    // hanya berisi state task user. Task kernel memakai area kosong yang
+    // di-zero saat pembuatan.
+    // ============================================================
+    uint8_t  fpu_state[512] __attribute__((aligned(16)));
+
+    // 1 bila fpu_state berisi state valid milik task ini (sudah pernah
+    // di-FXSAVE). 0 = belum, jadi saat restore pertama kita pakai keadaan
+    // FPU bersih (FNINIT) alih-alih memulihkan sampah.
+    uint8_t  fpu_initialized;
 } task_t;
+
+// Ukuran area FXSAVE (byte). Dipakai kernel/sched/fpu.c dan jalur context
+// switch untuk memastikan konsistensi.
+#define KZ_FPU_STATE_SIZE 512
+
+// ============================================================
+// ARCH-10: API state FPU/SSE (kernel/sched/fpu.c)
+// ============================================================
+
+// Aktifkan CR4.OSFXSR (+ OSXMMEXCPT bila didukung) di CPU ini.
+// WAJIB per-CPU. Tanpa OSFXSR, instruksi SSE dari ring 3 menimpa #UD —
+// jadi ini prasyarat agar app Rust / calc.c bisa berjalan sama sekali.
+void fpu_init_cpu(void);
+
+// Simpan state FPU task yang sedang berjalan ke TCB-nya, lalu muat state
+// task berikutnya. Dipanggil dari jalur context switch.
+//
+// `prev` = task yang meninggalkan CPU (boleh -1 = tidak ada), `next` =
+// task yang akan berjalan (boleh -1 = idle, tidak ada state untuk dimuat).
+void fpu_switch(int prev_id, int next_id);
+
+// Tandai state FPU task sebagai bersih (dipakai saat task baru dibuat).
+void fpu_state_reset(int task_id);
 
 // task_t.kind — pembeda semantik sys_exit (34).
 // TASK_KIND_KERNEL: task kernel murni (task 0/idle, task internal). TIDAK boleh

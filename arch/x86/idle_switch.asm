@@ -1,3 +1,4 @@
+bits 64
 ; ============================================================
 ; idle_switch.asm — Pindah ke idle stack permanen per-CPU (FIX_001)
 ;

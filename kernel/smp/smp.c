@@ -4,6 +4,7 @@
 #include "smp.h"
 #include "lapic.h"
 #include "task.h"
+#include "msr.h"
 
 extern void gdt_load(void);
 extern void idt_load(void);
@@ -85,6 +86,9 @@ static uint32_t smp_atomic_inc(volatile uint32_t *value) {
 void smp_register_cpu(uint32_t cpu_id, uint32_t processor_id, uint32_t lapic_id, uint32_t online) {
     if (cpu_id >= SMP_MAX_CPUS) return;
 
+    // ARCH-9: cpu_index WAJIB terisi — smp_current_cpu_index() membacanya
+    // lewat GS base, dan blok ini yang ditunjuk GS.
+    smp_percpu[cpu_id].cpu_index = cpu_id;
     smp_percpu[cpu_id].processor_id = processor_id;
     smp_percpu[cpu_id].lapic_id = lapic_id;
     smp_percpu[cpu_id].online = online;
@@ -138,6 +142,32 @@ int smp_reschedule_pending(uint32_t cpu_id) {
 }
 
 uint32_t smp_current_cpu_index(void) {
+    // ARCH-9: jalur cepat lewat GS base.
+    //
+    // SEBELUMNYA fungsi ini membaca MMIO LAPIC (uncached!) lalu memindai
+    // tabel 16 CPU untuk mencocokkan lapic_id. Itu dilakukan di SETIAP ISR
+    // (arch/x86/lapic.c) dan puluhan jalur lain — biaya nyata di tick tinggi,
+    // dan bergantung pada MMIO yang mungkin tidak responsif justru saat CPU
+    // bermasalah (jalur panic).
+    //
+    // SEKARANG: satu load dari GS:0. GS base di-set per-CPU saat bring-up
+    // (smp_set_gs_base), jadi nilainya selalu benar untuk CPU yang sedang
+    // berjalan — termasuk di dalam ISR dan jalur panic.
+    //
+    // KENAPA GS DAN BUKAN FS: userspace KyuzenOS tidak memakai TLS (ELF
+    // statis tanpa PT_TLS, lihat libs/c/libc-port). FS dibiarkan bebas untuk
+    // kebutuhan masa depan itu; GS dipakai kernel.
+    //
+    // FALLBACK: kalau GS base belum di-set (boot sangat awal, sebelum
+    // smp_gs_init), nilainya 0 → kita jatuh ke pemindaian LAPIC lama. Ini
+    // menjaga fungsi tetap benar selama urutan boot, bukan mengasumsikan
+    // GS selalu siap.
+    uint64_t gs_base = kz_rdmsr(MSR_IA32_GS_BASE);
+    if (gs_base != 0) {
+        uint32_t idx = *(volatile uint32_t*)(uintptr_t)gs_base;
+        if (idx < SMP_MAX_CPUS) return idx;
+    }
+
     uint32_t current_lapic = lapic_id();
 
     for (uint32_t i = 0; i < SMP_MAX_CPUS; i++) {
@@ -149,6 +179,24 @@ uint32_t smp_current_cpu_index(void) {
     return 0;
 }
 
+// ------------------------------------------------------------
+// ARCH-9: set GS base CPU ini ke blok per-CPU.
+//
+// Blok yang ditunjuk WAJIB diawali `uint32_t cpu_index` (offset 0), karena
+// smp_current_cpu_index() membacanya sebagai word pertama.
+//
+// Dipanggil BSP (setelah tabel per-CPU siap) dan setiap AP saat bring-up.
+// ------------------------------------------------------------
+void smp_set_gs_base(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return;
+    kz_wrmsr(MSR_IA32_GS_BASE, (uint64_t)(uintptr_t)&smp_percpu[cpu_id]);
+}
+
+// Apakah jalur cepat GS sudah aktif untuk CPU ini? (diagnostik/boot log)
+int smp_gs_base_active(void) {
+    return kz_rdmsr(MSR_IA32_GS_BASE) != 0;
+}
+
 uint32_t smp_online_cpu_count(void) {
     return smp_cpu_online_count;
 }
@@ -158,6 +206,15 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
 
     gdt_load();
     idt_load();
+
+    // ARCH-9: GS base bersifat PER-CORE (MSR, bukan memori) — AP wajib
+    // menyetelnya sendiri, kalau tidak smp_current_cpu_index() akan membaca
+    // blok per-CPU milik BSP dan setiap keputusan "CPU mana saya" jadi salah.
+    // Diletakkan SEBELUM lapic_init_ap() dan seluruh kode lain yang bisa
+    // memanggil smp_current_cpu_index(), supaya tidak ada jendela di mana
+    // jalur cepat membaca blok CPU yang salah.
+    smp_set_gs_base(state->cpu_index);
+
     lapic_init_ap();
 
     // FIX_005 Tahap 1: TR bersifat per-core — AP wajib load TSS miliknya
@@ -169,11 +226,19 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
 
     // FIX_005 Tahap 4: CR4.SMEP/SMAP & CR0.WP bersifat per-core — AP wajib
     // mengaktifkan miliknya sendiri (BSP sudah di kernel_main).
+    // ARCH-5: EFER.NXE juga per-core. AP bisa menjalankan task user, jadi
+    // tanpa ini loader ELF akan #GP saat menyetel bit NX di PTE.
     {
         extern void cpu_enable_smap_smep(void);
+        extern void cpu_enable_nx(void);
         extern int  cpu_verify_wp(void);
+        extern void fpu_init_cpu(void);
         cpu_enable_smap_smep();
+        cpu_enable_nx();
         cpu_verify_wp();
+        // ARCH-10: CR4.OSFXSR bersifat per-core. AP bisa menjalankan task
+        // user yang memakai SSE, jadi tanpa ini app tersebut langsung #UD.
+        fpu_init_cpu();
     }
 
     // Record this AP's current CR3 (inherited from BSP via Limine)
@@ -207,6 +272,11 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
 
 void smp_init(struct limine_mp_response *mp) {
     smp_register_cpu(0, 0, lapic_id(), 1);
+
+    // ARCH-9: aktifkan jalur cepat per-CPU untuk BSP. Dilakukan SETELAH
+    // register (blok per-CPU terisi) dan SEBELUM AP mana pun start, supaya
+    // setiap smp_current_cpu_index() berikutnya memakai satu load GS:0.
+    smp_set_gs_base(0);
 
     if (mp == NULL || mp->cpu_count == 0 || mp->cpus == NULL) {
         serial_print("[smp] MP response unavailable; running single-core\n");

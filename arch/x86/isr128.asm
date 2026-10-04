@@ -1,9 +1,11 @@
+bits 64
 %include "arch/x86/isr_macro.inc"
 section .text
 global isr128_stub
 extern syscall_handler
 
 isr128_stub:
+    KZ_ENTRY_PROLOGUE   ; ARCH-1: cld + clac
     push 0          ; dummy error code
     push 128        ; int_num
     PUSHA64

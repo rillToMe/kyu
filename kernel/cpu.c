@@ -3,17 +3,66 @@
 // Mengimplementasikan get_cpu_string() via instruksi CPUID.
 // Dipanggil oleh syscall_handler (syscall 17) dan shell.c (fetch).
 // FIX_005 Tahap 4: cpu_enable_smap_smep() + cpu_verify_wp().
+// ARCH-5: cpu_enable_nx() — EFER.NXE, prasyarat bit NX di PTE.
 // ============================================================
 #include <stdint.h>
 #include "smap.h"
+#include "msr.h"
 
 
 int g_smap_enabled = 0;
 int g_smep_enabled = 0;
+int g_nx_enabled = 0;
 
 #define CR4_SMEP (1ULL << 20)
 #define CR4_SMAP (1ULL << 21)
 #define CR0_WP   (1ULL << 16)
+
+// ------------------------------------------------------------
+// ARCH-5: aktifkan EFER.NXE.
+//
+// Bit 63 pada PTE/PDE/PDPTE hanya berarti "No Execute" kalau EFER.NXE=1.
+// Tanpa bit ini, W^X tidak mungkin: semua halaman user wajib executable,
+// sehingga shellcode injection cukup dengan satu bug memory-safety di app
+// (mis. overflow parser di browser) — stack/heap yang executable adalah
+// target yang sudah disiapkan.
+//
+// NX didukung sejak AMD K8 dan Intel Prescott; CPUID 0x80000001 EDX bit 20
+// melaporkannya. Kalau CPU tidak mendukung, kita TIDAK menyalakan bit NX di
+// PTE (CPU akan #GP kalau bit 63 diset tanpa NXE) dan g_nx_enabled tetap 0
+// supaya pemanggil bisa menyesuaikan.
+//
+// Per-CPU: EFER bersifat per-core, jadi AP juga wajib memanggil ini.
+// ------------------------------------------------------------
+void cpu_enable_nx(void) {
+    uint32_t eax, ebx, ecx, edx;
+
+    // CPUID leaf 0x80000001 -> EDX bit 20 = NX support.
+    __asm__ volatile("cpuid" : "=a"(eax) : "a"(0x80000000) : "ebx", "ecx", "edx");
+    if (eax < 0x80000001u) {
+        g_nx_enabled = 0;
+        return;
+    }
+
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(0x80000001), "c"(0));
+
+    if (!(edx & (1u << 20))) {   // NX tidak didukung CPU
+        g_nx_enabled = 0;
+        return;
+    }
+
+    uint64_t efer = kz_rdmsr(MSR_IA32_EFER);
+    if (!(efer & EFER_NXE)) {
+        kz_wrmsr(MSR_IA32_EFER, efer | EFER_NXE);
+        efer = kz_rdmsr(MSR_IA32_EFER);
+    }
+
+    // Verifikasi: kalau wrmsr diabaikan (mis. di bawah hypervisor tertentu),
+    // jangan pernah menyetel bit NX di PTE.
+    g_nx_enabled = (efer & EFER_NXE) ? 1 : 0;
+}
 
 void cpu_enable_smap_smep(void) {
     uint32_t eax, ebx, ecx, edx;

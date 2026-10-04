@@ -464,7 +464,11 @@ int proc_kill(int32_t pid) {
             vmm_destroy_address_space(dead_pml4, 1);
         }
         if (old_stack != NULL) {
-            kfree(old_stack);
+            // ARCH-2b: stack task kini dialokasikan task_stack_alloc()
+            // (PMM + guard page), bukan kmalloc — jadi harus dilepas dengan
+            // pasangannya. kfree() di sini akan menafsirkan halaman guard
+            // sebagai header blok heap.
+            task_stack_free(old_stack);
         }
         return 0;
     }

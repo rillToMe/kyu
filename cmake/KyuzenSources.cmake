@@ -29,6 +29,7 @@ set(KYUZEN_KERNEL_C_SOURCES
     arch/x86/gdt.c
     arch/x86/idt.c
     arch/x86/lapic.c
+    arch/x86/vectors.c
 
     # --- drivers ------------------------------------------------------------
     drivers/acpi.c
@@ -73,10 +74,13 @@ set(KYUZEN_KERNEL_C_SOURCES
 
     # --- scheduler ----------------------------------------------------------
     kernel/sched/block.c
+    kernel/sched/context_validate.c
     kernel/sched/core.c
     kernel/sched/debug.c
+    kernel/sched/fpu.c
     kernel/sched/lifecycle.c
     kernel/sched/runqueue.c
+    kernel/sched/task_stack.c
 
     # --- filesystem (KyuzenFS V4) ------------------------------------------
     kernel/fs/bcache.c

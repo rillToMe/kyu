@@ -174,13 +174,33 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
     // Fix: tiap context switch, arahkan RSP0 ke stack kernel MILIK task
     // berikutnya. Task kernel lama (stack_base==0, mis. kmain) tetap memakai
     // per-CPU syscall stack seperti semula.
+    //
+    // ARCH-2b: gunakan task_stack_top(), BUKAN `stack_base + TASK_STACK_SIZE`.
+    // Sejak stack punya halaman guard di bawahnya, rumus lama menunjuk 4 KB
+    // di bawah ujung stack sebenarnya — RSP0 akan berada di TENGAH area stack,
+    // dan transisi ring-3→ring-0 langsung menimpa data task sendiri.
     {
         extern void tss_set_rsp0(uint32_t cpu, uint64_t rsp0);
         uint64_t rsp0_top = (tasks[next].stack_base != 0)
-            ? tasks[next].stack_base + TASK_STACK_SIZE
-            : task_syscall_stack_top(cpu_id);
+                          ? task_stack_top((void*)tasks[next].stack_base)
+                          : task_syscall_stack_top(cpu_id);
         tss_set_rsp0(cpu_id, rsp0_top);
     }
+
+    // ── ARCH-10: SWITCH STATE FPU/SSE ──
+    //
+    // Diletakkan SETELAH keputusan task berikutnya final dan SEBELUM frame
+    // task baru dipakai. Pada titik ini `cur` masih berjalan di CPU ini
+    // (register FPU-nya masih hidup), jadi state-nya bisa disimpan; `next`
+    // belum mengeksekusi instruksi apa pun, jadi memuat state-nya aman.
+    //
+    // Tanpa langkah ini, register XMM/x87 adalah state global per-CPU:
+    // task berikutnya melihat sisa nilai pendahulunya. Itu kebocoran data
+    // antar proses sekaligus sumber hasil komputasi yang salah secara acak.
+    //
+    // `cur` bisa -1 bila CPU ini sebelumnya idle (cpu_current_task == -1);
+    // fpu_switch() menangani nilai negatif dengan benar.
+    fpu_switch(cur, next);
 
     // ── CR3 SWITCH: Load next task's address space ──
     // Only CR3 changes. current_pml4 ALWAYS stays as kernel PML4.

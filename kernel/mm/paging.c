@@ -18,15 +18,34 @@
 #include "string.h"
 #include "spinlock.h"
 #include "smp.h"
+#include "smap.h"     // g_nx_enabled (ARCH-5)
 #include <stdint.h>
 
 // HHDM offset dari kernel.c: physical P accessible di hhdm_offset + P
 extern uint64_t hhdm_offset;
 
-// Macro konversi: physical address → virtual address via HHDM
+// Macro konversi: physical address  virtual address via HHDM
 #define PHYS_TO_VIRT(phys) ((uint64_t)(phys) + hhdm_offset)
-// Inverse: virtual (HHDM) → physical
+// Inverse: virtual (HHDM)  physical
 #define VIRT_TO_PHYS(virt) ((uint64_t)(virt) - hhdm_offset)
+
+// ============================================================
+// ARCH-5: helper flag NX.
+//
+// Bit NX hanya sah bila EFER.NXE aktif. Menyetelnya tanpa NXE = #GP pada
+// CPU, jadi kedua helper di bawah adalah satu-satunya jalan yang benar untuk
+// mendapatkan bit itu — tidak ada pemanggil yang perlu mengingat syaratnya.
+//
+// g_nx_enabled diisi cpu_enable_nx() SEKALI per-CPU saat boot, sebelum
+// mapping user pertama dibuat, jadi nilainya stabil saat loader berjalan.
+// ============================================================
+uint64_t paging_nx_flag(void) {
+    return g_nx_enabled ? PAGING_NX : 0ULL;
+}
+
+uint64_t paging_user_rw_nx(void) {
+    return PAGING_PRESENT | PAGING_WRITABLE | PAGING_USER | paging_nx_flag();
+}
 
 // Current PML4: ALWAYS the kernel PML4. Never changes after init.
 uint64_t* current_pml4 = 0;
@@ -302,6 +321,65 @@ int vmm_unmap_page(uint64_t vaddr) {
     }
 
     pt[pt_idx] = 0;
+
+    spinlock_unlock_irqrestore(&paging_lock, irq);
+
+    vmm_tlb_shootdown(vaddr);
+    return 1;
+}
+
+// ============================================================
+// vmm_protect_page_into — Ubah FLAG halaman yang sudah ter-map (ARCH-5)
+//
+// Kenapa diperlukan: loader ELF harus MENULIS isi segmen ke halaman tujuan,
+// tapi CR0.WP=1 membuat kernel tidak bisa menulis halaman dengan RW=0. Jadi
+// halaman di-map writable dulu, ditulis, lalu proteksinya diperketat di sini
+// (pola klasik "map writable → populate → reprotect", sama seperti Linux
+// `set_memory_ro` setelah module load).
+//
+// `new_flags` MENGGANTIKAN flag lama, tapi bit alamat fisik dipertahankan.
+// Bit NX ikut ditulis di sini — itulah cara W^X ditegakkan untuk halaman
+// yang isinya baru selesai di-copy.
+//
+// Return: 1 sukses, 0 gagal (tidak mapped / huge page).
+// invlpg hanya CPU ini — batasan yang sama dengan vmm_tlb_shootdown.
+// ============================================================
+int vmm_protect_page_into(uint64_t vaddr, uint64_t new_flags,
+                          phys_addr_t target_pml4_phys) {
+    uint64_t* pml4 = (target_pml4_phys != PHYS_NULL)
+                   ? (uint64_t*)PHYS_TO_VIRT(target_pml4_phys)
+                   : current_pml4;
+    if (!pml4) return 0;
+
+    uint64_t irq = spinlock_lock_irqsave(&paging_lock);
+
+    uint64_t pml4_idx = PML4_IDX(vaddr);
+    uint64_t pdpt_idx = PDPT_IDX(vaddr);
+    uint64_t pd_idx   = PD_IDX(vaddr);
+    uint64_t pt_idx   = PT_IDX(vaddr);
+
+    if (!(pml4[pml4_idx] & 1)) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return 0;
+    }
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(pml4[pml4_idx] & PAGE_MASK);
+    if (!(pdpt[pdpt_idx] & 1) || (pdpt[pdpt_idx] & (1ULL << 7))) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return 0; // absent atau huge page
+    }
+    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[pdpt_idx] & PAGE_MASK);
+    if (!(pd[pd_idx] & 1) || (pd[pd_idx] & (1ULL << 7))) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return 0;
+    }
+    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[pd_idx] & PAGE_MASK);
+    if (!(pt[pt_idx] & 1)) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return 0;
+    }
+
+    // Pertahankan alamat fisik, ganti seluruh bit flag.
+    pt[pt_idx] = (pt[pt_idx] & PAGE_MASK) | new_flags;
 
     spinlock_unlock_irqrestore(&paging_lock, irq);
 

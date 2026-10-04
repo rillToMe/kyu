@@ -13,6 +13,14 @@
 // 1 jika CR4.SMAP berhasil diaktifkan (diisi cpu_enable_smap_smep).
 extern int g_smap_enabled;
 
+// ARCH-5: 1 jika EFER.NXE berhasil diaktifkan (diisi cpu_enable_nx).
+// Hanya bila 1, bit NX (63) boleh diset pada PTE.
+extern int g_nx_enabled;
+
+// Aktifkan EFER.NXE. Per-CPU — panggil di BSP (kernel_main) DAN setiap AP.
+// Return tidak ada; hasil dicek lewat g_nx_enabled.
+void cpu_enable_nx(void);
+
 static inline void user_access_begin(void) {
     if (g_smap_enabled)
         __asm__ volatile(".byte 0x0F, 0x01, 0xCB" ::: "memory", "cc"); // stac

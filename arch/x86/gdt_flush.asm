@@ -1,3 +1,4 @@
+bits 64
 section .text
 global gdt_flush
 global tss_flush

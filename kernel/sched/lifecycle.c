@@ -72,7 +72,8 @@ void sched_stacks_init(void) {
 // Baru di sinilah stack task DEAD boleh di-free.
 void task_exit_finish_on_idle(void* old_stack_base) {
     if (old_stack_base != NULL) {
-        kfree(old_stack_base);
+        // ARCH-2b: pasangan task_stack_alloc() — lihat catatan di task_stack.c.
+        task_stack_free(old_stack_base);
     }
     scheduler_idle_loop();
 }
@@ -130,6 +131,50 @@ static void task_entry_trampoline(void (*func)(void)) {
     }
     task_exit();
 }
+
+// ============================================================
+// ARCH-6: ALIGNMENT STACK UNTUK FRAME PALSU
+//
+// ABI SysV x86-64 mensyaratkan RSP % 16 == 8 saat MASUK sebuah fungsi C
+// (bukan 0), karena instruksi `call` sudah mendorong return address 8 byte.
+// Kalau RSP % 16 == 0 saat masuk, setiap local 16-byte-aligned (atau SSE
+// spill) menghasilkan #GP / hasil salah.
+//
+// Jalur TRAP asli sudah benar dengan sendirinya:
+//   RSP0 = stack_top (16-aligned)
+//   → CPU push 5 qword (40) + stub push 2 (16) + PUSHA64 15 (120) = 176
+//   → RSP = stack_top - 176 ≡ 0 (mod 16)
+//   → `call handler` mendorong 8 byte lagi → RSP ≡ 8 (mod 16) ✓
+//
+// Jalur FRAME PALSU salah, karena `iretq` tidak mendorong return address:
+//   p = stack_top, frame 176 byte, setelah POPA64 + add rsp,16 + iretq
+//   → RSP = stack_top ≡ 0 (mod 16) → MASUK FUNGSI DENGAN RSP ≡ 0 ✗
+//
+// Perbaikan: sisipkan 1 qword padding di ATAS frame (slot yang dilewati
+// iretq), sehingga RSP setelah iretq = stack_top - 8 ≡ 8 (mod 16) ✓.
+//
+// Padding ditaruh di atas, bukan di bawah, supaya:
+//   * `registers_t` tetap persis 176 byte dan tidak bergeser — seluruh
+//     handler C yang membaca field lewat offset tetap benar;
+//   * yang bergeser hanya RSP akhir, yaitu tepat apa yang perlu diperbaiki.
+//
+// Berlaku untuk KETIGA konstruksi frame: create_task_prio, create_user_task,
+// dan fork (vmm_clone_user_as). Untuk jalur user (ring 3) alignment ini tidak
+// relevan karena iretq memuat RSP dari frame, tapi padding tetap dipasang
+// supaya ketiganya identik dan tidak ada jalur yang "kebetulan benar".
+// ============================================================
+#define KZ_FAKE_FRAME_PAD 8ULL
+
+// Kalau sizeof(registers_t) bukan kelipatan 16, padding 8 byte tidak cukup
+// untuk membalik paritas alignment — dan assert ini akan menangkapnya.
+_Static_assert(sizeof(registers_t) % 16 == 0,
+               "sizeof(registers_t) harus kelipatan 16 agar KZ_FAKE_FRAME_PAD=8 cukup");
+_Static_assert(KZ_FAKE_FRAME_PAD == 8,
+               "KZ_FAKE_FRAME_PAD harus 8 byte (1 qword)");
+
+// Titik awal membangun frame palsu: 8 byte di bawah puncak stack, sehingga
+// RSP setelah iretq menjadi stack_top - 8.
+#define KZ_FAKE_FRAME_TOP(stack_top) ((uint64_t)(stack_top) - KZ_FAKE_FRAME_PAD)
 
 // ============================================================
 // tasking_init — Daftarkan task 0 (kernel main) sebagai current task
@@ -218,22 +263,32 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
     uint32_t kick_cpus[SMP_MAX_CPUS];
     uint32_t kick_count = 0;
 
-    // Alokasi stack baru
-    uint8_t* stack = (uint8_t*)kmalloc(TASK_STACK_SIZE);
+    // Alokasi stack baru (ARCH-2b: dengan guard page di bawahnya).
+    // `stack` = BASE area (menunjuk halaman GUARD, yang tidak di-map).
+    // Halaman stack yang sebenarnya mulai di stack + PAGE_SIZE.
+    uint8_t* stack = (uint8_t*)task_stack_alloc();
     if (!stack) return;
 
-    uint64_t stack_top = (uint64_t)stack + TASK_STACK_SIZE;
+    uint64_t stack_top = task_stack_top(stack);
 
-    // Zero out stack untuk keamanan
-    for (int i = 0; i < TASK_STACK_SIZE; i++) stack[i] = 0;
+    // Zero out area stack (BUKAN halaman guard — menyentuhnya = #PF).
+    uint8_t* stack_lo = stack + KZ_TASK_STACK_GUARD_BYTES;
+    for (int i = 0; i < TASK_STACK_SIZE; i++) stack_lo[i] = 0;
 
     // Bangun Fake ISR Frame dari atas stack ke bawah
     // Setiap `*(--p)` = PUSH (decrement pointer, lalu isi nilai)
-    uint64_t* p = (uint64_t*)stack_top;
+    //
+    // ARCH-6: mulai dari KZ_FAKE_FRAME_TOP (stack_top - 8), bukan stack_top.
+    // RSP yang di-iretq nanti jadi ≡ 8 (mod 16) — lihat blok penjelasan di
+    // atas file ini. Yang bergeser hanya RSP akhir; registers_t tidak berubah.
+    uint64_t* p = (uint64_t*)KZ_FAKE_FRAME_TOP(stack_top);
 
     // ── CPU auto-push (5 slot, urutan tinggi→rendah) ──
     *(--p) = 0x10ULL;            // SS  = kernel data segment
-    *(--p) = stack_top;          // RSP = top of this task's stack (setelah iretq)
+    // RSP awal task: titik tertinggi yang boleh dipakai task. Turunkan 8 byte
+    // juga supaya RSP pertama task (setelah iretq) juga ≡ 8 (mod 16) — kalau
+    // tidak, fungsi pertama yang dipanggil trampoline sudah misaligned.
+    *(--p) = KZ_FAKE_FRAME_TOP(stack_top); // RSP = top of task's stack (setelah iretq)
     *(--p) = 0x202ULL;           // RFLAGS: bit 1 (reserved=1) + IF=1 (interrupt enabled)
     *(--p) = 0x08ULL;            // CS  = kernel code segment
     *(--p) = (uint64_t)task_entry_trampoline; // RIP = wrapper aman untuk task
@@ -277,7 +332,7 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
 
     if (slot < 0) {
         spinlock_unlock_irqrestore(&scheduler_lock, flags);
-        kfree(stack);
+        task_stack_free(stack);
         return;
     }
 
@@ -285,7 +340,7 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
     // slot DEAD terlihat, jadi cabang ini hanya menyentuh task yang dimatikan
     // di luar jalur task_exit normal.
     if (tasks[slot].stack_base != 0) {
-        kfree((void*)tasks[slot].stack_base);
+        task_stack_free((void*)tasks[slot].stack_base);
     }
     // FIX_005 Tahap 3: fallback yang sama untuk metadata heap user — slot
     // yang dimatikan di luar jalur normal tidak boleh mewariskan region list.
@@ -336,7 +391,7 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
         tasks[slot].state = TASK_DEAD;
         tasks[slot].rsp   = 0;
         spinlock_unlock_irqrestore(&scheduler_lock, reclaim);
-        kfree(stack);
+        task_stack_free(stack);
         return;
     }
 
@@ -374,15 +429,21 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
     uint32_t kick_cpus[SMP_MAX_CPUS];
     uint32_t kick_count = 0;
 
-    uint8_t* stack = (uint8_t*)kmalloc(TASK_STACK_SIZE);
+    uint8_t* stack = (uint8_t*)task_stack_alloc();
     if (!stack) return -1;
 
-    uint64_t stack_top = (uint64_t)stack + TASK_STACK_SIZE;
-    for (int i = 0; i < TASK_STACK_SIZE; i++) stack[i] = 0;
+    uint64_t stack_top = task_stack_top(stack);
+    uint8_t* stack_lo = stack + KZ_TASK_STACK_GUARD_BYTES;
+    for (int i = 0; i < TASK_STACK_SIZE; i++) stack_lo[i] = 0;
 
     // Fake ISR Frame — layout identik dengan create_task_prio, bedanya:
     // SS/CS = segmen user (RPL3), RIP = entry ELF, RSP = stack user app.
-    uint64_t* p = (uint64_t*)stack_top;
+    //
+    // ARCH-6: mulai dari KZ_FAKE_FRAME_TOP untuk konsistensi dengan frame
+    // kernel. Di jalur ini RSP yang dipakai task datang dari frame (user_rsp),
+    // jadi padding tidak mengubah perilaku — tapi memakai rumus yang SAMA di
+    // ketiga konstruksi frame membuat tidak ada jalur yang "kebetulan benar".
+    uint64_t* p = (uint64_t*)KZ_FAKE_FRAME_TOP(stack_top);
 
     // ── CPU auto-push (5 slot, urutan tinggi→rendah) ──
     *(--p) = 0x23ULL;            // SS  = user data (GDT[4] | RPL3)
@@ -428,14 +489,14 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
 
     if (slot < 0) {
         spinlock_unlock_irqrestore(&scheduler_lock, flags);
-        kfree(stack);
+        task_stack_free(stack);
         return -1;
     }
 
     // Fallback reaper (pola create_task_prio): slot yang dimatikan di luar
     // jalur task_exit normal tidak boleh mewariskan stack/heap metadata.
     if (tasks[slot].stack_base != 0) {
-        kfree((void*)tasks[slot].stack_base);
+        task_stack_free((void*)tasks[slot].stack_base);
     }
     uheap_reset(&tasks[slot]);
 
@@ -452,7 +513,7 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
     int creator = smp_current_task_id();
     if (creator < 0 || creator >= task_count) {
         spinlock_unlock_irqrestore(&scheduler_lock, flags);
-        kfree(stack);
+        task_stack_free(stack);
         return -1;
     }
     tasks[slot].id         = (uint32_t)slot;
@@ -495,7 +556,7 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
             tasks[slot].rsp   = 0;
             tasks[slot].stack_base = 0;
             spinlock_unlock_irqrestore(&scheduler_lock, fail);
-            kfree(stack);
+            task_stack_free(stack);
             return -1;
         }
     }
@@ -507,7 +568,7 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
         tasks[slot].rsp   = 0;
         tasks[slot].stack_base = 0;   // stack di-free di bawah — jangan wariskan pointer
         spinlock_unlock_irqrestore(&scheduler_lock, reclaim);
-        kfree(stack);
+        task_stack_free(stack);
         return -1;
     }
 
@@ -558,12 +619,13 @@ int task_fork(int parent_id, registers_t* parent_rf) {
     if (child_as == PHYS_NULL) return -1;
 
     // 2. Child kernel stack (never shared with the parent).
-    uint8_t* stack = (uint8_t*)kmalloc(TASK_STACK_SIZE);
+    uint8_t* stack = (uint8_t*)task_stack_alloc();
     if (!stack) {
         vmm_destroy_address_space(child_as, 1);
         return -1;
     }
-    for (int i = 0; i < TASK_STACK_SIZE; i++) stack[i] = 0;
+    uint8_t* stack_lo = stack + KZ_TASK_STACK_GUARD_BYTES;
+    for (int i = 0; i < TASK_STACK_SIZE; i++) stack_lo[i] = 0;
 
     uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
 
@@ -579,14 +641,14 @@ int task_fork(int parent_id, registers_t* parent_rf) {
     }
     if (slot < 0) {
         spinlock_unlock_irqrestore(&scheduler_lock, flags);
-        kfree(stack);
+        task_stack_free(stack);
         vmm_destroy_address_space(child_as, 1);
         return -1;
     }
 
     // Same slot-reuse hygiene as create_user_task.
     if (tasks[slot].stack_base != 0) {
-        kfree((void*)tasks[slot].stack_base);
+        task_stack_free((void*)tasks[slot].stack_base);
     }
     uheap_reset(&tasks[slot]);
     {
@@ -617,7 +679,7 @@ int task_fork(int parent_id, registers_t* parent_rf) {
         tasks[slot].rsp   = 0;
         tasks[slot].stack_base = 0;
         spinlock_unlock_irqrestore(&scheduler_lock, flags);
-        kfree(stack);
+        task_stack_free(stack);
         vmm_destroy_address_space(child_as, 1);
         return -1;
     }
@@ -651,7 +713,7 @@ int task_fork(int parent_id, registers_t* parent_rf) {
             tasks[slot].stack_base = 0;
             spinlock_unlock_irqrestore(&scheduler_lock, fail);
             uheap_reset(&tasks[slot]);
-            kfree(stack);
+            task_stack_free(stack);
             vmm_destroy_address_space(child_as, 1);
             return -1;
         }
@@ -669,7 +731,7 @@ int task_fork(int parent_id, registers_t* parent_rf) {
             vfs_close_all(slot);
         }
         uheap_reset(&tasks[slot]);
-        kfree(stack);
+        task_stack_free(stack);
         vmm_destroy_address_space(child_as, 1);
         return -1;
     }

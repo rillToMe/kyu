@@ -415,8 +415,89 @@ static void ser_regs(const registers_t* r) {
 // =====================================================================
 // 4. LAYAR BSOD — EXCEPTION
 // =====================================================================
+
+// =====================================================================
+// ARCH-4: FAULT DARI RING-3 TIDAK BOLEH MEMBUNUH SELURUH KERNEL
+//
+// SEBELUMNYA setiap exception — dari mana pun asalnya — langsung masuk jalur
+// BSOD. Akibatnya SATU aplikasi user yang segfault (pointer liar, stack
+// overflow, #UD) mematikan seluruh sistem operasi. Itu sendiri sudah
+// mendiskualifikasi label "production": kernel yang benar mengisolasi fault
+// per-proses.
+//
+// SEKARANG fault dengan CPL=3 (cs & 3 == 3) yang datang dari task user
+// mematikan TASK ITU SAJA lewat proc_exit_kill() — jalur terminasi yang sudah
+// ada dan sudah dipakai sys_kill / kill_pending. Kernel, task lain, dan
+// desktop tetap hidup.
+//
+// KAPAN TETAP PANIC (sengaja):
+//   * CPL=0 — fault di kernel adalah bug kernel; tidak ada yang bisa
+//     "dipulihkan" dengan aman. BSOD + crashdump tetap dihasilkan.
+//   * #DF (8), #MC (18), #NMI (2) — kondisi mesin, bukan fault proses.
+//     #DF khususnya berarti state sudah tidak konsisten.
+//   * Tidak ada task aktif / task bukan SPAWNED — tidak ada proses yang bisa
+//     disalahkan, jadi jangan menelan fault.
+//
+// PENTING — kenapa aman memanggil proc_exit_kill() dari konteks ini:
+//   * Task yang fault sedang RUNNING di CPU ini (kita baru saja mengambil
+//     trap-nya), jadi ia tidak bisa berjalan di CPU lain.
+//   * Jalur user memegang NOL lock kernel saat masuk ring 0 — jadi exit tidak
+//     bisa self-deadlock (alasan yang sama dipakai proc_observe_kill_sched,
+//     lihat kernel/proc/proc.c).
+//   * proc_exit_kill() bersifat noreturn dan melakukan transisi tunggal;
+//     kill/parent-wait yang berkompetisi hanya bisa menang dengan bersih.
+//
+// Catatan: panic_cli()/serial_enter_panic_mode() TIDAK dipanggil di jalur ini
+// — keduanya mengubah state global (lockdown, budget UART) yang hanya benar
+// untuk panic sungguhan.
+// =====================================================================
+
+// Vektor yang TIDAK PERNAH ditangani sebagai fault proses, meskipun CPL=3.
+static int kz_vector_is_machine_fatal(uint64_t v) {
+    return (v == 2u) || (v == 8u) || (v == 18u);   // NMI, #DF, #MC
+}
+
+// Coba matikan task user yang fault. Return 1 bila sudah ditangani
+// (proc_exit_kill noreturn, jadi "1" hanya untuk kasus tidak ada task),
+// 0 bila pemanggil harus lanjut ke jalur panic.
+static int kz_try_kill_faulting_user_task(registers_t* r) {
+    // Hanya fault dari CPL=3.
+    if ((r->cs & 3u) != 3u) return 0;
+
+    // Kondisi mesin selalu fatal untuk sistem, bukan untuk satu proses.
+    if (kz_vector_is_machine_fatal(r->int_num)) return 0;
+
+    // Harus ada task user aktif di CPU ini. Tanpa itu tidak ada yang bisa
+    // disalahkan — lebih baik panic daripada menelan fault secara senyap.
+    int tid = smp_current_task_id();
+    if (tid < 0 || tid >= MAX_TASKS) return 0;
+    if (tasks[tid].kind != TASK_KIND_SPAWNED) return 0;
+
+    // Jejak ke COM1 SEBELUM terminasi: ini satu-satunya catatan bahwa proses
+    // mati karena fault (bukan exit normal), dan wajib ada supaya aplikasi
+    // yang crash bisa didiagnosis tanpa harus mereproduksi di bawah debugger.
+    serial_print("\n[FAULT] task ");
+    ser_dec((uint64_t)tid);
+    serial_print(" \"");
+    serial_print(tasks[tid].name[0] ? tasks[tid].name : "?");
+    serial_print("\" vektor=");
+    ser_dec(r->int_num);
+    serial_print(" err=");
+    ser_hex(r->error_code);
+    serial_print(" rip=");
+    ser_hex(r->rip);
+    serial_print(" -> task dibunuh, kernel lanjut\n");
+
+    proc_exit_kill();   // noreturn
+    return 0;           // tidak tercapai
+}
+
 void exception_handler(registers_t* r) {
     if (!r) return;
+
+    // ARCH-4: fault ring-3 = matikan task itu saja, bukan seluruh OS.
+    // Diletakkan PALING AWAL supaya tidak ada state panic yang tersentuh.
+    kz_try_kill_faulting_user_task(r);
 
     panic_cli();
     serial_enter_panic_mode();   // TX UART dibatasi: tidak boleh menggantung

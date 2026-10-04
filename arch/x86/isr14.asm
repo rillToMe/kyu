@@ -1,9 +1,11 @@
+bits 64
 %include "arch/x86/isr_macro.inc"
 section .text
 global isr14_stub
 extern page_fault_handler
 
 isr14_stub:
+    KZ_ENTRY_PROLOGUE   ; ARCH-1: cld + clac
     ; CPU otomatis push error code
     push 14         ; Push int_num
     PUSHA64

@@ -1,5 +1,7 @@
 #include <stdint.h>
 #include "string.h"
+#include "arch.h"
+#include "smp.h"   // SMP_MAX_CPUS
 
 struct gdt_entry {
     uint16_t limit_low;
@@ -43,7 +45,6 @@ struct tss_entry_struct {
 // FIX_005 Tahap 1: TSS per-CPU — satu deskriptor per CPU di GDT index
 // 5 + 2*cpu (tiap deskriptor 16 byte = 2 slot). Tanpa ini, dua CPU yang
 // transisi ring-3→ring-0 bersamaan berbagi satu RSP0 → stack saling timpa.
-#include "smp.h"   // SMP_MAX_CPUS
 #define GDT_TSS_FIRST 5
 #define GDT_ENTRIES   (GDT_TSS_FIRST + 2 * SMP_MAX_CPUS)
 #define TSS_SELECTOR(cpu) ((uint16_t)((GDT_TSS_FIRST + 2 * (cpu)) << 3))
@@ -51,6 +52,20 @@ struct tss_entry_struct {
 volatile struct gdt_entry gdt[GDT_ENTRIES];
 volatile struct gdt_ptr gp;
 struct tss_entry_struct tss_entries[SMP_MAX_CPUS];
+
+// ------------------------------------------------------------
+// ARCH-2: IST stacks per-CPU.
+//
+// Statis (BSS) dan 16-byte aligned — bukan kmalloc — karena init_gdt()
+// dipanggil di boot_phase_cpu_tables() SEBELUM heap ada. 3 × 8 KB × 16 CPU
+// = 384 KB BSS; kernel image ~424 KB, jadi biaya ruangnya wajar untuk
+// menghilangkan kelas bug "triple fault tanpa BSOD" sepenuhnya.
+//
+// Urutan ist[] di TSS: ist[0]=ist1 → KZ_IST_DF, ist[1]=ist2 → KZ_IST_NMI,
+// ist[2]=ist3 → KZ_IST_MC. Lihat KZ_IST_* di include/arch.h.
+// ------------------------------------------------------------
+static uint8_t ist_stacks[SMP_MAX_CPUS][KZ_IST_COUNT][KZ_IST_STACK_SIZE]
+    __attribute__((aligned(16)));
 
 extern void gdt_flush(uint64_t ptr);
 extern void tss_flush();
@@ -86,6 +101,41 @@ static void write_tss_cpu(uint32_t cpu) {
     tss_entries[cpu].iomap_base = sizeof(tss_entries[cpu]);
 }
 
+// ------------------------------------------------------------
+// ARCH-2: Isi slot IST TSS untuk satu CPU.
+//
+// Setiap stack tumbuh ke BAWAH dari ujungnya, jadi yang ditulis ke TSS
+// adalah alamat ujung atas (base + size), bukan base.
+// ------------------------------------------------------------
+void tss_set_ist(uint32_t cpu, uint32_t ist_index, uint64_t stack_top) {
+    if (cpu >= SMP_MAX_CPUS) return;
+    if (ist_index < 1 || ist_index > KZ_IST_COUNT) return;
+
+    switch (ist_index) {
+        case KZ_IST_DF:  tss_entries[cpu].ist1 = stack_top; break;
+        case KZ_IST_NMI: tss_entries[cpu].ist2 = stack_top; break;
+        case KZ_IST_MC:  tss_entries[cpu].ist3 = stack_top; break;
+        default: break;
+    }
+}
+
+// Alamat ujung atas stack IST milik satu CPU (dipakai init + AP bring-up).
+uint64_t tss_ist_stack_top(uint32_t cpu, uint32_t ist_index) {
+    if (cpu >= SMP_MAX_CPUS) return 0;
+    if (ist_index < 1 || ist_index > KZ_IST_COUNT) return 0;
+    uint8_t* base = &ist_stacks[cpu][ist_index - 1][0];
+    return ((uint64_t)base + KZ_IST_STACK_SIZE) & ~15ULL;
+}
+
+// Isi ketiga slot IST untuk satu CPU. Dipanggil BSP (init_gdt) dan setiap AP
+// (smp_ap_main) — TSS bersifat per-core.
+void tss_init_ist_cpu(uint32_t cpu) {
+    if (cpu >= SMP_MAX_CPUS) return;
+    for (uint32_t i = 1; i <= KZ_IST_COUNT; i++) {
+        tss_set_ist(cpu, i, tss_ist_stack_top(cpu, i));
+    }
+}
+
 // Isi RSP0 milik satu CPU (dipanggil setelah syscall stack-nya dialokasikan).
 void tss_set_rsp0(uint32_t cpu, uint64_t rsp0) {
     if (cpu >= SMP_MAX_CPUS) return;
@@ -111,8 +161,10 @@ void init_gdt() {
 
     // Deskriptor TSS untuk SEMUA CPU ditulis statis di sini (alamat
     // tss_entries sudah pasti sejak link); rsp0 diisi belakangan.
+    // ARCH-2: slot IST ikut diisi sekarang — tidak butuh heap.
     for (uint32_t cpu = 0; cpu < SMP_MAX_CPUS; cpu++) {
         write_tss_cpu(cpu);
+        tss_init_ist_cpu(cpu);
     }
 
     gdt_flush((uint64_t)&gp);

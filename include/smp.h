@@ -6,6 +6,9 @@
 #define SMP_MAX_CPUS 16
 
 typedef struct {
+    // ARCH-9: WAJIB field pertama (offset 0) — smp_current_cpu_index()
+    // membacanya lewat GS base sebagai word pertama blok per-CPU ini.
+    uint32_t cpu_index;
     uint32_t processor_id;
     uint32_t lapic_id;
     volatile uint32_t online;
@@ -20,6 +23,11 @@ void smp_set_cpu_online(uint32_t cpu_id);
 
 uint32_t smp_current_cpu_index(void);
 uint32_t smp_online_cpu_count(void);
+
+// ARCH-9: set GS base CPU ini ke blok per-CPU-nya (jalur cepat
+// smp_current_cpu_index). Dipanggil BSP + setiap AP saat bring-up.
+void smp_set_gs_base(uint32_t cpu_id);
+int  smp_gs_base_active(void);
 
 percpu_t* smp_get_cpu(uint32_t cpu_id);
 percpu_t* smp_current_cpu(void);
