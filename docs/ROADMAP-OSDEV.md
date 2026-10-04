@@ -350,17 +350,31 @@ Jangan implementasi di sini — tapi **rencanakan** dan **siapkan**.
 
 ### 3.1 — Aktifkan SSE/FPU di kernel `[P0]`
 
+> **Status: sebagian selesai.** Langkah 1 (CR4) dan 2 (FPU context save/restore)
+> sudah dikerjakan sebagai bagian dari ARCH-10 — lihat
+> [Arch Hardening](kernel/arch-hardening.md) dan
+> [Arch Subsystem Map](design/arch-subsystem-map.md) bagian 4.3. Yang tersisa:
+> `CR0` (EM/MP/NE), langkah 3 (opsional), dan langkah 4.
+
 **Langkah:**
 1. Aktifkan di boot: `CR0` (clear `EM`, set `MP`, `NE`), `CR4` (set `OSFXSR`,
    `OSXMMEXCPT`).
+   - `CR4.OSFXSR` + `CR4.OSXMMEXCPT`: **SELESAI** (`kernel/sched/fpu.c:106-107`).
+   - `CR0` (EM/MP/NE): **belum** — `fpu_init_cpu()` hanya menyentuh CR4.
 2. Tambahkan **FPU context save/restore** ke jalur context switch:
    `fxsave`/`fxrstor` (atau `xsave`/`xrstor` jika mau AVX nanti).
    - Alokasi area FPU per-task (512 byte aligned-16 untuk `fxsave`).
    - Simpan/restore di `schedule_on_cpu` dan di jalur preemption.
+   - **SELESAI** — `kernel/sched/fpu.c` `fpu_switch()`, `fpu_state[512]` per
+     task, dipanggil dari `kernel/sched/core.c`.
 3. Tangani `#NM` (Device Not Available) exception untuk lazy FPU switching
    (opsional, tapi bagus untuk performa).
+   - Belum; `fpu.c:67-68` mencatat `CR0.TS` sengaja tidak dipakai.
 4. Hapus `-mno-sse -mno-sse2 -mno-mmx -msoft-float` dari `CFLAGS` kernel
-   **secara bertahap** — mulai dari modul yang tidak sensitif.
+   **secara bertahap** - mulai dari modul yang tidak sensitif.
+   - Belum. Perbaiki dulu lima komentar yang menyatakan SSE selalu `#UD`
+     ([Arch Subsystem Map](design/arch-subsystem-map.md) bagian 4.3), karena
+     alasannya sudah tidak benar.
 5. **Pertahankan `-mno-red-zone`** (tetap wajib untuk kernel).
 
 **Verifikasi:**

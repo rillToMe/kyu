@@ -395,4 +395,6 @@ corrupt every subsequent string instruction in that thread.
 - [Interrupts & Timers](interrupts.md) — IDT, ISR mechanics, timer sources
 - [Scheduler](scheduler.md) — context switch, per-task stacks
 - [Panic & Crash Handling](panic.md) — fault reporting, kill path
+- [Arch Subsystem Map](../design/arch-subsystem-map.md) — which subsystems exist,
+  which are missing, and what is deliberately out of scope
 - [FIX_008](../history/milestones/FIX_008_arch_hardening.md) — the audit and fix record
