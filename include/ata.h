@@ -4,8 +4,11 @@
 #include <stdint.h>
 
 // Fungsi untuk membaca 1 sektor (512 byte) dari Hard Disk
-void ata_read_sector(uint32_t lba, uint8_t* buffer);
-void ata_write_sector(uint32_t lba, uint8_t* buffer);
+// Return 0 = sukses, non-zero = gagal. Bukan void lagi: jalur timeout lama
+// MENGISI BUFFER DENGAN NOL dan kembali seolah sukses, sehingga kegagalan I/O
+// menjadi data palsu yang tampak valid (lihat catatan di drivers/ata.c).
+int  ata_read_sector(uint32_t lba, uint8_t* buffer);
+int  ata_write_sector(uint32_t lba, uint8_t* buffer);
 uint32_t ata_get_total_sectors(void);
 
 // Wrapper Block 4KB (Modul 1 KyuzenFS V4): 1 block = 8 sektor LBA.

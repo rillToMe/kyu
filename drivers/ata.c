@@ -21,7 +21,17 @@ static void ata_delay_400ns(void) {
     inb(ATA_ALT_STATUS_PORT);
 }
 
-// Tunggu BSY bit clear, dengan proteksi timeout
+// ---------------------------------------------------------------------------
+// Tunggu BSY bit clear, dengan proteksi timeout.
+//
+// Batasnya JUMLAH POLLING, bukan waktu. Sempat diubah ke batas waktu berbasis
+// timer_get_ms() dengan hipotesis bahwa timeout inilah penyebab 87 modul gagal
+// terpasang pada boot soak. Hipotesis itu SALAH dan perubahannya dikembalikan:
+// dengan timeout dipaksa turun ke 1 ms pun (-DATA_IO_TIMEOUT_MS=1, percobaan
+// terkontrol) tidak ada satu pun operasi ATA yang timeout dan boot tetap
+// berhasil 89/89 modul. Operasi ATA PIO di QEMU selesai jauh di bawah 1 ms, jadi
+// 100000 iterasi memberi kelonggaran puluhan kali.
+// ---------------------------------------------------------------------------
 static int ata_wait_bsy(void) {
     for (int i = 0; i < 100000; i++) {
         uint8_t status = inb(ATA_STATUS_PORT);
@@ -41,75 +51,102 @@ static int ata_wait_drq(void) {
     return -3; // Timeout
 }
 
-void ata_read_sector(uint32_t lba, uint8_t* buffer) {
+// Baca satu sektor. Return 0 = sukses, non-zero = gagal (lihat ata_wait_drq).
+//
+// Return type adalah `int`, bukan `void`. Sebelumnya fungsi ini `void` dan
+// jalur timeout-nya MENGISI BUFFER DENGAN NOL lalu `return` — jadi pembaca
+// menerima 512 byte nol yang terlihat seperti data sah, dan tidak ada cara
+// membedakannya dari sektor yang memang berisi nol.
+//
+// Ini cacat desain yang berdiri sendiri, terlepas dari bug boot soak: sebuah
+// kegagalan I/O tidak boleh menjadi data palsu yang tampak valid. Pemanggil
+// (bcache) sudah memeriksa nilai balik ini; sebelumnya nilai itu selalu 0.
+//
+// CATATAN JUJUR: ini BUKAN penyebab kegagalan boot soak 1-dari-50. Hipotesis
+// itu diuji dengan memaksa timeout turun ke 1 ms (percobaan terkontrol,
+// -DATA_IO_TIMEOUT_MS=1) dan boot TETAP berhasil 89/89 modul. Jadi operasi ATA
+// di QEMU selesai jauh di bawah 1 ms dan timeout tidak pernah menyala. Penyebab
+// soak masih belum diketahui; perbaikan ini dipertahankan karena cacatnya nyata,
+// bukan karena ia memperbaiki soak.
+int ata_read_sector(uint32_t lba, uint8_t* buffer) {
     // 1. Tunggu sampai disk tidak sibuk
-    ata_wait_bsy();
-    
+    if (ata_wait_bsy() != 0) return -1;
+
     // 2. Pilih drive (Master = 0xE0) dan sisipkan 4 bit teratas dari LBA
     outb(ATA_DRIVE_PORT, 0xE0 | ((lba >> 24) & 0x0F));
     ata_delay_400ns();  // KRITIS: Tunggu drive select settle (ATA spec)
-    
+
     // 3. Tentukan jumlah sektor yang mau dibaca (1 sektor)
     outb(ATA_SECTOR_COUNT_PORT, 1);
-    
+
     // 4. Kirim sisa 24 bit alamat LBA
     outb(ATA_LBA_LO_PORT, (uint8_t)lba);
     outb(ATA_LBA_MID_PORT, (uint8_t)(lba >> 8));
     outb(ATA_LBA_HI_PORT, (uint8_t)(lba >> 16));
-    
+
     // 5. Kirim perintah READ SECTORS (0x20)
     outb(ATA_COMMAND_PORT, 0x20);
-    
+
     // 6. Tunggu 400ns sebelum mulai polling (ATA spec)
     ata_delay_400ns();
-    
-    // 7. Polling: Tunggu DRQ dengan pengecekan error
-    if (ata_wait_drq() != 0) {
-        // Error! Isi buffer dengan nol agar tidak crash
-        for (int i = 0; i < 512; i++) buffer[i] = 0;
-        return;
-    }
-    
+
+    // 7. Polling: Tunggu DRQ dengan pengecekan error.
+    //    JANGAN mengisi buffer dengan nol dan mengaku sukses: itu mengubah
+    //    kegagalan I/O menjadi data palsu yang tampak valid.
+    int drq = ata_wait_drq();
+    if (drq != 0) return drq;
+
     // 8. Sedot Datanya! 256 kali loop x 2 byte = 512 byte (1 sektor)
     uint16_t* ptr = (uint16_t*)buffer;
     for (int i = 0; i < 256; i++) {
         ptr[i] = inw(ATA_DATA_PORT);
     }
+    return 0;
 }
 
-void ata_write_sector(uint32_t lba, uint8_t* buffer) {
+// Tulis satu sektor. Return 0 = sukses, non-zero = gagal (lihat ata_wait_drq).
+//
+// Return type adalah `int`, bukan `void`. Sebelumnya fungsi ini `void` dan
+// baris "Abort jika error" di bawah hanya `return;` — jadi kegagalan tulis
+// hilang tanpa jejak, dan ata_write_block4k() selalu melaporkan sukses untuk
+// data yang tidak pernah sampai ke disk.
+//
+// Sama seperti ata_read_sector: ini cacat desain yang berdiri sendiri, bukan
+// perbaikan untuk kegagalan boot soak (lihat catatan di fungsi itu).
+int ata_write_sector(uint32_t lba, uint8_t* buffer) {
     // 1. Tunggu sampai disk tidak sibuk
-    ata_wait_bsy();
-    
+    if (ata_wait_bsy() != 0) return -1;
+
     // 2. Pilih drive dan alamat LBA
     outb(ATA_DRIVE_PORT, 0xE0 | ((lba >> 24) & 0x0F));
     ata_delay_400ns();  // KRITIS: Tunggu drive select settle (ATA spec)
-    
+
     // 3. Setel parameter sektor
     outb(ATA_SECTOR_COUNT_PORT, 1);
     outb(ATA_LBA_LO_PORT, (uint8_t)lba);
     outb(ATA_LBA_MID_PORT, (uint8_t)(lba >> 8));
     outb(ATA_LBA_HI_PORT, (uint8_t)(lba >> 16));
-    
+
     // 4. Kirim perintah WRITE SECTORS (0x30)
     outb(ATA_COMMAND_PORT, 0x30);
-    
+
     // 5. Tunggu 400ns sebelum mulai polling (ATA spec)
     ata_delay_400ns();
-    
+
     // 6. Tunggu DRQ dengan pengecekan error
-    if (ata_wait_drq() != 0) return;  // Abort jika error
-    
+    int drq = ata_wait_drq();
+    if (drq != 0) return drq;      // ERR/DF/timeout - LAPORKAN, jangan diam
+
     // 7. Suntikkan Data! 256 kali loop x 2 byte = 512 byte (1 sektor)
     uint16_t* ptr = (uint16_t*)buffer;
     for (int i = 0; i < 256; i++) {
         outw(ATA_DATA_PORT, ptr[i]);
     }
-    
+
     // 8. SANGAT PENTING: Perintah CACHE FLUSH (0xE7)
     outb(ATA_COMMAND_PORT, 0xE7);
     ata_delay_400ns();
-    ata_wait_bsy();  // Tunggu flush selesai
+    return ata_wait_bsy();         // flush gagal juga harus terlihat
 }
 
 // Fungsi untuk menanyakan ukuran asli Hard Disk ke Hardware QEMU via ATA IDENTIFY
@@ -226,11 +263,14 @@ int ata_read_range(uint32_t lba, uint32_t count, uint8_t *buf) {
 
     if (g_read_path == ATA_READ_PATH_LEGACY) {
         for (uint32_t s = 0; s < count; s++) {
-            ata_read_sector(lba + s, buf + (s * 512u));   // error = buffer nol
+            // Sebelumnya komentarnya "error = buffer nol": kegagalan baca
+            // menghasilkan sektor berisi nol yang tampak seperti data sah.
+            // Sekarang kegagalan dilaporkan dan menghentikan pembacaan.
+            int rc = ata_read_sector(lba + s, buf + (s * 512u));
+            if (rc != 0) return rc;
         }
         return 0;
     }
-
     while (count > 0) {
         uint32_t n = (count > ATA_READ_BATCH_MAX_SECTORS)
                      ? ATA_READ_BATCH_MAX_SECTORS : count;
@@ -249,7 +289,10 @@ static int ata_read_block4k_legacy(uint64_t block_num, void *buf) {
     uint8_t *p = (uint8_t*)buf;
     uint32_t lba0 = (uint32_t)(block_num * KZFS_BLOCK_SECTORS);
     for (int s = 0; s < KZFS_BLOCK_SECTORS; s++) {
-        ata_read_sector(lba0 + (uint32_t)s, p + (s * 512));
+        // Satu sektor gagal = seluruh block tidak utuh. Berhenti dan laporkan;
+        // melanjutkan hanya akan mengisi sisa block dengan data basi.
+        int rc = ata_read_sector(lba0 + (uint32_t)s, p + (s * 512));
+        if (rc != 0) return rc;
     }
     return 0;
 }
@@ -268,7 +311,12 @@ int ata_write_block4k(uint64_t block_num, const void *buf) {
     const uint8_t *p = (const uint8_t*)buf;
     uint32_t lba0 = (uint32_t)(block_num * KZFS_BLOCK_SECTORS);
     for (int s = 0; s < KZFS_BLOCK_SECTORS; s++) {
-        ata_write_sector(lba0 + (uint32_t)s, (uint8_t*)(p + (s * 512)));
+        // Kegagalan satu sektor berarti SELURUH block tidak utuh. Berhenti dan
+        // laporkan, jangan mengembalikan 0 seolah-olah berhasil: pemanggil
+        // (bcache/kfs) memakai nilai ini untuk memutuskan apakah metadata boleh
+        // dianggap tersimpan.
+        int rc = ata_write_sector(lba0 + (uint32_t)s, (uint8_t*)(p + (s * 512)));
+        if (rc != 0) return rc;
     }
     return 0;
 }

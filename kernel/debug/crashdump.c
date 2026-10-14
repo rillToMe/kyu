@@ -71,8 +71,10 @@ void crashdump_init(uint64_t crash_start_lba, uint32_t crash_sectors) {
     g_ready = 1;
 
     // Baca header dump sebelumnya (kalau ada) supaya dump_count berlanjut.
+    // Baca yang gagal berarti "tidak ada dump sebelumnya" - jangan menaikkan
+    // dump_count berdasarkan sektor yang tidak terbaca.
     uint8_t sec[512];
-    ata_read_sector((uint32_t)g_lba, sec);
+    if (ata_read_sector((uint32_t)g_lba, sec) != 0) return;
     const crashdump_hdr_t* h = (const crashdump_hdr_t*)sec;
     if (h->magic == CRASHDUMP_MAGIC && h->version == CRASHDUMP_VERSION &&
         h->dump_count != 0xFFFFFFFFu) {
@@ -119,7 +121,7 @@ int crashdump_read_last(crashdump_hdr_t* out_hdr, void* out_payload,
     if (!g_ready) return 0;
 
     uint8_t sec[512];
-    ata_read_sector((uint32_t)g_lba, sec);
+    if (ata_read_sector((uint32_t)g_lba, sec) != 0) return 0;
     crashdump_hdr_t h;
     mem_copy((uint8_t*)&h, sec, (uint32_t)sizeof(h));
     if (h.magic != CRASHDUMP_MAGIC || h.version != CRASHDUMP_VERSION) return 0;
@@ -131,7 +133,9 @@ int crashdump_read_last(crashdump_hdr_t* out_hdr, void* out_payload,
     uint32_t off = (uint32_t)sizeof(crashdump_hdr_t);
     for (uint32_t i = 0; i < h.length; i++) {
         uint32_t idx = off + i;
-        if ((idx % 512u) == 0u) ata_read_sector((uint32_t)(g_lba + (idx / 512u)), sec);
+        if ((idx % 512u) == 0u) {
+            if (ata_read_sector((uint32_t)(g_lba + (idx / 512u)), sec) != 0) return 0;
+        }
         pay[i] = sec[idx % 512u];
     }
     if (sum32(pay, h.length) != h.checksum) return 0;
@@ -231,16 +235,24 @@ int crashdump_write_snapshot(const crashdump_hdr_t* hdr, const void* payload, ui
     mem_copy(g_buf, (const uint8_t*)&h, (uint32_t)sizeof(h));
     if (len) mem_copy(&g_buf[sizeof(h)], pay, len);
 
-    // Tulis sektor demi sektor; cek abort di antara sektor.
+    // Tulis sektor demi sektor; cek abort di antara sektor. Kegagalan tulis
+    // dilaporkan (ata_write_sector mengembalikan status) - jalur panic tidak
+    // boleh menganggap dump tersimpan kalau disknya menolak.
     for (uint32_t s = 0; s < h.sectors; s++) {
         if (g_abort) { g_active = 0; return -3; }
-        ata_write_sector((uint32_t)(g_lba + s), &g_buf[s * 512u]);
+        if (ata_write_sector((uint32_t)(g_lba + s), &g_buf[s * 512u]) != 0) {
+            g_active = 0;
+            return -4;              // tulis gagal
+        }
     }
 
     // Verifikasi baca-balik (bukti dump benar-benar ada di disk).
     if (g_abort) { g_active = 0; return -3; }
     uint8_t sec[512];
-    ata_read_sector((uint32_t)g_lba, sec);
+    if (ata_read_sector((uint32_t)g_lba, sec) != 0) {
+        g_active = 0;
+        return -4;              // baca-balik gagal: anggap dump tidak tersimpan
+    }
     const crashdump_hdr_t* v = (const crashdump_hdr_t*)sec;
     if (v->magic != CRASHDUMP_MAGIC || v->dump_count != h.dump_count ||
         v->checksum != h.checksum) {
