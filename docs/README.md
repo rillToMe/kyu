@@ -11,6 +11,10 @@ code disagree, the code is authoritative — please report the discrepancy.
 > **New here?** Start with the [project README](../README.md) for an overview,
 > then read [Architecture Overview](architecture/overview.md).
 
+> **Deciding whether to use or contribute to this?** Read [Scope](SCOPE.md)
+> first — it states plainly what KyuzenOS is not, and which limits are
+> deliberate decisions rather than unfinished work.
+
 ---
 
 ## Documentation Map
@@ -21,6 +25,7 @@ The big picture: how the pieces fit together.
 
 | Document | Description |
 | --- | --- |
+| [Scope](SCOPE.md) | What KyuzenOS is, and what it deliberately is not |
 | [Overview](architecture/overview.md) | System layers, boot chain, address-space model, design principles |
 | [Boot Process](architecture/boot.md) | Limine handoff, early initialization order, module installation |
 
