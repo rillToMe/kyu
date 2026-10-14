@@ -55,10 +55,71 @@ endif()
 set(_rust_stamp "${CMAKE_BINARY_DIR}/rust/.stamp")
 set(_rust_rustflags "-C relocation-model=static -C link-arg=-T../apps/app.ld")
 
+# ---------------------------------------------------------------------------
+# HOST build-script linker (Windows only).
+#
+# The build scripts (slint-build, proc-macro2, ...) are HOST programs and need
+# a native Windows linker. rustc defaults to MSVC's link.exe — but this project
+# deliberately does not require MSVC, and under ./build.sh the default is
+# actively broken: build.sh puts MSYS2's usr/bin first, where `link.exe` is
+# coreutils `link` (a hardlink tool), so every build script dies with
+#
+#     /usr/bin/link: extra operand '....rcgu.o'
+#
+# MSYS2's clang64 ships lld-link.exe, which links these host binaries with no
+# MSVC install at all: it resolves its own import libraries (ws2_32, dbghelp,
+# ...) with no LIB variable set. usr/bin also ships an lld-link, but that copy
+# is a Cygwin binary and does NOT find them — hence the clang64 copy is chosen
+# deliberately rather than by bare name, which PATH order could redirect.
+#
+# The root is derived from KYUZEN_CLANG (<root>/usr/bin/clang) instead of being
+# hardcoded, so the tree keeps working wherever MSYS2 lives.
+#
+# CMAKE_HOST_WIN32, not WIN32: this project's toolchain sets
+# CMAKE_SYSTEM_NAME=Generic (bare-metal target), so WIN32 is FALSE even on a
+# Windows host. The question here is about the HOST, not the target.
+#
+# On Linux this block is inert and the native linker is used as usual.
+# ---------------------------------------------------------------------------
+set(_rust_host_linker_env "")
+if(CMAKE_HOST_WIN32)
+    get_filename_component(_clang_bin "${KYUZEN_CLANG}" DIRECTORY)   # <root>/usr/bin
+    get_filename_component(_clang_usr "${_clang_bin}" DIRECTORY)    # <root>/usr
+    get_filename_component(_msys_root "${_clang_usr}" DIRECTORY)    # <root>
+
+    find_program(KYUZEN_LLD_LINK
+        NAMES lld-link lld-link.exe
+        HINTS "${_msys_root}/clang64/bin"
+        NO_DEFAULT_PATH
+    )
+    if(NOT KYUZEN_LLD_LINK)
+        # Fall back to a PATH lookup, but only accept it if it is NOT the
+        # Cygwin copy in usr/bin (that one cannot find the import libraries).
+        find_program(KYUZEN_LLD_LINK NAMES lld-link lld-link.exe)
+        if(KYUZEN_LLD_LINK AND KYUZEN_LLD_LINK MATCHES "/usr/bin/")
+            set(KYUZEN_LLD_LINK "KYUZEN_LLD_LINK-NOTFOUND")
+        endif()
+    endif()
+
+    if(KYUZEN_LLD_LINK)
+        message(STATUS "rust: host build-script linker: ${KYUZEN_LLD_LINK}")
+        set(_rust_host_linker_env
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=${KYUZEN_LLD_LINK}")
+    else()
+        message(WARNING
+            "rust: clang64 lld-link.exe not found under ${_msys_root}/clang64/bin.\n"
+            "  The host build scripts would use rustc's default linker, which "
+            "under ./build.sh resolves to MSYS2 coreutils `link` and fails with "
+            "'extra operand'.\n"
+            "  Install it with: pacman -S mingw-w64-clang-x86_64-lld")
+    endif()
+endif()
+
 add_custom_command(
     OUTPUT "${_rust_stamp}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${KYUZEN_ELF_DIR}"
     COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=${_rust_rustflags}"
+            ${_rust_host_linker_env}
             "${KYUZEN_CARGO}" build --release
     COMMAND ${CMAKE_COMMAND}
             -DSRC_DIR=${_rust_out}

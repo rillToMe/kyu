@@ -50,6 +50,39 @@ function(kyuzen_add_image_target)
             "(`make -C limine` builds the Linux/macOS `limine` binary instead.)")
     endif()
 
+    # -----------------------------------------------------------------------
+    # The `limine` host tool that runs `bios-install`.
+    #
+    # limine.exe is a WINDOWS PE binary: it only runs on Windows (or under WSL's
+    # interop, which is not available on a plain Linux CI runner). The same
+    # limine.c is tracked, so on a non-Windows host the tool is compiled from
+    # source into the build tree instead.
+    #
+    # Both paths expose the same CLI, so the bios-install command below is
+    # identical either way.
+    # -----------------------------------------------------------------------
+    if(CMAKE_HOST_WIN32)
+        set(KYUZEN_LIMINE_TOOL "${KYUZEN_ROOT}/limine/limine.exe")
+    else()
+        find_program(KYUZEN_HOST_CC NAMES cc gcc clang REQUIRED)
+        set(KYUZEN_LIMINE_TOOL "${CMAKE_BINARY_DIR}/tools/limine")
+
+        add_custom_command(
+            OUTPUT "${KYUZEN_LIMINE_TOOL}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/tools"
+            # -I is needed because limine.c includes limine-bios-hdd.h from its
+            # own directory; passing the absolute source path is not enough for
+            # every compiler's quote-include search order.
+            COMMAND "${KYUZEN_HOST_CC}" -std=c99 -O2
+                    -I "${KYUZEN_ROOT}/limine"
+                    "${KYUZEN_ROOT}/limine/limine.c"
+                    -o "${KYUZEN_LIMINE_TOOL}"
+            DEPENDS "${KYUZEN_ROOT}/limine/limine.c"
+            COMMENT "Building the native limine tool (bios-install)"
+            VERBATIM
+        )
+    endif()
+
     file(GLOB _manifests "${KYUZEN_ROOT}/manifests/*.app")
 
     set(_desktop_assets
@@ -187,11 +220,12 @@ function(kyuzen_add_image_target)
                 iso_root -o boot_image.iso
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
         # --- install the BIOS boot stages ------------------------------------
-        COMMAND "${KYUZEN_ROOT}/limine/limine.exe" bios-install "${KYUZEN_ISO_IMAGE}"
+        COMMAND "${KYUZEN_LIMINE_TOOL}" bios-install "${KYUZEN_ISO_IMAGE}"
         DEPENDS
             kyuzen-kernel
             ${_app_targets}
             ${_rust_deps}
+            "${KYUZEN_LIMINE_TOOL}"
             "${KYUZEN_ROOT}/limine.conf"
             ${_manifests}
             ${_limine_files}

@@ -95,6 +95,44 @@ target_include_directories(kyuzen-lexbor PUBLIC
     ${KYUZEN_ROOT}/third_party/lexbor/source
 )
 
+# ---------------------------------------------------------------------------
+# The staged C SDK headers, as SYSTEM includes.
+#
+# THIS IS NOT OPTIONAL. Lexbor's core/base.h unconditionally includes
+# <stdlib.h>, <stdio.h>, <string.h> and <memory.h>. Without the SDK on the
+# include path those resolve to whatever the HOST toolchain happens to ship:
+#
+#   MSYS2   -> /usr/include/stdlib.h  (newlib), and it compiled by accident
+#   Linux   -> nothing, 132 files fail with "'stdlib.h' file not found"
+#
+# So the MSYS2 build was silently compiling Lexbor against newlib declarations
+# — the exact "no hosted libc" violation the <memory.h> shim next door was
+# written to prevent. It went unnoticed because MSYS2 ships those headers in a
+# directory clang searches by default; a portable toolchain does not.
+#
+# SYSTEM (not plain -I) so the SDK's headers cannot shadow the project's own,
+# matching how kyuzen_add_sdk_app() treats them.
+#
+# The path is derived from KYUZEN_SDK_DIR rather than read from
+# KYUZEN_SDK_C_INC: third_party/ is added BEFORE libs/, so the variable
+# libs/c exports would still be empty here.
+#
+# Gated on KYUZEN_BUILD_LIBC_SDK because that is what defines the kyuzen-sdk-c
+# target below. Lexbor's only consumer is browser.elf, which is itself an SDK
+# app — with the SDK off there is no staged libc.a to compile against, so
+# there is nothing to build here either.
+# ---------------------------------------------------------------------------
+if(KYUZEN_BUILD_LIBC_SDK)
+    target_include_directories(kyuzen-lexbor SYSTEM PRIVATE
+        "${KYUZEN_SDK_DIR}/c/include"
+    )
+
+    # Nothing may compile before the SDK is staged. kyuzen-sdk-c is defined in
+    # libs/c, which is added after this directory — CMake resolves the forward
+    # reference at generate time.
+    add_dependencies(kyuzen-lexbor kyuzen-sdk-c)
+endif()
+
 set_target_properties(kyuzen-lexbor PROPERTIES
     OUTPUT_NAME "lexbor_kyuzen"
     ARCHIVE_OUTPUT_DIRECTORY "${KYUZEN_LIB_DIR}"

@@ -142,8 +142,59 @@ cmake -S . -B build/stress -G Ninja \
 
 ## Continuous Integration
 
-There is **no CI** configured in the repository. All testing is local and
-manual.
+CI runs on every push and pull request
+([`.github/workflows/build.yml`](../../.github/workflows/build.yml)). Three jobs:
+
+| Job | What it does | What it catches |
+| --- | --- | --- |
+| **Build** | Fresh checkout → `cmake` → `cmake --build` → `kyuzen-image`. Also fetches llvm-project and builds the Rust apps. | Anything that does not compile on a clean tree, and the ISO module guard (a `limine.conf` entry with no staged file) |
+| **Host tests** | `cmake -S tests/host` → `ctest` | Regressions in kernel/library code covered by the 21 host tests |
+| **Boot smoke** | Downloads the ISO the Build job produced and boots it headless in QEMU | An image that links but panics or hangs before userspace |
+
+The build job is a **clean-clone** build with no cache, so a local incremental
+tree cannot mask a missing file.
+
+### Boot smoke test
+
+`tools/ci/boot_check.py` boots the ISO with an empty disk and requires the
+kernel's own marker on COM1:
+
+```sh
+python3 tools/ci/boot_check.py --iso build/target/boot_image.iso
+```
+
+`KyuzenOS ready.` is printed by `boot_handoff_to_init()` only after display,
+memory, paging, heap, interrupts, filesystem, VFS, SMP, network and all Limine
+modules are up and `init.elf` exists as a ring-3 task — the narrowest single
+signal that the whole boot path worked. A panic fails the run immediately
+instead of waiting out the timeout.
+
+The disk is a fresh empty image: the kernel formats an unformatted disk itself,
+so no committed `disk.img` is needed. The display device is `-vga std` rather
+than the dev default `virtio-vga`, because `virtio-vga` is not present in every
+QEMU package; the marker is on COM1 and is printed before any GPU path matters.
+
+Run it locally the same way CI does — it needs only `qemu-system-x86_64` on
+`PATH`.
+
+### Reproducing a CI failure locally
+
+CI builds on Linux with a stock toolchain. The closest local equivalent is a
+plain configure (no `./build.sh`, which is MSYS2-specific):
+
+```sh
+cmake -S . -B build/target -G Ninja
+cmake --build build/target
+cmake --build build/target --target kyuzen-image
+python3 tools/ci/boot_check.py --iso build/target/boot_image.iso
+```
+
+If that fails while `./build.sh` succeeds, the difference is usually a
+**host-header leak**: a freestanding component that resolved `<stdlib.h>` and
+friends from the host toolchain instead of the staged SDK. MSYS2 ships those
+headers in a directory clang searches by default, so the mistake compiles there
+and nowhere else.
+
 
 ## Related Documentation
 

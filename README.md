@@ -13,6 +13,8 @@
   ![Lang](https://img.shields.io/badge/lang-C%20%2B%20C%2B%2B%20%2B%20Rust-informational)
   ![Runs on](https://img.shields.io/badge/runs%20on-bare%20metal%20%2F%20QEMU-success)
 
+  [![CI](https://github.com/rillToMe/kyu/actions/workflows/build.yml/badge.svg)](https://github.com/rillToMe/kyu/actions/workflows/build.yml)
+
   <img src="docs/screenshots/desktop.png" alt="Kyuzen OS desktop — calculator, file manager, and terminal running concurrently" width="85%" />
 </div>
 

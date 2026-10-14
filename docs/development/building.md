@@ -95,13 +95,14 @@ target needs `cargo` on PATH, and skips the Rust apps without it.
 
 ```sh
 # Ubuntu / Debian
-sudo apt update && sudo apt install -y clang nasm lld cmake ninja-build \
-    qemu-system-x86 xorriso git python3 ovmf
+sudo apt update && sudo apt install -y clang lld llvm nasm cmake ninja-build \
+    qemu-system-x86 xorriso git python3 python3-yaml fonts-dejavu-core ovmf
 ```
 
 ```sh
 # Arch
-sudo pacman -S clang nasm lld cmake ninja qemu-full xorriso git python
+sudo pacman -S clang lld llvm nasm cmake ninja qemu-system-x86 xorriso git \
+    python python-yaml ttf-dejavu
 ```
 
 `./build.sh` is written for MSYS2 and expects `usr/bin`, `clang64/bin` and
@@ -109,9 +110,21 @@ sudo pacman -S clang nasm lld cmake ninja qemu-full xorriso git python
 CMake directly instead — the two-clang problem it works around is MSYS2-specific:
 
 ```sh
+./tools/fetch-llvm-project.sh      # first run only, needs the SDK
 cmake -S . -B build/target -G Ninja
 cmake --build build/target
 ```
+
+Two of those packages are easy to miss and fail late rather than early:
+
+| Package | Needed by | Without it |
+| --- | --- | --- |
+| `python3-yaml` | the nested LLVM libc build (its header generator) | the SDK build dies with `ModuleNotFoundError: No module named 'yaml'` |
+| `fonts-dejavu-core` | Slint's `slint-build`, which rasterises the UI at build time | the Rust apps fail with `could not determine a default font for sans-serif` |
+
+`llvm` (not just `lld`) is required for `llvm-nm` and `llvm-objdump`, which the
+post-build ELF verification uses.
+
 
 ## Build Targets
 
@@ -147,6 +160,18 @@ Useful ones: `kyuzen-kernel`, `kyuzen-desktop`, `kyuzen-browser`,
 ```sh
 ./build.sh iso       # kernel + apps + Rust + assets + Limine → build/target/boot_image.iso
 ```
+
+The ISO's `bios-install` step uses the `limine` host tool. Which one depends on
+the host:
+
+| Host | Tool | Why |
+| --- | --- | --- |
+| Windows | `limine/limine.exe` (tracked) | Prebuilt PE binary |
+| Linux/macOS | `limine` compiled from `limine/limine.c` into `build/target/tools/` | `limine.exe` is a Windows PE binary and cannot run on a Linux host |
+
+`limine.c` is tracked, so no download is needed; CMake compiles it with the
+host `cc` on the first ISO build.
+
 
 ### Utilities
 

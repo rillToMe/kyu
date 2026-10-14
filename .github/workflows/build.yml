@@ -1,0 +1,192 @@
+# ============================================================================
+# KyuzenOS CI — build, host tests, and a real boot smoke test.
+#
+# WHAT THIS PROVES (and why each job exists)
+#
+#   build       A clean clone configures and builds the kernel, every app, and
+#               the ISO. This is the job that would have caught Lexbor compiling
+#               against the host's newlib headers: MSYS2 silently found
+#               /usr/include/stdlib.h, while a portable toolchain does not.
+#
+#   host-tests  The 21 host-side tests run. They compile the REAL kernel and
+#               library sources against mocks, so a bug in that code shows up
+#               here without booting anything.
+#
+#   boot-smoke  QEMU boots the ISO built by this run and COM1 must print
+#               "KyuzenOS ready.". A build that links but panics at boot is not
+#               a working system, and nothing else in this file would notice.
+#
+# WHY THE SDK IS BUILT HERE (it is the slow part)
+#   -DKYUZEN_BUILD_LIBC_SDK=OFF would make this workflow much faster, but it
+#   would also skip the exact code path that was broken: the C/C++ SDK is what
+#   stages the headers Lexbor needs, and browser.elf / desktop.elf / fileman.elf
+#   are SDK apps. A CI that skips them would have been green on a broken tree.
+#
+#   llvm-project (~137 MB sparse) is fetched with the same script a developer
+#   uses, so the CI path and the local path cannot drift apart.
+#
+# WHY ubuntu-latest AND NOT MSYS2
+#   The project also builds on MSYS2, but Linux is the portable reference: it is
+#   where the "compiles only by accident" class of bug surfaces. MSYS2-specific
+#   concerns (two clang installs, Cygwin path translation) are handled by
+#   ./build.sh locally and are documented in docs/development/building.md.
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Kept in one place so the two jobs cannot disagree about the build tree.
+  BUILD_DIR: build/target
+  HOST_BUILD_DIR: build/host
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Build: kernel + libraries + every app + Rust + the bootable ISO.
+  # --------------------------------------------------------------------------
+  build:
+    name: Build (kernel, apps, ISO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm nasm cmake ninja-build \
+            xorriso qemu-system-x86 \
+            python3 python3-yaml \
+            fonts-dejavu-core \
+            git
+
+      # The Rust apps (hello-slint, control-center) are listed in limine.conf,
+      # and the ISO's module guard fails the build when a listed module is
+      # missing. So the Rust toolchain is required, not optional.
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-unknown-none
+          rustc --version
+          cargo --version
+
+      - name: Report the toolchain
+        run: |
+          clang --version | head -1
+          cmake --version | head -1
+          ninja --version
+          qemu-system-x86_64 --version | head -1
+
+      # The SDK is built from LLVM's libc/libcxx, which are not committed.
+      - name: Fetch llvm-project (sparse, ~137 MB)
+        run: ./tools/fetch-llvm-project.sh
+
+      - name: Configure
+        run: cmake -S . -B "$BUILD_DIR" -G Ninja
+
+      - name: Build everything
+        run: cmake --build "$BUILD_DIR"
+
+      - name: Build the ISO
+        run: cmake --build "$BUILD_DIR" --target kyuzen-image
+
+      - name: Report the artifacts
+        run: |
+          ls -la "$BUILD_DIR/bin/myos.bin" "$BUILD_DIR/boot_image.iso"
+          echo "user-space ELFs: $(find "$BUILD_DIR/apps" -name '*.elf' | wc -l)"
+
+      - name: Upload the ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyuzenos-iso
+          path: build/target/boot_image.iso
+          retention-days: 7
+
+  # --------------------------------------------------------------------------
+  # Host tests: the real sources against mocks, no QEMU needed.
+  # --------------------------------------------------------------------------
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm cmake ninja-build \
+            python3 python3-yaml git
+
+      - name: Configure
+        run: cmake -S tests/host -B "$HOST_BUILD_DIR" -G Ninja
+
+      - name: Build the tests
+        run: cmake --build "$HOST_BUILD_DIR"
+
+      - name: Run the tests
+        run: ctest --test-dir "$HOST_BUILD_DIR" --output-on-failure
+
+  # --------------------------------------------------------------------------
+  # Boot smoke: the ISO from the build job must reach the boot marker.
+  #
+  # Depends on `build` and downloads its ISO, so the exact image that is
+  # published is the one that was booted — not a rebuild that could differ.
+  # --------------------------------------------------------------------------
+  boot-smoke:
+    name: Boot smoke (QEMU)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: Download the ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: kyuzenos-iso
+          path: iso
+
+      - name: Boot and check for the marker
+        run: |
+          python3 tools/ci/boot_check.py \
+            --iso iso/boot_image.iso \
+            --serial boot_serial.log \
+            --timeout 120
+
+      - name: Show the serial log
+        if: always()
+        run: |
+          echo "===== serial log ====="
+          cat boot_serial.log 2>/dev/null || echo "(no serial log)"
+
+      - name: Upload the serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-serial-log
+          path: boot_serial.log
+          retention-days: 7

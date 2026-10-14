@@ -6,18 +6,38 @@
 #   - defaults match the kernel C ABI: panic=abort, soft-float, no SSE,
 #     static relocations, red zone disabled
 #
-# Linker: LLVM lld from the same MSYS2 clang64 toolchain the C build uses
-# (`LD = ld.lld` in the Makefile). Absolute path keeps builds working even
-# when the MSYS2 bin dir is not on PATH.
+# Linker (app target): NONE IS CONFIGURED, ON PURPOSE.
 #
-# The app linker script (user_apps/app.ld) is injected via RUSTFLAGS
-# (link-arg=-T...) from the Makefile because Cargo cannot expand relative
-# paths inside rustflags. `make rust-apps` is the supported entry point.
+#   rustc ships `rust-lld` for x86_64-unknown-none and selects it by itself, so
+#   no `linker` key is needed. There used to be one here — an absolute path into
+#   one developer's Windows rustup installation:
+#
+#       linker = "C:/Users/<name>/.rustup/toolchains/stable-x86_64-pc-windows-msvc/..."
+#
+#   Cargo resolves a relative `linker` against the WORKSPACE ROOT, so on any
+#   other machine that path became `rust/C:/Users/...` and every build died with
+#   "linker not found". Deleting it is the fix; the bundled rust-lld is correct
+#   on every host.
+#
+# Linker (host build scripts): supplied by the build, not stored here.
+#
+#   The build scripts (slint-build, proc-macro2, ...) are HOST programs and need
+#   a native linker. On Windows that is MSVC's `link.exe` by default — but this
+#   project does not require MSVC, and under ./build.sh it actively breaks:
+#   build.sh puts MSYS2's usr/bin first, where `link.exe` is coreutils `link`
+#   (a hardlink tool), so every build script died with "extra operand".
+#
+#   rust/CMakeLists.txt therefore locates MSYS2's clang64 `lld-link.exe` and
+#   passes it as CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER. clang64's lld-link
+#   resolves its own import libraries (ws2_32, dbghelp, ...) with no LIB and no
+#   MSVC install; usr/bin's copy does not, which is why the clang64 one is
+#   chosen by absolute path rather than by bare name.
+#
+#   Keeping it in the build rather than here means no machine-specific path is
+#   committed, and on Linux the variable is simply not set.
+#
+# The app linker script (apps/app.ld) is injected via RUSTFLAGS from
+# rust/CMakeLists.txt, because Cargo cannot expand relative paths inside
+# rustflags. `./build.sh kyuzen-rust-apps` is the supported entry point.
 [build]
 target = "x86_64-unknown-none"
-
-[target.x86_64-unknown-none]
-# rust-lld (shipped with the toolchain, GNU-flavor by default): consumes every
-# GNU-style link arg rustc emits (-pie, -z, --eh-frame-hdr) and is version
-# matched with the compiler. The MSYS2 ld.lld rejects several of those args.
-linker = "C:/Users/LOQ 15IAX9/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe"

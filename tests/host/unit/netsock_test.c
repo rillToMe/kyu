@@ -124,9 +124,20 @@ void tcp_abort(struct tcp_pcb *pcb) {
     pcb_release(pcb);
 }
 static int pbuf_live;
+// pbuf_free must free ONLY the pbuf, never p->payload.
+//
+// In real lwIP, `payload` points INTO the pbuf allocation (or into a PBUF_REF
+// buffer owned by someone else) — it is not a separate allocation, and
+// rx_consume() legitimately slides it forward on a partial consume:
+//
+//     p->payload = (void *)(src + take);
+//
+// Freeing p->payload here therefore passes a mid-buffer pointer to free() as
+// soon as any recv() consumes part of a pbuf. glibc aborts with "free():
+// invalid pointer"; MSYS2's newlib accepted it, which is why this only ever
+// failed on Linux.
 void pbuf_free(struct pbuf *p) {
     if (!p) return;
-    free(p->payload);
     free(p);
     pbuf_live--;
 }
