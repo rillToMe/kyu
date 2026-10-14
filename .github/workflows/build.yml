@@ -39,6 +39,10 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+  # The boot soak is too slow for every push (50 boots), so it runs on a
+  # schedule instead. See the boot-soak job.
+  schedule:
+    - cron: "0 3 * * *"
 
 # A new push to the same branch makes the previous run obsolete.
 concurrency:
@@ -190,3 +194,60 @@ jobs:
           name: boot-serial-log
           path: boot_serial.log
           retention-days: 7
+
+  # --------------------------------------------------------------------------
+  # Boot soak: 50 consecutive boots, on a schedule rather than every push.
+  #
+  # WHY THIS IS SEPARATE AND SCHEDULED
+  #
+  #   One successful boot proves the system CAN come up; it does not prove it
+  #   comes up RELIABLY. KyuzenOS is SMP with per-CPU run queues and work
+  #   stealing, so the scheduler interleaving differs every boot — and a race
+  #   that loses one time in twenty never shows up in a single boot.
+  #
+  #   50 boots take ~25 minutes serially, which is far too slow to gate every
+  #   push. Running them in parallel (one guest per host core) brings it to
+  #   roughly 4 minutes, and a nightly run is the right cadence for a soak.
+  #
+  #   Roadmap Phase 2.2 asks for exactly this test; it was previously
+  #   impossible to automate because there was no CI and no boot gate.
+  # --------------------------------------------------------------------------
+  boot-soak:
+    name: Boot soak (50x)
+    runs-on: ubuntu-latest
+    needs: build
+    # Only on the nightly schedule or a manual dispatch — never on a push.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: Download the ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: kyuzenos-iso
+          path: iso
+
+      - name: Run 50 boots in parallel
+        run: |
+          python3 tools/ci/boot_soak.py \
+            --iso iso/boot_image.iso \
+            --runs 50 \
+            --parallel 4 \
+            --timeout 120 \
+            --keep-failures boot_soak_failures
+
+      - name: Upload the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-soak-failures
+          path: boot_soak_failures/
+          retention-days: 14
