@@ -45,12 +45,18 @@ Flag kanonis (jangan tambah flag Linux; jangan nyalakan SSE):
 
 ```text
 --target=x86_64-pc-none-elf -ffreestanding -nostdlib
--mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -O2
+-mno-red-zone -O2
 ```
 
-Kernel tidak mengaktifkan SSE (`CR4.OSFXSR` mati) — kode app/libc yang
-memakai `%xmm`/`st()` akan `#UD`. Flag di atas (sama persis dengan yang
-dipakai membangun `libc.a`) menjamin tidak ada instruksi itu.
+**FP didukung di userspace.** Flag di atas dulu membawa
+`-mno-sse -mno-sse2 -mno-mmx -msoft-float`; sekarang tidak lagi. State FPU
+userspace disimpan tiap context switch (`fpu_switch()`, `kernel/sched/fpu.c`,
+`FXSAVE64`/`FXRSTOR64`), jadi `float`/`double` bisa dipakai dan fungsi libc yang
+mengembalikan `double` bisa dikompilasi.
+
+KERNEL tetap `-mno-sse` (`KYUZEN_KERNEL_FP_BAN`), karena interrupt entry tidak
+menyimpan XMM - lihat `docs/kernel/arch-hardening.md`. Itu aturan terpisah yang
+tidak membatasi kode app/libc di sini.
 
 ## Batasan (ringkas; lengkap di `docs/design/kyuzen-c-sdk.md`)
 

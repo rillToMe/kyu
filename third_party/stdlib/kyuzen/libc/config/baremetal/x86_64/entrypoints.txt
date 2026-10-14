@@ -10,10 +10,16 @@
 #          stdlib murni + strdup/strndup. Lihat §16 audit untuk klasifikasi
 #          IMPLEMENT/DEFER/UNSUPPORTED per API.
 #
-# Masih DIKECUALIKAN (butuh syscall yang tidak ada / langgar kebijakan):
+# Masih DIKECUALIKAN (butuh syscall/backend yang tidak ada / langgar kebijakan):
 #   threads, fenv, setjmp, filesystem, networking, process APIs, syscall APIs,
-#   libm (SSE/x87), time/difftime/nanosleep/clock_gettime-*(tanpa backend
-#   baremetal di 22.1.8 / return double yang tak bisa dikompilasi -mno-sse).
+#   libm [tidak ada src/math/ di 22.1.8 - kekurangan implementasi, bukan FPU],
+#   time/nanosleep/clock_gettime-* [tidak ada backend baremetal di 22.1.8].
+#
+# TIDAK LAGI DIKECUALIKAN karena FPU: userspace sekarang boleh memakai
+# float/double. fpu_switch() (kernel/sched/fpu.c) menyimpan state FPU tiap
+# context switch dengan FXSAVE/FXRSTOR, jadi ABI userspace mendukung FP.
+# difftime (return double) karena itu diaktifkan di bawah. Kernel TETAP
+# -mno-sse - lihat KYUZEN_KERNEL_FP_BAN di cmake/KyuzenCompiler.cmake.
 #
 # Only the generic (non-SIMD) string implementations are referenced: on x86_64
 # src/string/CMakeLists.txt also registers memcpy/memmove/memset/memcmp SSE2/AVX
@@ -311,14 +317,26 @@ set(TARGET_LIBC_ENTRYPOINTS
     libc.src.time.ctime_r
     libc.src.time.strftime
     libc.src.time.strftime_l
-    # SENGAJA absen (§16): time [butuh __support/time/baremetal/clock_gettime
-    # yang TIDAK ADA di 22.1.8], difftime [return double — error kompilasi
-    # -mno-sse di sisi pemanggil], nanosleep/clock_gettime/getres/settime/
-    # gettimeofday [TIDAK ADA backend baremetal-nya di 22.1.8].
+    # difftime returns double, so it was excluded while userspace was built
+    # -mno-sse ("SSE register return with SSE disabled"). User-space FPU state
+    # IS preserved across tasks by fpu_switch() (kernel/sched/fpu.c), so the
+    # userspace ABI now supports FP and this compiles. The body is a single
+    # static_cast<double>(end - beginning).
+    libc.src.time.difftime
+    # SENGAJA absen (16): time [butuh __support/time/baremetal/clock_gettime
+    # yang TIDAK ADA di 22.1.8], nanosleep/clock_gettime/getres/settime/
+    # gettimeofday [TIDAK ADA backend baremetal-nya di 22.1.8]. Ini kekurangan
+    # BACKEND, bukan lagi batasan FPU.
 )
 
-# Phase 0 ships no libm entrypoints: every math.h entrypoint is either
-# OS-dependent (fenv/MXCSR) or needs the x87/SSE decision that is out of scope.
+# Phase 0 ships no libm entrypoints.
+#
+# NOTE (Phase 3 of the roadmap): this is no longer blocked by the FPU policy.
+# The userspace ABI supports float/double now, so the -mno-sse objection is
+# gone. What remains is a genuine implementation gap: LLVM libc 22.1.8 has no
+# src/math/ in this tree, so there are no math.h entrypoints to enable. Adding
+# libm means either vendoring an implementation or waiting on upstream — a
+# separate task, not an FPU decision.
 set(TARGET_LIBM_ENTRYPOINTS
 )
 

@@ -22,7 +22,7 @@ cores), so both the BSP and every AP must run the same sequence:
 | `CR4.SMAP` | `kernel/cpu.c` | Kernel cannot access user pages without `STAC` |
 | `CR0.WP` | `kernel/cpu.c` | Kernel cannot write read-only pages |
 | `EFER.NXE` | `kernel/cpu.c` | Enables the NX (no-execute) PTE bit |
-| `CR4.OSFXSR` + `OSXMMEXCPT` | `kernel/sched/fpu.c` | SSE usable from ring 3 |
+| `CR4.OSFXSR` + `OSXMMEXCPT`, `CR0.EM=0`/`MP=1`/`NE=1` | `kernel/sched/fpu.c` | SSE usable from ring 3 |
 
 **Enable order matters.** `EFER.NXE` must be active before any user mapping is
 created, because the ELF loader sets the NX bit — setting that bit without NXE
@@ -239,15 +239,40 @@ zeroed area + default MXCSR (`0x1F80`) + default FCW (`0x037F`) restored via
 `FXRSTOR`. XMM has no "reset" instruction, so this is how leftover values are
 cleared.
 
-> **Why this became necessary.** The kernel is built `-mno-sse -msoft-float`, so
-> the old assumption "there is no state to save" was **true for the kernel** but
-> **false for userspace** — the Rust target `x86_64-unknown-none` enables
-> SSE/SSE2 by default, and `apps/calc.c` uses floats.
+> **The kernel/userspace asymmetry.** Since Phase 3 the two domains have
+> deliberately **opposite** FP policies:
+>
+> - **Userspace may use float/double.** `fpu_switch()` runs between tasks, so
+>   XMM is preserved. The userspace build no longer carries `-mno-sse`, and
+>   `difftime` (returns `double`) is active in the C SDK.
+> - **The kernel may not.** Interrupt entry does **not** save XMM:
+>   `arch/x86/isr_macro.inc` pushes the general-purpose registers only
+>   (`PUSHA64`), and `fpu_switch()` runs only on a context switch. Kernel code
+>   using SSE would therefore clobber a running ring-3 task's XMM registers
+>   every time an interrupt landed inside it, and the task would resume with
+>   wrong FP values — silently, and depending on where the timer fired.
+>
+> This is not theoretical: `kernel/string.c` compiled without `-mno-sse` emits
+> `movups %xmm0` inside `memcpy`, and `memcpy` is reachable from scheduler and
+> filesystem paths that run inside interrupts.
+>
+> The ban is enforced mechanically, not by comment:
+> `cmake/verify_kernel_elf.cmake` **fails the build** if the kernel image
+> contains SSE/x87. The userspace side is checked by
+> `cmake/verify_user_elf.cmake`, which **allows** xmm/x87 and rejects only
+> `ymm`/`zmm` (see below).
 
 **FXSAVE vs XSAVE:** FXSAVE covers every register SSE/SSE2 can touch, which is
 the maximum the kernel promises userspace. XSAVE needs a CPUID probe, a dynamic
-area size (thousands of bytes with AVX-512), and XCR0 handling — not worth it for
+area size (thousands of bytes with AVX-512), and XCR0 handling - not worth it for
 SSE-only coverage. `fpu.c` is the right place to switch if AVX is added later.
+
+**Why AVX is rejected in user ELFs today:** `FXSAVE` does not save the upper
+128 bits of YMM/ZMM — that needs `XSAVE`. An AVX instruction in a user ELF would
+have its upper halves silently clobbered by the next task. The default `-march`
+for this target is baseline x86-64 (SSE2, no AVX), so nothing emits `ymm` today;
+the check in `verify_user_elf.cmake` keeps it that way if a `-march` is ever
+raised or a vendored library ships precompiled AVX code.
 
 ## Frame layout invariants
 

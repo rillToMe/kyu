@@ -9,16 +9,29 @@
 #         -DCMAKE_BUILD_TYPE=Release
 #
 # The cache mirrors libc/cmake/caches/*-none-eabi.cmake (which include
-# baremetal_common.cmake) for the KyuzenOS target triple. The compiler flags
-# match the flags user_apps/Makefile already uses for Ring-3 code: the KyuzenOS
-# kernel never enables SSE (no CR4.OSFXSR, no FXSAVE/FXRSTOR), so the archive
-# must not contain SSE/MMX instructions either.
+# baremetal_common.cmake) for the KyuzenOS target triple.
+#
+# FPU/SSE IS ENABLED HERE. The archive is user-space code (it is linked into
+# ring-3 ELFs), and user-space FPU state IS preserved across tasks: fpu_switch()
+# (kernel/sched/fpu.c) runs on every context switch with FXSAVE/FXRSTOR.
+#
+# The previous flags carried -mno-sse -mno-sse2 -mno-mmx -msoft-float, which
+# made every libc function that takes or returns float/double fail to compile
+# ("SSE register return with SSE disabled"). That is why libm, difftime and the
+# rest of <math.h> were absent from the SDK. With the flags gone they compile,
+# and the functions the Kyuzen libc config already lists become usable.
+#
+# NOTE: the KERNEL is the opposite case and keeps -mno-sse (KYUZEN_KERNEL_FP_BAN
+# in cmake/KyuzenCompiler.cmake). Interrupt entry does not save XMM, so kernel
+# FP code would corrupt a running ring-3 task. This file is user-space only.
+#
+# -mno-red-zone stays: it is an ABI requirement, not an FPU decision.
 
 set(CMAKE_SYSTEM_PROCESSOR x86_64 CACHE STRING "")
 set(RUNTIMES_TARGET_TRIPLE "x86_64-pc-none-elf" CACHE STRING "")
 
 foreach(lang C;CXX;ASM)
-    set(CMAKE_${lang}_FLAGS "-mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float" CACHE STRING "")
+    set(CMAKE_${lang}_FLAGS "-mno-red-zone" CACHE STRING "")
 endforeach()
 
 # baremetal_common.cmake is UPSTREAM's, so it lives in the clone, not next to

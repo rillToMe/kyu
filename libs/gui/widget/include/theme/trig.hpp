@@ -1,10 +1,18 @@
 // libs/gui/widget/include/theme/trig.hpp — trigonometri integer (Q15).
 //
-// KENAPA ADA: jam analog harus menempatkan ujung jarum pada lingkaran, dan
-// toolkit ini TIDAK BOLEH memakai float (UI-13.6: seluruh target mewarisi
-// KYUZEN_FREESTANDING_BASE dengan -mno-sse -msoft-float, dan kernel tidak
-// pernah menyetel CR4.OSFXSR sehingga instruksi SSE fault). Menulis
-// `sin(angle)` atau bahkan `cosf()` bukan pilihan.
+// KENAPA INTEGER, PADAHAL FLOAT SUDAH TERSEDIA
+//
+//   Sejak Phase 3, userspace BOLEH memakai float/double: fpu_switch()
+//   (kernel/sched/fpu.c) menyimpan state FPU tiap context switch dengan
+//   FXSAVE/FXRSTOR, dan flag userspace tidak lagi memuat -mno-sse.
+//
+//   Tabel ini tetap dipakai karena ALASAN YANG BERBEDA: presisi dan biaya.
+//   Tabel 65 titik + interpolasi linear memberi kesalahan maksimum 2.68 unit
+//   Q15 = 0.012 px pada radius 150 px, tanpa pemanggilan libm per frame. Untuk
+//   menggambar jarum jam itu lebih dari cukup, dan lebih murah.
+//
+//   (Alasan lamanya — "SSE fault karena kernel tidak menyetel CR4.OSFXSR" —
+//   sudah tidak berlaku. Kernel tetap -mno-sse; userspace tidak.)
 //
 // KENAPA DI theme/ DAN BUKAN DI WIDGET JAM: ini matematika geometri, bukan
 // logika jam. CircularProgress memakainya juga, dan widget lain akan

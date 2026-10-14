@@ -145,7 +145,30 @@ int proc_build_argv(uint64_t* stack_top_inout, int argc,
 
     uint64_t need = (uint64_t)(argc + 1) * 8ULL + total;
     if (need > PROC_ARG_TOTAL_MAX + 136) return -1;
-    uint64_t base = (old_top - need) & ~15ULL;
+
+    // -----------------------------------------------------------------------
+    // ALIGNMENT — ini bukan detail kosmetik, ini ABI.
+    //
+    // System V x86-64 mensyaratkan RSP ≡ 8 (mod 16) pada instruksi PERTAMA
+    // sebuah fungsi (karena `call` mendorong return address 8 byte, sehingga
+    // di dalam fungsi RSP ≡ 0 (mod 16) SETELAH prologue). Compiler mengandalkan
+    // ini: dengan SSE aktif, clang menghasilkan `movaps %xmm0, -0x80(%rbp)`
+    // untuk memindahkan 16 byte sekaligus, dan `movaps` #GP bila alamatnya
+    // tidak 16-byte aligned.
+    //
+    // Sebelum FP dibuka, alignment ini tidak terlihat: tidak ada instruksi yang
+    // membutuhkannya. Setelah Phase 3 membuka FPU userspace, login.elf langsung
+    // fault (#GP, vektor 13) tepat pada `movaps %xmm0, -0x80(%rbp)`.
+    //
+    // Kode lama: `base = (old_top - need) & ~15ULL;` — membulatkan ke bawah ke
+    // kelipatan 16, sehingga base ≡ 0 (mod 16). Yang benar adalah ≡ 8, karena
+    // `create_user_task()` sudah memasang KZ_FAKE_FRAME_PAD 8 byte supaya RSP
+    // setelah `iretq` bernilai ≡ 8 (mod 16); membulatkan ke bawah ke 16
+    // MEMBALIK paritas itu.
+    //
+    // Jadi: bulatkan ke bawah ke 16, lalu geser ke paritas 8.
+    // -----------------------------------------------------------------------
+    uint64_t base = ((old_top - need) & ~15ULL) - 8ULL;
     if (base >= old_top) return -1;   // wrap
     // USER_STACK_TOP/_SIZE mirror elf.h (0x0C000000 / 256KB).
     const uint64_t USTACK_TOP = 0x0C000000ULL;

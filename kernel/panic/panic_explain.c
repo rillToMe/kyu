@@ -113,8 +113,7 @@ panic_cause_t panic_explain(uint64_t intno, uint64_t err, uint64_t cr2, uint64_t
         c.hint2 = 0;
     } else if (intno == 6) {
         c.verdict = "INVALID OPCODE - kode korup atau instruksi tak didukung";
-        c.hint1 = "kernel dibangun -mno-sse: instruksi SSE = kode/mismatch";
-        c.hint2 = 0;
+        c.hint1 = "kernel dibangun -mno-sse: instruksi SSE = kode/mismatch";        c.hint2 = 0;
     } else if (intno == 8) {
         c.verdict = "DOUBLE FAULT - handler fault sebelumnya gagal";
         c.hint1 = "korupsi struktur page table";

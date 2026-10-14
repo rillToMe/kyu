@@ -159,9 +159,9 @@ font 8-72px; history 50.
 JavaScript/WebAssembly, cookies (`unsupported` diam-diam =
 diabaikan; situs butuh cookie mungkin rusak — jujur di docs), forms
 (dirender, tak disubmit), flex/grid/position/float/animasi/transform,
-`em`/unit CSS lain, JPEG/GIF (placeholder; hanya PNG+BMP yang didekode
-freestanding tanpa float), video/audio, WebSocket, tabs, bookmark,
-download, persistensi history, DNS-over-... (resolver sistem saja).
+`em`/unit CSS lain, GIF (placeholder; PNG, BMP, dan JPEG yang didekode -
+JPEG aktif sejak FPU userspace dibuka di Phase 3), video/audio, WebSocket, tabs,
+bookmark, download, persistensi history, DNS-over-... (resolver sistem saja).
 
 ## 17. Known limitations
 

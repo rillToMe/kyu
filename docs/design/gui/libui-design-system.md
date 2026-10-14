@@ -335,9 +335,11 @@ ui_circularprogress_set_value(ring, 0..1000);                // per-mil
   berubah, sehingga pemanggil tidak menggambar ulang muka jam tiap frame.
 - Sudut jarum **dikuantisasi** (`clockface::SWEEP_STEP`): gerak tetap halus
   (~46 posisi per detik) tanpa render 60x/detik.
-- Semua matematikanya integer Q15 (`theme/trig.hpp`). Tidak ada float: build
-  mewarisi `-mno-sse -msoft-float` dan kernel tidak pernah menyetel
-  `CR4.OSFXSR`, jadi instruksi SSE fault.
+- Semua matematikanya integer Q15 (`theme/trig.hpp`). Sejak Phase 3 userspace
+  boleh memakai float (state FPU disimpan tiap context switch), jadi ini
+  pilihan presisi dan biaya — bukan lagi larangan build. Tabel Q15 memberi
+  kesalahan maksimum 0.012 px pada radius 150 px tanpa memanggil libm per
+  frame.
 - `CircularProgress` memakai per-mil, bukan persen: timer panjang yang
   diperbarui sering bergerak kurang dari 1% per langkah, dan busur dengan
   persen bulat akan terlihat tersendat.

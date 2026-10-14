@@ -5,10 +5,16 @@
 // (libs/widget/include/core/painter.hpp). Blending compositor kernel kini lewat libs/color
 // (color_blend_alpha) dan di sini hanya memakai aa_cov.
 //
-// INTEGER SAJA: kernel dan app dibangun dengan -mno-sse -mno-sse2 -msoft-float
-// (Makefile:76, apps/Makefile:41) dan kernel tidak pernah mengaktifkan
-// OSFXSR/fxsave — tidak ada float/SSE yang boleh dipakai. Alpha memakai skala
-// 0..255 (setara Q0.8), pembagian /255 saja.
+// INTEGER, dan itu PILIHAN - bukan lagi keharusan.
+//
+//   Alpha memakai skala 0..255 (setara Q0.8) dengan pembagian /255, karena
+//   operasinya memang aritmetika byte dan integer lebih langsung.
+//
+//   Dulu ini keharusan: userspace dibangun -mno-sse -msoft-float dan kernel
+//   tidak mengaktifkan OSFXSR, jadi SSE akan fault. Sejak Phase 3 userspace
+//   boleh memakai float/double (fpu_switch() menyimpan state FPU tiap context
+//   switch); KERNEL tetap -mno-sse karena interrupt entry tidak menyimpan XMM.
+//   Lihat cmake/KyuzenCompiler.cmake (KYUZEN_KERNEL_FP_BAN).
 //
 // Self-check host (pure integer, tak butuh QEMU):
 //   clang test/aa_math_test.c -o /tmp/aa && /tmp/aa

@@ -42,10 +42,15 @@ static void m_copy(char* dst, int cap, const char* src) {
 // Tabel ekstensi → tipe media (SATU sumber kebenaran)
 // ------------------------------------------------------------
 // `decodable` = ada implementasi nyata hari ini. Jangan pernah mengiklankan
-// format yang belum ada dekodernya: .jpg/.jpeg adalah keluarga gambar, tapi
-// belum ada dekoder JPEG di KyuzenOS (stb JPEG butuh FP; build -msoft-float
-// -mno-sse) → media_is_supported_image() menolaknya dan UI menampilkan
-// "unsupported format", bukan mencoba dan gagal misterius.
+// format yang belum ada dekodernya: media_is_supported_image() menolaknya dan
+// UI menampilkan "unsupported format", bukan mencoba dan gagal misterius.
+//
+// .jpg/.jpeg = 1 sejak FPU userspace dibuka (Phase 3): dekoder JPEG stb
+// memakai float untuk IDCT, dan build userspace sekarang boleh mengemisikan FP
+// (fpu_switch() menyimpan state FPU tiap context switch). Lihat libs/media/
+// png.c untuk flag STBI yang dipakai.
+//
+// .gif tetap 0: bukan karena FPU, tapi karena memang belum ada yang butuh.
 typedef struct {
     const char* ext;        // lowercase, dengan titik
     uint8_t     type;       // media_type_t
@@ -55,8 +60,8 @@ typedef struct {
 static const media_ext_t k_media_ext[] = {
     { ".png",  MEDIA_IMAGE,    1 },
     { ".bmp",  MEDIA_IMAGE,    1 },
-    { ".jpg",  MEDIA_IMAGE,    0 },
-    { ".jpeg", MEDIA_IMAGE,    0 },
+    { ".jpg",  MEDIA_IMAGE,    1 },
+    { ".jpeg", MEDIA_IMAGE,    1 },
     { ".gif",  MEDIA_IMAGE,    0 },
     { ".mp4",  MEDIA_VIDEO,    0 },
     { ".webm", MEDIA_VIDEO,    0 },

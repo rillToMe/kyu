@@ -43,12 +43,23 @@ app.elf  (static, entry _start, 0 undefined symbols)
 
 ```text
 --target=x86_64-pc-none-elf -ffreestanding -nostdlib
--mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -O2
+-mno-red-zone -O2
 ```
 
-The kernel never enables SSE (`CR4.OSFXSR` is off), so any `%xmm`/`st()` use
-would raise `#UD`. These flags — identical to those used to build `libc.a` —
-guarantee no such instructions are emitted.
+**Floating point is supported.** These flags used to carry
+`-mno-sse -mno-sse2 -mno-mmx -msoft-float`; they no longer do. User-space FPU
+state IS preserved across tasks — `fpu_switch()` (`kernel/sched/fpu.c`) saves
+and restores x87 + XMM with `FXSAVE64`/`FXRSTOR64` on every context switch — so
+`float` and `double` work, and libc functions that return `double` compile.
+
+`-mno-red-zone` stays: it is an ABI requirement, not an FPU decision.
+
+The **kernel** is the opposite case and keeps its own FP ban
+(`KYUZEN_KERNEL_FP_BAN`), because interrupt entry does not save XMM. See
+[Arch Hardening](../kernel/arch-hardening.md#fpu--sse-state-per-task).
+
+The post-build check (`cmake/verify_user_elf.cmake`) now **allows** xmm and x87
+and rejects only `ymm`/`zmm`: `FXSAVE` does not cover AVX's upper halves.
 
 ## Startup
 
@@ -121,9 +132,16 @@ underlying allocator has a fixed ceiling and no grow hook.
 - **No TLS**: `errno` is a single global per process.
 - No POSIX, no pthreads, no dynamic linking.
 - `stdin` is mapped but not runtime-tested.
-- **Not implemented**: `time()`, `difftime` (returns `double`), `nanosleep`,
+- **Not implemented**: `time()`, `nanosleep`,
   `clock_gettime`/`clock_getres`/`clock_settime`, `gettimeofday`,
   `getenv`/`setenv`/`putenv`, `atof`/`strtod` family, all of libm.
+  - `difftime` **is** implemented (it returns `double`, which is why it was
+    excluded before the userspace FP ABI was opened).
+  - The `time()`/`clock_gettime` family is missing because LLVM libc 22.1.8
+    ships **no baremetal backend** for it — an implementation gap, not an FPU
+    restriction.
+  - `libm` is missing because this LLVM libc tree has no `src/math/` at all.
+    The FPU policy no longer blocks it; the source simply is not there.
 - `remove()` is a stub returning `-1` (present only so libc++ `<cstdio>`
   compiles).
 

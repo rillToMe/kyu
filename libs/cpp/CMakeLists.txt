@@ -68,7 +68,9 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_sdk_cpp_dir}"
     COMMAND ${KYUZEN_CLANGXX}
             --target=x86_64-pc-none-elf
-            -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float
+            # No -mno-sse/-msoft-float: this is USER-SPACE runtime code, and
+            # fpu_switch() preserves user FPU state across tasks.
+            -ffreestanding -nostdlib -mno-red-zone
             -std=c++17 -fno-exceptions -fno-rtti -nostdinc++ -O2 -fno-builtin
             -D_LIBCPP_BUILDING_LIBRARY
             -D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2
@@ -146,7 +148,8 @@ foreach(_i RANGE 0 ${_libcxxrt_count})
         COMMAND ${CMAKE_COMMAND} -E make_directory "${KYUZEN_LIBC_DIR}/libcxxrt"
         COMMAND ${KYUZEN_CLANGXX}
                 --target=x86_64-pc-none-elf
-                -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float
+                # No -mno-sse/-msoft-float: USER-SPACE runtime code.
+                -ffreestanding -nostdlib -mno-red-zone
                 -std=${_std_ver} -fno-exceptions -fno-rtti -nostdinc++ -O2 -fno-builtin
                 -D_LIBCPP_BUILDING_LIBRARY
                 -D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2
@@ -224,7 +227,7 @@ add_custom_command(
             -DSRC=${_libcxx_inc}
             -DDST=${_sdk_cpp_inc}
             -DKYUZEN_CLANGXX=${KYUZEN_CLANGXX}
-            "-DKYUZEN_CXXFLAGS=--target=x86_64-pc-none-elf;-ffreestanding;-nostdlib;-mno-red-zone;-mno-sse;-mno-sse2;-mno-mmx;-msoft-float;-std=c++17;-fno-exceptions;-fno-rtti;-O2;-fno-builtin;-D_LIBCPP_BUILDING_LIBRARY;-D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2"
+            "-DKYUZEN_CXXFLAGS=--target=x86_64-pc-none-elf;-ffreestanding;-nostdlib;-mno-red-zone;-std=c++17;-fno-exceptions;-fno-rtti;-O2;-fno-builtin;-D_LIBCPP_BUILDING_LIBRARY;-D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2"
             -DLIBCXX_INC=${_libcxx_inc}
             -DWORK_DIR=${CMAKE_BINARY_DIR}/libcxx-header-probe
             -DSITE_INC=${_cpp_dir}/include

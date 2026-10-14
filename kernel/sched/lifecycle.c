@@ -158,11 +158,20 @@ static void task_entry_trampoline(void (*func)(void)) {
 //     handler C yang membaca field lewat offset tetap benar;
 //   * yang bergeser hanya RSP akhir, yaitu tepat apa yang perlu diperbaiki.
 //
-// Berlaku untuk KETIGA konstruksi frame: create_task_prio, create_user_task,
-// dan fork (vmm_clone_user_as). Untuk jalur user (ring 3) alignment ini tidak
-// relevan karena iretq memuat RSP dari frame, tapi padding tetap dipasang
-// supaya ketiganya identik dan tidak ada jalur yang "kebetulan benar".
-// ============================================================
+  // Berlaku untuk KETIGA konstruksi frame: create_task_prio, create_user_task,
+  // dan fork (vmm_clone_user_as).
+  //
+  // JALUR USER JUGA BUTUH INI — bukan "kebetulan benar". Dulu di sini tertulis
+  // alignment "tidak relevan" untuk ring 3 karena `iretq` memuat RSP dari
+  // frame. Itu keliru sejak FPU userspace dibuka (Phase 3): compiler yang boleh
+  // mengemisikan SSE menghasilkan `movaps %xmm0, -0x80(%rbp)` untuk copy 16
+  // byte, dan `movaps` #GP bila alamatnya tidak 16-byte aligned. RSP user harus
+  // ≡ 8 (mod 16) saat masuk `main`, persis seperti SysV mensyaratkan.
+  //
+  // Padding di sini hanya menetapkan TITIK AWAL stack. Pemanggil yang menaruh
+  // argv di stack (proc_build_argv) juga harus menjaga paritasnya — lihat
+  // catatan alignment di kernel/proc/proc.c.
+  // ============================================================
 #define KZ_FAKE_FRAME_PAD 8ULL
 
 // Kalau sizeof(registers_t) bukan kelipatan 16, padding 8 byte tidak cukup

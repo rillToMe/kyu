@@ -21,13 +21,18 @@
 //   aplikasi / desktop      -> memilih zona dari /time.ui, lalu memformat
 //
 // ATURAN
-//   * Integer murni. TIDAK ADA float/double di sini: seluruh build mewarisi
-//     KYUZEN_FREESTANDING_BASE (-mno-sse -msoft-float) dan kernel tidak pernah
-//     menyetel CR4.OSFXSR, jadi instruksi SSE akan fault. Lihat .rules/UI.md
-//     UI-13.6.
+//   * Integer murni, dan itu PILIHAN. Kalender adalah aritmetika bilangan
+//     bulat; float hanya menambah pembulatan. (Dulu ini keharusan karena
+//     build memakai -mno-sse -msoft-float; sejak Phase 3 userspace boleh
+//     memakai FP, tapi di sini tidak ada gunanya.)
 //   * Tanpa alokasi, tanpa syscall, tanpa state global. Semua fungsi murni
 //     sehingga aman dipanggil dari mana saja dan bisa diuji di host.
 //   * Header + satu .c: bisa dipakai kernel, userspace, dan host test.
+//
+//     CATATAN: file ini dipakai KERNEL juga, dan kernel tetap -mno-sse
+//     (interrupt entry tidak menyimpan XMM). Karena itu isinya harus tetap
+//     bebas float/double — bukan karena aturan lama, tapi karena file ini
+//     dikompilasi ke dalam image kernel.
 // ============================================================
 
 #include <stdint.h>

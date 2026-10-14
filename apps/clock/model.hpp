@@ -9,8 +9,11 @@
 //   * Selalu dari TIMESTAMP, bukan penjumlahan per frame.
 //     elapsed = akumulasi + (sekarang - timestamp_mulai)
 //     Bukan: elapsed++ tiap frame — itu melenceng begitu satu frame terlewat.
-//   * Semua nilai milidetik, integer 64-bit. Tidak ada float: seluruh build
-//     mewarisi -mno-sse -msoft-float (UI-13.6).
+//   * Semua nilai milidetik, integer 64-bit. Tidak ada float di sini karena
+//     durasi adalah bilangan bulat — bukan karena larangan build. (Dulu
+//     memang larangan: -mno-sse -msoft-float; sejak Phase 3 userspace boleh
+//     memakai FP, dan file ini tetap integer karena itu yang benar untuk
+//     waktu.)
 //   * Sumber waktu monotonic (sys_uptime) diberikan PEMANGGIL, tidak dibaca di
 //     sini — itu yang membuat kelas ini bisa diuji dengan waktu palsu.
 //

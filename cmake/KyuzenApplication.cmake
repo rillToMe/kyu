@@ -450,9 +450,10 @@ endfunction()
 #   - entry point must be _start
 #   - no unresolved symbols (a missing archive member)
 #   - no exception/thread runtime pulled in (there is none on this target)
-#   - no SSE / x87 instructions (the whole OS is built -mno-sse -msoft-float,
-#     so the generated code stays free of FPU state that a context switch
-#     might have replaced)
+#   - no AVX (ymm/zmm): FXSAVE covers x87 + XMM only, so AVX's upper halves
+#     would be clobbered by the next task. SSE and x87 are allowed here —
+#     fpu_switch() preserves them — and banned in the kernel, which is checked
+#     separately by cmake/verify_kernel_elf.cmake.
 #
 # Implemented as a CMake script so it works without grep/sed/bash.
 # ---------------------------------------------------------------------------
@@ -464,7 +465,7 @@ function(kyuzen_verify_user_elf target)
                 -DKYUZEN_OBJDUMP=${KYUZEN_LLVM_OBJDUMP}
                 -DEXPECTED_ENTRY=_start
                 -P ${KYUZEN_ROOT}/cmake/verify_user_elf.cmake
-        COMMENT "Verifying ${target} (entry, undefined symbols, SSE/x87)"
+        COMMENT "Verifying ${target} (entry, undefined symbols, no AVX)"
         VERBATIM
     )
 endfunction()

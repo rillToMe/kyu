@@ -229,11 +229,36 @@ function(_kyuzen_add_cpp_toolkit_app name)
     endforeach()
 
     kyuzen_output_basename(kyuzen-${name} _out_name)
+
+    # -----------------------------------------------------------------------
+    # LINK_DEPENDS must list the OBJECTS, not just the linker script.
+    #
+    # In Ninja, add_dependencies() becomes an order-only edge: it guarantees
+    # build order but does NOT mark the target dirty when a prerequisite
+    # changes. So editing a shared object such as libs/media/png.c recompiled
+    # png.c.obj but left gallery.elf/imageview.elf linked against the OLD
+    # object — the build reported success while the ELF on the ISO was stale.
+    #
+    # This is the same failure kuzen_add_sdk_app() documents and fixes; the
+    # toolkit-app helper was missing it. LINK_DEPENDS accepts
+    # $<TARGET_OBJECTS:...> and expands it to real file paths, so touching any
+    # of them forces a relink without changing the link order (which is set by
+    # target_link_options above).
+    #
+    # Found by enabling JPEG in libs/media/png.c: the object grew by ~50 KB and
+    # neither app relinked.
+    # -----------------------------------------------------------------------
+    set(_link_depends "${KYUZEN_ROOT}/apps/app.ld"
+                      "$<TARGET_OBJECTS:${name}-objects>")
+    foreach(_ol IN LISTS _obj_libs)
+        list(APPEND _link_depends "$<TARGET_OBJECTS:${_ol}>")
+    endforeach()
+
     set_target_properties(kyuzen-${name} PROPERTIES
         OUTPUT_NAME "${_out_name}"
         SUFFIX ".elf"
         RUNTIME_OUTPUT_DIRECTORY "${KYUZEN_ELF_DIR}"
-        LINK_DEPENDS "${KYUZEN_ROOT}/apps/app.ld"
+        LINK_DEPENDS "${_link_depends}"
     )
 endfunction()
 
@@ -267,9 +292,14 @@ _kyuzen_add_cpp_toolkit_app(uigallery
 list(APPEND KYUZEN_APP_TARGETS kyuzen-uigallery)
 
 # ===========================================================================
-# D. Test ELFs — run inside QEMU, link userlib only.
+# D. Test ELFs - run inside QEMU, link userlib only.
+#
+# fpu_test is here because it verifies the userspace FPU ABI: state FPU disimpan
+# tiap context switch (fpu_switch()), jadi nilai float sebuah task harus utuh
+# setelah yield dan syscall. Ia memakai float/double, yang hanya mungkin sejak
+# Phase 3 membuka flag FP di userspace.
 # ===========================================================================
-foreach(_app badptr exit_test kill_test fd_test pipe_test fork_test procinfo)
+foreach(_app badptr exit_test kill_test fd_test pipe_test fork_test procinfo fpu_test)
     kyuzen_add_plain_app(kyuzen-${_app}
         SOURCES "${_tests_dir}/${_app}.c"
         LIBS    kyuzen-userlib

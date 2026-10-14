@@ -242,13 +242,17 @@ static void test_type_detection() {
     CHECK(media_type_of("/pics/a.") == MEDIA_UNKNOWN);             // titik tanpa ext
     CHECK(media_type_of(0) == MEDIA_UNKNOWN);
 
-    // Format yang BELUM ada dekodernya tetap "gambar", tapi TIDAK supported:
-    // UI tidak boleh menawarkannya (jangan memalsukan dukungan JPEG).
+    // JPEG DIDUKUNG sejak Phase 3 membuka FPU userspace: IDCT stb memakai
+    // float, dan state FPU user disimpan tiap context switch (fpu_switch()).
+    // Sebelumnya .jpg adalah "gambar tapi tidak supported".
     CHECK(media_is_image("/pics/a.jpg") == 1);
-    CHECK(media_is_supported_image("/pics/a.jpg") == 0);
+    CHECK(media_is_supported_image("/pics/a.jpg") == 1);
     CHECK(media_is_supported_image("/pics/a.png") == 1);
     CHECK(media_is_supported_image("/pics/a.bmp") == 1);
     CHECK(media_is_supported_image("/pics/a.txt") == 0);
+    // GIF tetap belum didukung: tidak ada yang memintanya, dan setiap format
+    // menambah ukuran ELF di semua app yang memakai decoder ini.
+    CHECK(media_is_supported_image("/pics/a.gif") == 0);
     CHECK_STR(media_type_name(MEDIA_IMAGE), "Image");
     CHECK_STR(media_type_name(MEDIA_VIDEO), "Video");
     CHECK_STR(media_type_name(MEDIA_UNKNOWN), "Unknown");
@@ -369,7 +373,7 @@ static void test_scan() {
     CHECK(out[0].type == MEDIA_FOLDER && out[0].supported == 0);
     CHECK(out[1].type == MEDIA_IMAGE && out[1].supported == 1);
     CHECK(out[3].type == MEDIA_DOCUMENT && out[3].supported == 1);
-    CHECK(out[4].type == MEDIA_IMAGE && out[4].supported == 0);   // .jpg belum ada dekodernya
+    CHECK(out[4].type == MEDIA_IMAGE && out[4].supported == 1);   // .jpg didukung (Phase 3)
     CHECK(out[5].supported == 1);                                  // .PNG huruf besar
 
     // Filter tipe: hanya gambar (dipakai ImageView untuk Next/Previous).

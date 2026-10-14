@@ -147,7 +147,10 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_libc_out}/port"
     COMMAND ${KYUZEN_CLANGXX}
             --target=${_libc_triple}
-            -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float
+            # No -mno-sse/-msoft-float: this is USER-SPACE code (it becomes the
+            # SDK's crt.o) and user FPU state is preserved by fpu_switch(). The
+            # kernel keeps its own ban — see KYUZEN_KERNEL_FP_BAN.
+            -ffreestanding -nostdlib -mno-red-zone
             -std=gnu++17 -fno-exceptions -fno-rtti -O2 -fno-builtin
             -fno-unwind-tables -fno-asynchronous-unwind-tables
             -fvisibility-inlines-hidden

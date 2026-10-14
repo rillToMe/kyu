@@ -61,8 +61,11 @@ are integer-based; a full RGB → HSL/HSV → RGB round trip is accurate to with
 Location: `libs/media/` (`png.c`, `media.c`). A shared image decoder used by the
 image viewer, gallery, and desktop.
 
-- Backed by a trimmed **stb_image** with PNG and BMP only. JPEG and GIF are
-  deliberately disabled (the JPEG IDCT is float, and there is no libm).
+- Backed by a trimmed **stb_image** with PNG, BMP and **JPEG**. GIF remains
+  disabled (nothing needs it yet — not an FPU restriction). JPEG was previously
+  disabled because its IDCT is float-based and the userspace ABI had no FP;
+  since Phase 3 user-space FPU state is preserved across tasks, so it compiles
+  and is now enabled in `libs/media/png.c` (`STBI_ONLY_JPEG`).
 - Content sniffing is by bytes, not file extension.
 - `png_decode` converts RGBA to XRGB8888; decoded pixels carry alpha, and the
   output canvas is written opaque so the compositor's opacity declaration stays

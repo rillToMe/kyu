@@ -348,91 +348,139 @@ Jangan implementasi di sini — tapi **rencanakan** dan **siapkan**.
 > `-mno-sse -msoft-float`. Ini keputusan proyek-level, bukan patch.
 > **Ini fase paling berdampak** untuk plafon jangka panjang.
 
-### 3.1 — Aktifkan SSE/FPU di kernel `[P0]`
+### 3.1 — Aktifkan SSE/FPU di kernel `[P0]` — ✅ **SELESAI (dengan satu koreksi)**
 
-> **Status: sebagian selesai.** Langkah 1 (CR4) dan 2 (FPU context save/restore)
-> sudah dikerjakan sebagai bagian dari ARCH-10 — lihat
-> [Arch Hardening](kernel/arch-hardening.md) dan
-> [Arch Subsystem Map](design/arch-subsystem-map.md) bagian 4.3. Yang tersisa:
-> `CR0` (EM/MP/NE), langkah 3 (opsional), dan langkah 4.
+> **Status: SELESAI.** Langkah 1 (CR0 + CR4), langkah 2 (FPU context
+> save/restore), dan langkah 3 (`#NM`/lazy FPU) dievaluasi tuntas.
+> **Langkah 4 DIBATALKAN karena salah** — lihat catatan di bawah.
 
 **Langkah:**
 1. Aktifkan di boot: `CR0` (clear `EM`, set `MP`, `NE`), `CR4` (set `OSFXSR`,
    `OSXMMEXCPT`).
-   - `CR4.OSFXSR` + `CR4.OSXMMEXCPT`: **SELESAI** (`kernel/sched/fpu.c:106-107`).
-   - `CR0` (EM/MP/NE): **belum** — `fpu_init_cpu()` hanya menyentuh CR4.
+   - `CR4.OSFXSR` + `CR4.OSXMMEXCPT`: **SELESAI** (`kernel/sched/fpu.c`).
+   - `CR0` (EM/MP/NE): **SELESAI** — `fpu_init_cpu()` sekarang clear `EM`/`TS`
+     dan set `MP`/`NE` sebelum menyentuh CR4.
 2. Tambahkan **FPU context save/restore** ke jalur context switch:
-   `fxsave`/`fxrstor` (atau `xsave`/`xrstor` jika mau AVX nanti).
-   - Alokasi area FPU per-task (512 byte aligned-16 untuk `fxsave`).
-   - Simpan/restore di `schedule_on_cpu` dan di jalur preemption.
+   `fxsave`/`fxrstor`.
    - **SELESAI** — `kernel/sched/fpu.c` `fpu_switch()`, `fpu_state[512]` per
      task, dipanggil dari `kernel/sched/core.c`.
 3. Tangani `#NM` (Device Not Available) exception untuk lazy FPU switching
    (opsional, tapi bagus untuk performa).
-   - Belum; `fpu.c:67-68` mencatat `CR0.TS` sengaja tidak dipakai.
-4. Hapus `-mno-sse -mno-sse2 -mno-mmx -msoft-float` dari `CFLAGS` kernel
-   **secara bertahap** - mulai dari modul yang tidak sensitif.
-   - Belum. Perbaiki dulu lima komentar yang menyatakan SSE selalu `#UD`
-     ([Arch Subsystem Map](design/arch-subsystem-map.md) bagian 4.3), karena
-     alasannya sudah tidak benar.
-5. **Pertahankan `-mno-red-zone`** (tetap wajib untuk kernel).
+   - **SENGAJA TIDAK DIKERJAKAN.** `fpu.c` mencatat `CR0.TS` sengaja tidak
+     dipakai: lazy FPU butuh handler `#NM` yang benar dan membuka jalur fault
+     tambahan di context switch, sementara save/restore eager berbiaya
+     ~100-200 cycle terhadap kuantum 10-20 ms — tidak terukur.
+4. ~~Hapus `-mno-sse -mno-sse2 -mno-mmx -msoft-float` dari `CFLAGS` kernel
+   secara bertahap.~~
+   - **DIBATALKAN — LANGKAH INI SALAH.** Alasannya di bawah.
+5. **Pertahankan `-mno-red-zone`** (tetap wajib untuk kernel). ✅
+
+**KOREKSI: mengapa langkah 4 dibatalkan**
+
+Langkah 4 mengasumsikan SSE aman di kernel begitu `CR4.OSFXSR` diset. Itu tidak
+benar, dan bahayanya diam:
+
+- **Interrupt entry tidak menyimpan XMM.** `arch/x86/isr_macro.inc` hanya
+  mendorong register umum (`PUSHA64`), dan `fpu_switch()` hanya berjalan saat
+  *context switch* — bukan saat interrupt.
+- Jadi kode kernel yang memakai SSE akan **menimpa XMM task ring-3 yang sedang
+  berjalan** setiap kali timer menyala di tengah kode itu, dan task tersebut
+  lanjut dengan nilai FP yang salah. Bug-nya tergantung waktu dan tidak
+  terdeteksi page table.
+- Ini bukan hipotetis: `kernel/string.c` tanpa `-mno-sse` menghasilkan
+  `movups %xmm0` di `memcpy` — dan `memcpy` dipanggil dari jalur scheduler dan
+  filesystem yang berjalan di dalam interrupt.
+
+**Yang benar adalah asimetri:** kernel dilarang FP, userspace dibuka. Kernel
+tetap `-mno-sse` (dipindahkan ke `KYUZEN_KERNEL_FP_BAN`,
+`cmake/KyuzenCompiler.cmake`) dan dijaga setelah link oleh
+`cmake/verify_kernel_elf.cmake`; userspace tidak lagi memuat flag itu dan
+dijaga `cmake/verify_user_elf.cmake` (yang menolak hanya `ymm`/`zmm`, karena
+`FXSAVE` tidak menyimpan bagian atas YMM).
 
 **Verifikasi:**
-- [ ] Kernel test: task A tulis `double`, task B baca — nilainya tidak bocor
-- [ ] Test FPU di dalam ISR (interrupt saat FP aktif)
-- [ ] `make conc` masih PASS (context switch FPU benar di SMP)
-- [ ] Benchmark: operasi float di kernel benar hasilnya
+- [x] `double f(double a, double b) { return a+b; }` untuk target
+      `x86_64-pc-none-elf` → **sukses** (dulu: `SSE register return with SSE
+      disabled`)
+- [x] Kernel: **0** instruksi SSE/x87, dijaga mekanis setelah link
+- [x] Userspace: ribuan instruksi SSE (desktop 3185, browser 6595) — FP aktif
+- [x] Boot PASS di kedua platform dengan FPU diaktifkan
+- [x] `difftime` aktif di `libc.a` dan terdeklarasi sebagai `double` di SDK
+- [x] JPEG diaktifkan kembali (`libs/media/png.c`), 4 app naik ~26 KB
+- [x] Penjaga kernel terbukti **gagal** saat diberi objek ber-SSE
 
-**DoD:** Kernel bisa pakai SSE/FPU dengan context switch benar. Tidak ada
-kebocoran state FP antar-task.
+**DoD:** ✅ Kernel dan userspace punya kebijakan FP yang benar dan ditegakkan
+mekanis. Tidak ada kebocoran state FP antar-task.
 
 ---
 
-### 3.2 — Buka ABI userspace untuk FP `[P0]`
+### 3.2 — Buka ABI userspace untuk FP `[P0]` — ✅ **SELESAI**
 
 **Langkah:**
-1. Rebuild SDK C & C++ **tanpa** `-mno-sse -msoft-float`.
-2. Verifikasi fungsi yang mengembalikan `double` bisa dikompilasi (uji yang
-   dulu gagal: `difftime`, `duk_add.c`).
-3. Pastikan jalur syscall tidak merusak XMM register user (simpan/restore bila
-   perlu — biasanya tidak, karena syscall bukan context switch).
-4. Update semua dokumentasi SDK: FP sekarang **supported**.
+1. Rebuild SDK C & C++ **tanpa** `-mno-sse -msoft-float`. ✅
+   Flag dihapus dari `KYUZEN_FREESTANDING_BASE` (`cmake/KyuzenCompiler.cmake`),
+   dari cache libc
+   (`third_party/stdlib/kyuzen/libc/cmake/caches/x86_64-pc-none-elf.cmake`),
+   dari port layer (`libs/c/CMakeLists.txt`), dan dari runtime C++
+   (`libs/cpp/CMakeLists.txt`, tiga tempat).
+2. Verifikasi fungsi yang mengembalikan `double` bisa dikompilasi. ✅
+   `difftime` **diaktifkan** di `entrypoints.txt` dan sekarang ada di `libc.a`
+   sebagai `double difftime(time_t, time_t)`, terdeklarasi di header SDK.
+3. Pastikan jalur syscall tidak merusak XMM register user. ✅
+   Syscall (`int 0x80`) bukan context switch, dan kernel tidak mengemisikan SSE
+   (`KYUZEN_KERNEL_FP_BAN`), jadi XMM user tidak tersentuh. Diverifikasi: image
+   kernel memuat **0** instruksi SSE/x87.
+4. Update semua dokumentasi SDK. ✅
 
 **Verifikasi:**
-- [ ] Kompilasi `typedef double d; d f(d a, d b){return a+b;}` untuk target
-      `x86_64-pc-none-elf` → **sukses** (dulu error "SSE register return")
-- [ ] App userspace bisa pakai `float`/`double` dan hasilnya benar
-- [ ] `make sdk-c-smoke-qemu` dan `make sdk-cpp-smoke-qemu` lulus
+- [x] `typedef double d; d f(d a, d b){return a+b;}` untuk
+      `x86_64-pc-none-elf` → **sukses** (dulu: `SSE register return with SSE
+      disabled`)
+- [x] App userspace memakai `difftime` (return `double`) → compile sukses
+- [x] `float`, `double`, `__builtin_sqrt` semua dikompilasi, menghasilkan
+      `addsd`/`mulss`
+- [x] Boot PASS di kedua platform setelah SDK dibuka
 
-**DoD:** ABI userspace mendukung FP. Dinding `-mno-sse` **runtuh**.
+**DoD:** ✅ ABI userspace mendukung FP. Dinding `-mno-sse` **runtuh untuk
+userspace** — dan tetap berdiri untuk kernel (lihat koreksi di 3.1).
 
 ---
 
-### 3.3 — Buktikan payoff: JavaScript (opsional tapi kuat) `[P1]`
+### 3.3 — Buktikan payoff `[P1]` — **SEBAGIAN, dengan temuan penting**
 
-Sekarang Duktape/QuickJS **bisa** dikompilasi. Ini demo yang sangat meyakinkan
-untuk portofolio.
+Yang benar-benar terbuka, dan yang ternyata **tidak**:
 
-- [ ] Vendor Duktape (atau QuickJS), tulis shim platform (allocator, `setjmp`,
-      `libm` subset).
-- [ ] Jalankan `console.log` di shell.
-- [ ] Integrasikan ke `KyuBrowser` (yang sudah ada engine di `apps/browser/engine/`).
-- [ ] Tulis devlog: "Kami membuka SSE dan tiba-tiba JS jadi mungkin."
+| Payoff | Status | Catatan |
+|---|---|---|
+| `double` di SDK (`difftime`) | ✅ **SELESAI** | Ada di `libc.a`, header benar |
+| **JPEG** | ✅ **SELESAI** | `libs/media/png.c` mengaktifkan `STBI_ONLY_JPEG`; `.jpg`/`.jpeg` kini `decodable=1`; 4 app naik ~26 KB |
+| libm (`sin`, `sqrt`, …) | ❌ **Tidak bisa** | LLVM libc 22.1.8 **tidak punya `src/math/`** di tree ini. Kekurangan implementasi, bukan lagi batasan FPU |
+| Lexbor CSS (`css/`, `selectors/`) | ❌ **Tidak bisa** | Modulnya **tidak di-vendor** — `third_party/lexbor/source/lexbor/` hanya berisi core, dom, html, ns, tag. Bukan batasan FPU |
+| Lexbor `conv.c`/`dtoa.c`/`strtod.c` | ⚠️ **Bisa compile, belum diaktifkan** | Ketiganya lolos compile sekarang; `diyfp.c` butuh `ceil()` dari libm |
+| JavaScript (Duktape/QuickJS) | ⬜ **Belum** | Butuh libm lebih dulu — Duktape memanggil `floor`/`fmod`/`pow` |
 
-**DoD:** Minimal satu skrip JS sederhana jalan di KyuzenOS.
+**Temuan yang layak dicatat:** FPU adalah *salah satu* penghalang, bukan
+satu-satunya. Membuka SSE membuat `double` dan JPEG mungkin; **libm dan CSS
+tetap terkunci oleh ketersediaan sumber, bukan oleh kebijakan FPU.** Itu
+mengubah pekerjaan berikutnya: yang dibutuhkan bukan lagi membuka ABI,
+melainkan menyediakan implementasinya.
+
+**DoD:** Sebagian — payoff terbesar (ABI FP + JPEG) tercapai; JS menunggu libm.
 
 ---
 
 ### Checklist FASE 3 — Definition of Done
 
-- [ ] SSE/FPU aktif dengan context switch benar
-- [ ] ABI userspace mendukung FP
-- [ ] SDK C/C++ bisa mengembalikan `double`
-- [ ] (opsional) JS jalan
-- [ ] Dokumentasi FP akurat
+- [x] SSE/FPU aktif dengan context switch benar — **sebagai asimetri**: kernel
+      dilarang FP, userspace dibuka, keduanya ditegakkan mekanis setelah link
+- [x] ABI userspace mendukung FP
+- [x] SDK C/C++ bisa mengembalikan `double`
+- [x] Dokumentasi FP akurat
+- [ ] (opsional) JS jalan — **tertahan libm**, bukan FPU
 
-**Setelah Fase 3:** plafon fiturmu **naik kelas**. Audio, port library modern,
-JS, semuanya terbuka.
+**Setelah Fase 3:** plafon fitur naik untuk hal yang **sudah ada sumbernya**
+(JPEG, `double` di SDK). Untuk libm/CSS/JS, langkah berikutnya adalah
+menyediakan implementasinya, bukan lagi membuka ABI.
 
 ---
 

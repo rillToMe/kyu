@@ -13,8 +13,10 @@
 5. **Form submit** — butuh model POST + kontrol input terikat DOM.
 6. **Cookies** — tolak bicara jujur sampai ada desain store.
 7. **Tabs** — butuh model Page per-tab + chrome tab (di luar MVP per §46).
-8. **JPEG** — butuh IDCT tanpa float (atau libm soft-float yang diaudit);
-   sampai itu placeholder.
+8. ~~**JPEG**~~ — **SELESAI.** Dulu tertahan karena IDCT stb memakai float dan
+   userspace ABI tidak punya FP. Sejak Phase 3 user-space FPU state disimpan
+   tiap context switch, jadi `libs/media/png.c` mengaktifkan `STBI_ONLY_JPEG`
+   dan `.jpg`/`.jpeg` bisa didekode.
 9. **Cache Kondisional HTTP** (ETag/Last-Modified) — setelah stabil.
 10. **JS** — eksplisit di luar scope sampai fase mesin-JS diaudit (§51).
 

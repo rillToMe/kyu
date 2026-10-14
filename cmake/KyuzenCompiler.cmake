@@ -28,23 +28,64 @@
 # depfile arguments), so those two flags are intentionally NOT repeated here.
 # Adding them would be harmless but redundant.
 #
-# NOTE on -mno-sse / -msoft-float: these are CORRECTNESS flags, not tuning.
-# SSE is usable at runtime since ARCH-10 sets CR4.OSFXSR (kernel/sched/fpu.c),
-# but the kernel is still built without SSE on purpose: no SSE instruction is
-# generated, so the code stays deterministic and never depends on FPU state a
-# context switch might have replaced. Every flag set below must keep them
-# (docs/development/build-system-audit.md §3.3).
+# NOTE on FPU/SSE: the KERNEL is built without SSE (KYUZEN_KERNEL_FP_BAN) and
+# userspace is NOT. This asymmetry is deliberate and load-bearing — interrupt
+# entry does not save XMM, so kernel FP/SSE code would corrupt a running
+# ring-3 task's registers. See the KYUZEN_KERNEL_FP_BAN comment below for the
+# full reasoning, and docs/kernel/arch-hardening.md for the FPU model.
+#
+# Userspace components therefore no longer carry -mno-sse/-msoft-float. Their
+# FPU state IS preserved across tasks, by fpu_switch() (kernel/sched/fpu.c),
+# which is why they can use float/double and libc functions that return them.
 # ============================================================================
 
 include_guard(GLOBAL)
 
 # ---------------------------------------------------------------------------
 # Common freestanding base shared by every target-build flag set.
+#
+# NO SSE/FP FLAGS HERE. Whether FPU instructions may be emitted is a per-domain
+# decision (kernel vs userspace), and the two domains need OPPOSITE answers —
+# see KYUZEN_KERNEL_FP_BAN below. Putting -mno-sse in this shared base would
+# silently re-ban it for userspace, which is exactly what this change removes.
 # ---------------------------------------------------------------------------
 set(KYUZEN_FREESTANDING_BASE
     -ffreestanding
     -nostdlib
     -mno-red-zone
+)
+
+# ---------------------------------------------------------------------------
+# KYUZEN_KERNEL_FP_BAN — the kernel must never emit FP/SSE instructions.
+#
+# WHY THIS IS NOT OPTIONAL, AND WHY IT IS NOT JUST CONSERVATISM
+#
+#   FPU state is saved and restored per task by fpu_switch() (kernel/sched/
+#   fpu.c), and that runs ONLY on a context switch. Interrupt entry does NOT
+#   save XMM: arch/x86/isr_macro.inc pushes the general-purpose registers only
+#   (PUSHA64), and nothing else in arch/ or kernel/ touches fxsave.
+#
+#   So if kernel code emitted SSE, an interrupt taken while a ring-3 task was
+#   using XMM would run kernel code that clobbers those registers, and the task
+#   would resume with corrupted FP state. A user-space computation would
+#   silently produce wrong results depending on where the timer fired — the
+#   worst class of bug this project can have.
+#
+#   This is not hypothetical: kernel/string.c compiled without -mno-sse emits
+#   `movups %xmm0` in memcpy, and memcpy is reachable from scheduler and
+#   filesystem paths that run inside interrupts.
+#
+#   Userspace is different: it IS covered, because fpu_switch() runs between
+#   tasks. That asymmetry is the whole design, and it is why userspace is
+#   opened up (see the flag sets below) while the kernel stays closed.
+#
+#   Keeping the ban here also means the kernel stays deterministic and never
+#   depends on FPU state a context switch might have replaced.
+#
+# The check is enforced mechanically after the link (cmake/verify_kernel_elf
+# .cmake), so a dropped flag is a build error rather than a boot-time mystery.
+# ---------------------------------------------------------------------------
+set(KYUZEN_KERNEL_FP_BAN
     -mno-sse
     -mno-sse2
     -mno-mmx
@@ -64,6 +105,7 @@ set(KYUZEN_FREESTANDING_BASE
 add_library(kyuzen-flags-kernel INTERFACE)
 target_compile_options(kyuzen-flags-kernel INTERFACE
     ${KYUZEN_FREESTANDING_BASE}
+    ${KYUZEN_KERNEL_FP_BAN}
     -O2
     -mcmodel=kernel          # required for the higher-half kernel: prevents
                              # R_X86_64_32 relocations for symbols above 4 GiB
@@ -248,7 +290,14 @@ target_include_directories(kyuzen-flags-lexbor INTERFACE
 #
 # The -DBR_* switches disable every built-in entropy/time source: the OS port
 # supplies randomness and time through Kyuzen syscalls instead
-# (apps/browser/tls/tls_kyuzen.c). AES_X86NI/SSE2 are off because SSE faults.
+# (apps/browser/tls/tls_kyuzen.c).
+#
+# BR_AES_X86NI / BR_SSE2 stay off: the x86 AES-NI path is written against
+# compiler intrinsics that assume a hosted <wmmintrin.h> setup this target does
+# not provide, and the portable C path is already correct. This is no longer
+# about SSE faulting — userspace may use SSE since Phase 3 (fpu_switch()
+# preserves XMM). It is about not depending on intrinsics headers that are not
+# part of the freestanding SDK.
 # ===========================================================================
 add_library(kyuzen-flags-bearssl-os INTERFACE)
 target_compile_options(kyuzen-flags-bearssl-os INTERFACE

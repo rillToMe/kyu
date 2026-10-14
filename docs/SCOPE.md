@@ -101,7 +101,7 @@ so the boundary between "unfinished" and "out of scope" is visible.
 | Filesystem | No relative paths or working directory. No recursive directory delete. No symlinks or hard links. No permission or ownership enforcement at the FS level. |
 | Process model | No signals, no process groups. `fork` is not copy-on-write. |
 | Tasks | `MAX_TASKS` is 16 and `MAX_WINDOWS` is 16 — both static caps. |
-| Floating point | The kernel and all userspace are built `-mno-sse -msoft-float`, so `float`/`double` are avoided throughout. FPU state **is** saved and restored per task (`kernel/sched/fpu.c`), so SSE from userspace is safe, but the toolchain does not emit it. |
+| Floating point | **Supported in userspace, banned in the kernel.** User-space FPU state is saved/restored per task (`kernel/sched/fpu.c`, `FXSAVE64`/`FXRSTOR64`), so `float`/`double` and `difftime` work in the SDK. The kernel stays `-mno-sse` because interrupt entry does not save XMM — enforced by `cmake/verify_kernel_elf.cmake`. AVX is rejected in user ELFs: `FXSAVE` does not cover `ymm`/`zmm`. |
 | Drivers | One NIC (e1000), one disk path (ATA PIO), PS/2 input. No hotplug. |
 | SMP | Verified up to 16 CPUs in QEMU. No CPU hotplug. |
 

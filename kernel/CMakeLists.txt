@@ -405,3 +405,28 @@ add_custom_command(TARGET kyuzen-kernel POST_BUILD
     COMMENT "Updating compatibility copy build/myos.bin"
     VERBATIM
 )
+
+# ---------------------------------------------------------------------------
+# The kernel must contain no FP/SSE instructions.
+#
+# Interrupt entry does not save XMM (arch/x86/isr_macro.inc pushes the
+# general-purpose registers only) and fpu_switch() runs only on a context
+# switch, so kernel SSE would corrupt a running ring-3 task's FP registers
+# whenever an interrupt landed inside that code.
+#
+# The flag that prevents this is KYUZEN_KERNEL_FP_BAN (cmake/KyuzenCompiler
+# .cmake), applied through kyuzen-flags-kernel. This check is the enforcement:
+# if a kernel target ever loses that flag set, the build fails here instead of
+# shipping a system that silently corrupts FP state.
+#
+# Userspace is deliberately NOT checked this way — fpu_switch() does cover it,
+# so user ELFs may use float/double. See cmake/verify_user_elf.cmake.
+# ---------------------------------------------------------------------------
+add_custom_command(TARGET kyuzen-kernel POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+            -DELF=$<TARGET_FILE:kyuzen-kernel>
+            -DKYUZEN_OBJDUMP=${KYUZEN_LLVM_OBJDUMP}
+            -P ${KYUZEN_ROOT}/cmake/verify_kernel_elf.cmake
+    COMMENT "Verifying the kernel is free of FP/SSE instructions"
+    VERBATIM
+)

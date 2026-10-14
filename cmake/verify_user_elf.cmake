@@ -8,7 +8,11 @@
 #
 # Invoked with:
 #   -DELF=<path> -DKYUZEN_NM=<llvm-nm> -DKYUZEN_OBJDUMP=<llvm-objdump>
-#   [-DEXPECTED_ENTRY=_start|main] [-DCHECK_NO_FP=ON]
+#   [-DEXPECTED_ENTRY=_start|main]
+#
+# Checked here: entry point, no unresolved symbols, no exception/unwind/thread
+# runtime, and no AVX (see check 4 — SSE and x87 are deliberately allowed in
+# user space, and banned in the kernel by cmake/verify_kernel_elf.cmake).
 #
 # Written as a CMake script (not a shell pipeline) so it runs on any host
 # without grep/sed/bash.
@@ -80,11 +84,33 @@ if(cxa_hit)
 endif()
 
 # ---------------------------------------------------------------------------
-# 4. No SSE / x87 instructions.
+# 4. FPU instruction policy: XMM and x87 are ALLOWED; AVX (ymm/zmm) is NOT.
 #
-# Every component is built -mno-sse -msoft-float, so no component's generated
-# code depends on FPU state that a context switch might have replaced.
-# Checking the disassembly catches a flag that silently got dropped.
+# WHY THIS IS NO LONGER A BLANKET BAN
+#
+#   User-space FPU state IS preserved across tasks: fpu_switch()
+#   (kernel/sched/fpu.c) runs on every context switch and uses FXSAVE/FXRSTOR.
+#   So user code may freely use float/double — that is what opened the C/C++
+#   SDK's <math.h>, libm, and the double-returning libc functions.
+#
+#   FXSAVE saves exactly x87 + XMM0..XMM15 + MXCSR. It does NOT save the upper
+#   halves of YMM/ZMM — those need XSAVE, which this kernel does not use (see
+#   the XSAVE-vs-FXSAVE reasoning in kernel/sched/fpu.c). An AVX instruction in
+#   a user ELF would therefore have its upper 128 bits silently clobbered by
+#   the next task, producing wrong results that depend on scheduling order.
+#
+#   So the boundary is not "FP vs no FP", it is "FXSAVE-covered vs not":
+#
+#     xmm, x87   allowed  — covered by FXSAVE/FXRSTOR
+#     ymm, zmm   banned   — NOT covered; needs XSAVE
+#
+#   The default -march for this target is baseline x86-64 (SSE2, no AVX), so
+#   nothing emits ymm today. The check is here so that stays true if a -march
+#   is ever raised, or if a vendored library ships precompiled AVX code.
+#
+#   The KERNEL has the opposite rule — no FP at all — because interrupt entry
+#   does not save XMM. That is enforced separately by
+#   cmake/verify_kernel_elf.cmake.
 # ---------------------------------------------------------------------------
 execute_process(
     COMMAND ${KYUZEN_OBJDUMP} -d "${ELF}"
@@ -96,19 +122,16 @@ if(NOT objdump_rc EQUAL 0)
     message(FATAL_ERROR "verify_user_elf: llvm-objdump failed on ${ELF}: ${objdump_err}")
 endif()
 
-string(REGEX MATCH "%(xmm|ymm|zmm)[0-9]+" sse_hit "${objdump_out}")
-if(sse_hit)
+string(REGEX MATCH "%(ymm|zmm)[0-9]+" avx_hit "${objdump_out}")
+if(avx_hit)
     message(FATAL_ERROR
-        "verify_user_elf: ${ELF} contains SSE instructions (${sse_hit}) — "
-        "the OS is built -mno-sse -msoft-float, so this component's FPU state "
-        "would not survive a context switch")
-endif()
-
-string(REGEX MATCH
-    "[ \t](fld|fst|fstp|fxch|fucom|fucomi|fadd|fsub|fmul|fdiv|fild|fist|fistp|fcom|fcomp)[ \t]"
-    x87_hit "${objdump_out}")
-if(x87_hit)
-    message(FATAL_ERROR
-        "verify_user_elf: ${ELF} contains x87 instructions (${x87_hit}) — "
-        "the target is built -msoft-float")
+        "verify_user_elf: ${ELF} contains AVX instructions (${avx_hit}).\n"
+        "\n"
+        "The kernel saves FPU state with FXSAVE/FXRSTOR, which covers x87 and "
+        "XMM0-15 only. AVX's upper YMM/ZMM halves are NOT saved, so this "
+        "component's FP state would be corrupted by the next task in a way "
+        "that depends on scheduling order.\n"
+        "\n"
+        "Fix: build this target with a baseline x86-64 -march (the default), "
+        "or extend the kernel to XSAVE before enabling AVX.")
 endif()

@@ -493,10 +493,25 @@ constructor. The ELF loader does not run `.init_array`. Use function-local
 
 UI-13.6. All math in the toolkit is integer-only. Every target build inherits
 `KYUZEN_FREESTANDING_BASE` (`cmake/KyuzenCompiler.cmake`), which includes
-`-mno-sse -mno-sse2 -mno-mmx -msoft-float`. These are **correctness** flags, not
-tuning: the kernel never sets `CR4.OSFXSR`, so any SSE instruction faults. Do
-not introduce `float`/`double`, and do not introduce a runtime dependency that
-requires them. `cmake/verify_user_elf.cmake` checks the resulting ELF.
+`-mno-sse -mno-sse2 -mno-mmx -msoft-float`. These were **correctness** flags
+when they were written: the kernel did not set `CR4.OSFXSR`, so any SSE
+instruction faulted.
+
+**That reasoning no longer applies to userspace.** Since Phase 3 user-space FPU
+state is preserved across tasks (`fpu_switch()`, `kernel/sched/fpu.c`, via
+`FXSAVE64`/`FXRSTOR64`), the userspace flag sets no longer carry `-mno-sse`, and
+`float`/`double` are available.
+
+The KERNEL still bans FP (`KYUZEN_KERNEL_FP_BAN`), because interrupt entry does
+not save XMM — see [Arch Hardening](../docs/kernel/arch-hardening.md). That is a
+separate rule and does not constrain UI code.
+
+What this means for UI work: integer math in the toolkit is now a **design
+choice** (see `theme/trig.hpp`, `aa_math.h`), not a build restriction. Do not
+cite `-mno-sse` as the reason for an integer implementation — the real reasons
+are precision, cost, and determinism. `cmake/verify_user_elf.cmake` still checks
+every user ELF, but it now rejects only AVX (`ymm`/`zmm`), because `FXSAVE` does
+not cover AVX's upper halves.
 
 UI-13.7. `libui.h` and `libui_xml.h` are **append-only** and use opaque handles.
 Do not reorder enums, change existing struct layouts, or change existing

@@ -55,7 +55,7 @@ hello.elf  (static, entry _start, 0 undefined symbols)
 ```text
 --target=x86_64-pc-none-elf -ffreestanding -nostdlib -nostdinc++
 -fno-exceptions -fno-rtti -std=c++17 -O2
--mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float
+-mno-red-zone
 ```
 
 > The link does **not** go through the `clang++` driver: on the host, clang

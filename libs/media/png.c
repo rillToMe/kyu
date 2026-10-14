@@ -1,24 +1,23 @@
 // libs/media/png.c — Decoder gambar bersama untuk toolkit widget + aplikasi media.
 //
-// Konfigurasi stb_image identik dengan apps/viewer.c (pola yang sudah
-// terbukti): STBI_ONLY_PNG + STBI_ONLY_BMP, memori disambung ke
-// sys_alloc/sys_free. Dipisah ke file C sendiri (bukan di toolkit
-// libs/gui/widget/) agar kode C stb_image tidak ikut dikompilasi sebagai C++.
+// Konfigurasi stb_image mengikuti pola yang sudah terbukti: STBI_ONLY_* untuk
+// membatasi format, memori disambung ke sys_alloc/sys_free. Dipisah ke file C
+// sendiri (bukan di toolkit libs/gui/widget/) agar kode C stb_image tidak ikut
+// dikompilasi sebagai C++.
 //
-// Format yang diaktifkan SENGAJA hanya yang benar-benar bisa didekode dengan
-// flag build KyuzenOS (freestanding, -msoft-float -mno-sse):
-//   PNG — integer (STBI_NO_LINEAR mematikan jalur float)
-//   BMP — integer
-// JPEG/GIF TIDAK diaktifkan: dekoder JPEG stb memakai aritmetika float sebagai
-// inti IDCT-nya, dan build ini tidak boleh mengemisikan FP (tanpa libm).
-// include/media.h menandai .jpg/.jpeg sebagai "keluarga gambar" tapi TIDAK
-// "supported" — UI menampilkan itu apa adanya, bukan gagal misterius.
+// FORMAT YANG DIAKTIFKAN
+//   PNG  — integer (STBI_NO_LINEAR mematikan jalur float)
+//   BMP  — integer
+//   JPEG — AKTIF sejak FPU userspace dibuka (Phase 3). IDCT stb memakai float,
+//          dan build userspace sekarang boleh mengemisikan FP: fpu_switch()
+//          (kernel/sched/fpu.c) menyimpan state FPU tiap context switch dengan
+//          FXSAVE/FXRSTOR. Sebelumnya ini mustahil karena build memakai
+//          -mno-sse -msoft-float.
+//   GIF  — masih TIDAK diaktifkan. Bukan karena FPU: tidak ada yang memintanya,
+//          dan setiap format menambah ukuran ELF di semua app yang memakai
+//          decoder ini.
 //
-// png_decode / png_free dipertahankan sebagai nama lama (dipakai ABI internal
-// libs/gui/widget/include/primitives/image.hpp). Nama netral image_decode /
-// image_free (include/media.h) dipakai aplikasi media baru: yang di-decode
-// mendeteksi jenis berkas dari ISI (content sniffing stb), bukan ekstensi —
-// file .bmp yang valid memang lolos lewat nama fungsi "png_*".
+// include/media.h menandai .jpg/.jpeg sebagai format yang didukung.
 #include "userlib.h"
 #include "media.h"
 
@@ -28,6 +27,7 @@
 #define STBI_NO_THREAD_LOCALS
 #define STBI_ONLY_PNG
 #define STBI_ONLY_BMP
+#define STBI_ONLY_JPEG
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
 #define STBI_ASSERT(x)

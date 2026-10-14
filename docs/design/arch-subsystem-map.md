@@ -327,21 +327,37 @@ di dokumen ini.
 di kernel. Sebuah kernel produksi butuh jalur "lapor dan lanjut" yang tidak
 mematikan mesin.
 
-**P1-11. SSE/AVX di userspace.** *Sebagian sudah selesai - lihat 4.3.*
+**P1-11. SSE/AVX di userspace.** **SELESAI (Phase 3).**
 
-`CR4.OSFXSR` + `OSXMMEXCPT` sudah diset (`fpu.c:106-107`) dan save/restore
-`FXSAVE64` per task sudah terpasang, jadi **SSE di userspace sudah berfungsi
-hari ini**. Yang tersisa dari [FASE 3 di roadmap](../ROADMAP-OSDEV.md):
+`CR4.OSFXSR` + `OSXMMEXCPT` diset, `CR0` (`EM=0`, `MP=1`, `NE=1`) sekarang juga
+diset (`fpu.c`), dan save/restore `FXSAVE64` per task sudah terpasang. Flag
+userspace tidak lagi memuat `-mno-sse -mno-sse2 -mno-mmx -msoft-float`, jadi
+`double`/`float` bisa dikompilasi dan libc bisa mengembalikan `double`
+(`difftime` aktif), dan JPEG diaktifkan kembali di `libs/media/png.c`.
 
-- `CR0` (clear `EM`, set `MP`, `NE`) - belum disentuh sama sekali (4.3).
-- Mencabut `-mno-sse -mno-sse2 -mno-mmx -msoft-float` dari kernel
-  (`cmake/KyuzenCompiler.cmake:45-48`) secara bertahap.
-- Komentar di 5 file yang masih menyatakan SSE selalu `#UD` (4.3) - harus
-  diperbaiki lebih dulu, karena alasan yang salah akan menyesatkan keputusan
-  berikutnya.
+**KERNEL TETAP `-mno-sse`, dan itu keputusan sadar — bukan sisa kebijakan.**
+
+Roadmap FASE 3 langkah 4 meminta flag itu dicabut dari kernel "secara
+bertahap". **Langkah itu tidak dikerjakan, karena salah.** Alasannya:
+
+- Interrupt entry TIDAK menyimpan XMM. `arch/x86/isr_macro.inc` hanya mendorong
+  register umum, dan `fpu_switch()` hanya berjalan saat context switch.
+- Jadi kode kernel yang memakai SSE akan menimpa XMM task ring-3 yang sedang
+  berjalan setiap kali interrupt menyala di tengah kode itu, dan task tersebut
+  lanjut dengan nilai FP yang salah.
+- Itu bukan hipotesis: `kernel/string.c` tanpa `-mno-sse` menghasilkan
+  `movups %xmm0` di `memcpy`, dan `memcpy` dipanggil dari jalur scheduler dan
+  filesystem yang berjalan di dalam interrupt.
+
+Karena itu flag kernel dipindahkan ke `KYUZEN_KERNEL_FP_BAN`
+(`cmake/KyuzenCompiler.cmake`) dan dijaga setelah link oleh
+`cmake/verify_kernel_elf.cmake` — build GAGAL bila image kernel memuat SSE/x87.
+Sisi userspace dijaga terpisah oleh `cmake/verify_user_elf.cmake`, yang
+sekarang MENGIZINKAN xmm/x87 dan hanya menolak `ymm`/`zmm`.
 
 Ketergantungan untuk AVX: XSAVE (bukan hanya FXSAVE) menjadi wajib begitu AVX
-dibuka, karena area simpan menjadi dinamis.
+dibuka, karena `FXSAVE` tidak menyimpan bagian atas YMM/ZMM. Itulah sebabnya
+penjaga userspace menolak `ymm`/`zmm` hari ini.
 
 ### P2 - berguna, tidak memblokir
 
@@ -436,23 +452,34 @@ menyatakan kernel tidak pernah menyetel `CR4.OSFXSR`**:
 | `docs/development/build-system-audit.md` | 182 | sudah dikoreksi |
 | `docs/ROADMAP-OSDEV.md` | 351-364 (FASE 3.1) | sudah dikoreksi |
 
-Flag `-mno-sse -mno-sse2 -mno-mmx -msoft-float` **masih benar** dan masih harus
-dipertahankan - kernel memang tidak men-*generate* SSE (diverifikasi: tidak ada
-`__m128`/`_mm_*` di `kernel/`, `arch/`, `drivers/`). Yang basi adalah **alasannya**:
-"any SSE instruction faults" bukan lagi benar, karena `CR4.OSFXSR` sudah diset.
-Alasan yang benar sekarang adalah disiplin ABI dan determinisme codegen, bukan
-`#UD`.
+Flag `-mno-sse -mno-sse2 -mno-mmx -msoft-float` **masih benar untuk KERNEL** dan
+masih harus dipertahankan — tapi **alasannya bukan lagi `#UD`**, dan bukan pula
+sekadar "disiplin ABI".
 
-Implikasinya lebih besar dari sekadar komentar: **langkah 1 dan 2 dari
-ROADMAP FASE 3.1 sudah selesai** (aktifkan CR4 + FPU context save/restore).
-Yang tersisa dari fase itu adalah langkah 3 (`#NM` / lazy FPU, eksplisit
-opsional di `fpu.c:67-68`) dan langkah 4 (mencabut `-mno-sse` secara bertahap).
+Alasan yang benar: **interrupt entry tidak menyimpan XMM.**
+`arch/x86/isr_macro.inc` hanya mendorong register umum (`PUSHA64`), dan
+`fpu_switch()` hanya berjalan saat context switch. Kode kernel yang memakai SSE
+akan menimpa XMM task ring-3 yang sedang berjalan setiap kali interrupt menyala
+di tengah kode itu — dan task tersebut lanjut dengan nilai FP yang salah.
+Terverifikasi bukan hipotetis: `kernel/string.c` tanpa `-mno-sse` menghasilkan
+`movups %xmm0` di `memcpy`, dan `memcpy` dipanggil dari jalur scheduler dan
+filesystem yang berjalan di dalam interrupt.
 
-Satu celah nyata yang tersisa dari langkah 1: ROADMAP meminta `CR0` ikut diatur
-(clear `EM`, set `MP`, `NE`). `fpu_init_cpu()` **hanya menyentuh CR4**;
-`cpu_verify_wp()` (`cpu.c:87`) hanya menyentuh `CR0.WP`. Pada x86-64 `CR0.EM`
-sudah 0 dan `MP`/`NE` sudah 1 dari reset, jadi ini belum menimbulkan gejala -
-tapi ini satu-satunya bagian langkah 1 yang belum dikerjakan.
+Itulah juga sebabnya **userspace justru dibuka** (Phase 3): `fpu_switch()`
+memang berjalan di antara task, jadi user code boleh memakai FP. Asimetri ini
+adalah keseluruhan desainnya.
+
+Penegakannya sekarang mekanis, bukan komentar:
+`cmake/verify_kernel_elf.cmake` menggagalkan build bila image kernel memuat
+SSE/x87, dan flag itu sendiri hidup di `KYUZEN_KERNEL_FP_BAN`
+(`cmake/KyuzenCompiler.cmake`).
+
+**Langkah 4 ROADMAP FASE 3.1 ("cabut `-mno-sse` dari kernel secara bertahap")
+DIBATALKAN** — lihat P1-11 di atas untuk alasannya.
+
+Yang tersisa dari fase itu hanya langkah 3 (`#NM` / lazy FPU), yang eksplisit
+ditandai opsional di `fpu.c`. `CR0` (clear `EM`/`TS`, set `MP`/`NE`) sudah
+diset sekarang, jadi langkah 1 selesai seluruhnya.
 
 ---
 
@@ -519,6 +546,7 @@ mendiagnosa seluruh item lain.
 Satu hal lagi yang mandiri dan murah: **4.3** - perbaiki lima komentar yang
 menyatakan SSE selalu `#UD`. Tidak ada perubahan perilaku, tapi alasannya salah
 dan akan menyesatkan siapa pun yang mengerjakan FASE 3 berikutnya.
+*(Sudah dikerjakan bersama Phase 3 — lihat P1-11.)*
 
 ---
 
