@@ -118,7 +118,11 @@ static struct block_buffer* alloc_entry_locked(void) {
         if (b->refcount > 0) continue;
         if (b->dirty) {
             // write-back TANPA melepas lock — lihat catatan locking di atas.
-            (void)ata_write_block4k(b->block_num, b->data);
+            // Gagal tulis = entry ini TIDAK boleh dipakai ulang: datanya belum
+            // selamat di disk, dan memakainya akan menghilangkan tulisan itu
+            // tanpa jejak (bacaan berikutnya dapat data basi → EIO "rusak").
+            // Lewati dan coba entry lebih tua; kalau semua gagal, NULL (jujur).
+            if (ata_write_block4k(b->block_num, b->data) != 0) continue;
             b->dirty = BCACHE_CLEAN;
         }
         hash_remove(b);
@@ -126,7 +130,7 @@ static struct block_buffer* alloc_entry_locked(void) {
         b->valid = 0;           // dari LRU — kalau tidak, push ulang nanti
         return b;               // menautkannya dua kali (list korup).
     }
-    return NULL;   // semua dipin / pool penuh
+    return NULL;   // semua dipin / pool penuh / tulis balik gagal semua
 }
 
 struct block_buffer* bcache_get(uint64_t block_num) {
@@ -224,10 +228,11 @@ void bcache_release(struct block_buffer *b) {
 void bcache_flush_all(void) {
     uint64_t f = spinlock_lock_irqsave(&bcache_lock);
     for (struct block_buffer *b = lru_head; b; b = b->lru_next) {
-        if (b->dirty) {                       // dirty selalu ditulis, valid apa pun
-            (void)ata_write_block4k(b->block_num, b->data);
+        // dirty selalu ditulis, valid apa pun. Hanya yang BERHASIL ditulis
+        // yang boleh jadi CLEAN — gagal tulis harus tetap dirty supaya sync
+        // berikutnya mencoba lagi, bukan menghilangkan data diam-diam.
+        if (b->dirty && ata_write_block4k(b->block_num, b->data) == 0)
             b->dirty = BCACHE_CLEAN;
-        }
     }
     spinlock_unlock_irqrestore(&bcache_lock, f);
 }
@@ -239,10 +244,8 @@ int bcache_flush_all_try(void) {
     uint64_t f;
     if (!spinlock_try_lock_irqsave(&bcache_lock, &f)) return 0;
     for (struct block_buffer *b = lru_head; b; b = b->lru_next) {
-        if (b->dirty) {
-            (void)ata_write_block4k(b->block_num, b->data);
+        if (b->dirty && ata_write_block4k(b->block_num, b->data) == 0)
             b->dirty = BCACHE_CLEAN;
-        }
     }
     spinlock_unlock_irqrestore(&bcache_lock, f);
     return 1;
