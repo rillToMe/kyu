@@ -52,6 +52,30 @@ PANIC = re.compile(r"KERNEL PANIC|PANIC BERSARANG|EXCEPTION: ", re.IGNORECASE)
 # The kernel prints this when it finds a crash dump from a previous boot.
 POST_BOOT_CRASH = re.compile(r"notifikasi crash|crash-report|dump ke-", re.IGNORECASE)
 
+# serial_print() has no lock, so on SMP two CPUs can interleave their bytes on
+# COM1. A real capture looked like this — the marker and an [init] line fused:
+#
+#     [init] KyuzenKyOSu zineint OdiSm ulraieady.
+#
+# (That is "[init] KyuzenOS init dimulai" + "KyuzenOS ready." written at once.)
+# A byte-exact search would miss it and report a timeout for a boot that
+# actually succeeded. So the marker test below ALSO accepts evidence that the
+# boot progressed PAST the marker: the init/login lines that can only appear
+# after it.
+PAST_MARKER = re.compile(
+    r"login\.elf di-spawn|INSTALASI KYUZEN OS|Password Root Baru",
+    re.IGNORECASE,
+)
+
+
+def has_booted(text):
+    """True if the marker is present, whole or interleaved."""
+    if BOOT_MARKER in text:
+        return True
+    # Fallback: the marker itself was garbled by SMP interleaving, but the
+    # boot demonstrably continued past it.
+    return bool(PAST_MARKER.search(text))
+
 
 def qemu_cmd(iso, disk, serial, cpus):
     return [
@@ -96,7 +120,7 @@ def one_run(iso, run_index, timeout, cpus, keep_dir):
                 reason = "qemu-exited"
                 break
             text = read(serial)
-            if BOOT_MARKER in text:
+            if has_booted(text):
                 # Give the system a moment to reach userspace and settle, so a
                 # crash immediately AFTER the marker is still caught.
                 time.sleep(3)

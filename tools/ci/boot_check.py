@@ -51,6 +51,21 @@ import time
 # The kernel's own "everything came up" line. See boot_handoff_to_init().
 BOOT_MARKER = "KyuzenOS ready."
 
+# serial_print() has no lock, so on SMP two CPUs can interleave their bytes on
+# COM1 (observed: "[init] KyuzenKyOSu zineint OdiSm ulraieady."). Accept
+# evidence of progress past the marker as well, so a garbled marker line does
+# not fail a boot that actually succeeded.
+PAST_MARKER = re.compile(
+    r"login\.elf di-spawn|INSTALASI KYUZEN OS|Password Root Baru",
+    re.IGNORECASE,
+)
+
+
+def has_booted(text):
+    if BOOT_MARKER in text:
+        return True
+    return bool(PAST_MARKER.search(text))
+
 # A panic is a definite failure, so it fails fast instead of waiting out the
 # timeout. Both spellings are checked: the BSOD banner and the serial dump.
 PANIC_PATTERNS = [
@@ -152,7 +167,7 @@ def main():
 
             serial = read_serial(serial_path)
 
-            if BOOT_MARKER in serial:
+            if has_booted(serial):
                 status = "ok"
                 break
 
