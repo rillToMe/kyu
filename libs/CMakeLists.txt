@@ -7,6 +7,7 @@ add_subdirectory(core)
 add_subdirectory(media)
 add_subdirectory(text)
 add_subdirectory(time)
+add_subdirectory(render)
 
 if(KYUZEN_BUILD_LIBC_SDK)
     add_subdirectory(c)

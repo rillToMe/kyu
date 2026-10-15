@@ -22,6 +22,20 @@
 // ------------------------------------------------------------
 #define PAGING_NX        (1ULL << 63)
 
+// 4 KiB page frame mask (low 12 bits are flags). NOTE: it keeps NX
+// (bit 63) — use pte_frame()/pte_flags() for leaf entries, never the
+// raw mask, or phys math wraps non-canonical (R3 fork #GP).
+#define PAGE_MASK 0xFFFFFFFFFFFFF000ULL
+
+// Leaf-PTE split: frame address (NX stripped) vs full flag set (NX kept).
+// Pure logic, host-testable; the only correct way to read a leaf PTE.
+static inline uint64_t pte_frame(uint64_t e) {
+    return (e & PAGE_MASK) & (uint64_t)~(uint64_t)PAGING_NX;
+}
+static inline uint64_t pte_flags(uint64_t e) {
+    return (e & (uint64_t)~(uint64_t)PAGE_MASK) | (e & (uint64_t)PAGING_NX);
+}
+
 // Return bit NX hanya bila hardware mendukungnya, selain itu 0.
 // Dipakai loader ELF & pemetaan stack/heap user.
 uint64_t paging_nx_flag(void);

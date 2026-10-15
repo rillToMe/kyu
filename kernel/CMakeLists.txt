@@ -54,6 +54,7 @@ set(_syscall_sources
     kernel/syscall/sys_misc.c
     kernel/syscall/sys_net.c
     kernel/syscall/sys_proc.c
+    kernel/syscall/sys_shm.c
     kernel/syscall/sys_system.c
     kernel/syscall/sys_vfs.c
     kernel/syscall/syscall.c
@@ -86,6 +87,7 @@ set(_fs_sources
 set(_mm_sources
     kernel/mm/heap.c
     kernel/mm/heap_watch.c
+    kernel/mm/kz_shm.c
     kernel/mm/paging.c
     kernel/mm/pmm.c
     kernel/mm/uheap.c
@@ -121,6 +123,7 @@ set(_gfx_sources
     kernel/gfx/compositor.c
     kernel/gfx/fb.c
     kernel/gfx/kwm.c
+    kernel/gfx/kz_adapter.c
 )
 
 set(_smp_sources

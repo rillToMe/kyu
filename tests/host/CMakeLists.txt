@@ -413,6 +413,109 @@ if(EXISTS "${KYUZEN_UNIT_DIR}/text_test.c")
     )
 endif()
 
+# --- damage/compositor regression: REAL kernel display+KWM+compositor+software ---
+# damage_test.c #includes kernel/display.c, kernel/gfx/kwm.c,
+# graphics/backend/software.c, kernel/gfx/compositor.c langsung (satu TU +
+# mock GHAL async di dalam file). kernel/gfx/fb.c + color_blend.c dikompilasi
+# sebagai unit terpisah karena tidak di-#include (menyediakan
+# display_boot_init/draw_rect/font8x16/color_blend_alpha).
+if(EXISTS "${KYUZEN_UNIT_DIR}/damage_test.c")
+    kyuzen_host_test(test-damage
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/damage_test.c"
+            "${KYUZEN_ROOT}/kernel/gfx/fb.c"
+            "${KYUZEN_ROOT}/libs/gui/color/src/color_blend.c"
+        IQUOTE "${KYUZEN_UNIT_DIR}" "${KYUZEN_ROOT}/include" "${KYUZEN_ROOT}/graphics" "${KYUZEN_ROOT}/libs/gui/color/include"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- damage driver transport: REAL virtqueue + virtio-gpu backend vs RAM device ---
+# Satu TU: damage_driver_test.c #includes virtqueue.c/virtio_gpu_dev.c/
+# virtio_gpu_cmd.c/virtio_gpu.c langsung. Tidak ada SOURCES tambahan.
+if(EXISTS "${KYUZEN_UNIT_DIR}/damage_driver_test.c")
+    kyuzen_host_test(test-damage-driver
+        SOURCES "${KYUZEN_UNIT_DIR}/damage_driver_test.c"
+        IQUOTE "${KYUZEN_UNIT_DIR}" "${KYUZEN_ROOT}/include" "${KYUZEN_ROOT}/graphics" "${KYUZEN_ROOT}/graphics/memory" "${KYUZEN_ROOT}/drivers/graphics/hw"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- R1 surface + sync contract: pure header logic (kz_surface.h/kz_sync.h) ---
+if(EXISTS "${KYUZEN_UNIT_DIR}/kz_surface_test.c")
+    kyuzen_host_test(test-kz-surface
+        SOURCES "${KYUZEN_UNIT_DIR}/kz_surface_test.c"
+        IQUOTE "${KYUZEN_ROOT}/include"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- R1 native 2D API: REAL libs/render software reference ---
+if(EXISTS "${KYUZEN_UNIT_DIR}/kz_render_test.c")
+    kyuzen_host_test(test-kz-render
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/kz_render_test.c"
+            "${KYUZEN_ROOT}/libs/render/src/kz_render.c"
+        IQUOTE "${KYUZEN_ROOT}/include"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- R2 adapter: REAL kernel/gfx/kz_adapter.c vs mock GHAL backend ---
+if(EXISTS "${KYUZEN_UNIT_DIR}/kz_adapter_test.c")
+    kyuzen_host_test(test-kz-adapter
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/kz_adapter_test.c"
+            "${KYUZEN_ROOT}/kernel/gfx/kz_adapter.c"
+        IQUOTE "${KYUZEN_UNIT_DIR}" "${KYUZEN_ROOT}/include" "${KYUZEN_ROOT}/graphics"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- R2 shadow compositor: REAL libs/render vs independent oracle ---
+if(EXISTS "${KYUZEN_UNIT_DIR}/kz_shadow_test.c")
+    kyuzen_host_test(test-kz-shadow
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/kz_shadow_test.c"
+            "${KYUZEN_ROOT}/libs/render/src/kz_render.c"
+            "${KYUZEN_ROOT}/libs/render/src/kz_shadow.c"
+        IQUOTE "${KYUZEN_ROOT}/include"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- R3 shared surfaces: REAL kernel/mm/kz_shm.c vs RAM pmm/paging model ---
+if(EXISTS "${KYUZEN_UNIT_DIR}/kz_shm_test.c")
+    kyuzen_host_test(test-kz-shm
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/kz_shm_test.c"
+            "${KYUZEN_ROOT}/kernel/mm/kz_shm.c"
+        IQUOTE "${KYUZEN_UNIT_DIR}" "${KYUZEN_ROOT}/include"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- R4 paging contract: pure pte_frame/pte_flags + SHM range predicate ---
+if(EXISTS "${KYUZEN_UNIT_DIR}/kz_pte_test.c")
+    kyuzen_host_test(test-kz-pte
+        SOURCES "${KYUZEN_UNIT_DIR}/kz_pte_test.c"
+        IQUOTE "${KYUZEN_ROOT}/include"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
+# --- R4 SHM->adapter->GHAL bridge: REAL kz_shm.c + kz_adapter.c vs mocks ---
+if(EXISTS "${KYUZEN_UNIT_DIR}/kz_bridge_test.c")
+    kyuzen_host_test(test-kz-bridge
+        SOURCES
+            "${KYUZEN_UNIT_DIR}/kz_bridge_test.c"
+            "${KYUZEN_ROOT}/kernel/mm/kz_shm.c"
+            "${KYUZEN_ROOT}/kernel/gfx/kz_adapter.c"
+        IQUOTE "${KYUZEN_UNIT_DIR}" "${KYUZEN_ROOT}/include" "${KYUZEN_ROOT}/graphics"
+        COMPILE_OPTIONS -O1 -Wall -Wextra
+    )
+endif()
+
 # --- time: civil calendar + POSIX timezone rules ---
 # Sumber asli libs/time (bukan salinan) supaya test mengunci kode yang benar-
 # benar dikirim ke ISO. Mengunci aritmetika kalender + rollover tanggal: bug

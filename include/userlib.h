@@ -128,6 +128,18 @@ typedef struct {
 } gpu_stats_t;
 int sys_gpu_stats(gpu_stats_t* out);   // -> 0 sukses, -1 backend tanpa stats
 
+// R3 shared surfaces (syscalls 88, 91-94; kontrak di include/kz_shm.h).
+// Handle 64-bit generation-tagged; negatif = -kz_status. Pointer hasil
+// map hanya valid di AS pemanggil sampai unmap/exit.
+int64_t sys_shm_create(uint32_t w, uint32_t h, uint32_t format);
+uint32_t* sys_shm_map(uint64_t handle, uint32_t flags);
+int sys_shm_unmap(uint32_t* ptr);
+int sys_shm_publish(uint64_t handle, int32_t x, int32_t y, int32_t w, int32_t h);
+int sys_shm_destroy(uint64_t handle);
+int sys_shm_stat(uint64_t handle, void* out_stat);   // out = kz_shm_stat_t*
+int sys_shm_acquire(uint64_t handle);
+int sys_shm_release(uint64_t handle);
+
 uint64_t sys_load_elf(char* filename);
 
 // sys_exec: Load app baru, replace current app, TIDAK PERNAH kembali ke caller.

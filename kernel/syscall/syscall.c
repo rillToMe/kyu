@@ -7,6 +7,7 @@
 #include "vfs.h"           // SYS_DUP / SYS_DUP2 / SYS_PIPE / SYS_READDIR /
                            // SYS_RENAME / SYS_STAT
 #include "crash_notice.h"  // SYS_CRASH_NOTICE
+#include "kz_shm.h"        // SYS_SHM_* (R3 shared surfaces)
 #include "kwm_abi.h"       // SYS_WALLPAPER_RELOAD
 #include "net_dns.h"       // SYS_RESOLVE
 #include "entropy.h"       // SYS_ENTROPY
@@ -131,6 +132,12 @@ void syscall_handler(registers_t *r) {
              syscall_num == 43 || syscall_num == 44 || syscall_num == 45 ||
              syscall_num == SYS_CRASH_NOTICE) {
         done = sys_misc_handle(r, &uc, &ret_val, syscall_task);
+    }
+    else if (syscall_num == SYS_SHM_CREATE || syscall_num == SYS_SHM_MAP ||
+             syscall_num == SYS_SHM_UNMAP || syscall_num == SYS_SHM_PUBLISH ||
+             syscall_num == SYS_SHM_DESTROY || syscall_num == SYS_SHM_STAT ||
+             syscall_num == SYS_SHM_ACQUIRE || syscall_num == SYS_SHM_RELEASE) {
+        done = sys_shm_handle(r, &uc, &ret_val, syscall_task);
     }
     else if (syscall_num == 21) {
         // Reserved/Unused

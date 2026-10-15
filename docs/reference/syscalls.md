@@ -54,10 +54,28 @@ Userspace pointers are validated against the caller's address space and bounded
 | # | Name | Args | Returns |
 | --- | --- | --- | --- |
 | 9 | `alloc` | `RBX=size` | pointer / NULL |
-| 10 | `free` | `RBX=ptr` | — |
+| 10 | `free` | `RBX=ptr` | - |
 | 19 | `realloc` | `RBX=ptr, RCX=old, RDX=new` | pointer / NULL |
-| 42 | `get_cr3` | — | CR3 value |
+| 42 | `get_cr3` | - | CR3 value |
 | 44 | `is_mapped` | `RBX=addr` | 1 / 0 |
+
+## Shared Surfaces (R3)
+
+Kernel-owned pages mapped at a fixed per-resource VA
+(`KZ_SHM_BASE + id*8MiB`, see `include/kz_shm.h`). Handles are
+generation-tagged; owner has RW, consumers get RO after publish.
+Destroy retires lazily (pages live until the last mapping drops).
+
+| # | Name | Args | Returns |
+| --- | --- | --- | --- |
+| 88 | `shm_create` | `RBX=w, RCX=h, RDX=format` | int64 handle / negative |
+| 91 | `shm_map` | `RBX=handle, RCX=flags` | pointer / NULL |
+| 92 | `shm_unmap` | `RBX=ptr` | 0 / -1 |
+| 93 | `shm_publish` | `RBX=handle, RCX=x, RDX=y, RSI=w, RDI=h` | 0 / negative |
+| 94 | `shm_destroy` | `RBX=handle` | 0 / negative |
+| 95 | `shm_stat` | `RBX=handle, RCX=out(kz_shm_stat_t*)` | 0 / negative |
+| 96 | `shm_acquire` | `RBX=handle` | 0 / negative |
+| 97 | `shm_release` | `RBX=handle` | 0 / negative |
 
 ## Filesystem (KyuzenFS)
 

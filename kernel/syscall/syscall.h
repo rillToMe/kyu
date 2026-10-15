@@ -40,5 +40,6 @@ int sys_net_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st);
 int sys_gpu_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st);
 int sys_system_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st);
 int sys_misc_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st);
+int sys_shm_handle(registers_t *r, ucopy_ctx_t *uc, uint64_t *ret, task_t *st);
 
 #endif // SYSCALL_H

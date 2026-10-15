@@ -20,6 +20,7 @@
 #include "vfs.h"
 #include "uheap.h"
 #include "smap.h"
+#include "kz_shm.h"   // R3: shared-surface cleanup on task exit
 #include "net_socket.h"
 #include <stddef.h>
 
@@ -302,6 +303,7 @@ static void proc_do_exit(int code, uint8_t reason) {
     net_process_cleanup(self);
     flush_event_queue(self);
     kwm_destroy_windows_of(self);
+    kz_shm_task_exit(self);
 
     void*       old_stack = NULL;
     phys_addr_t dead_pml4  = PHYS_NULL;

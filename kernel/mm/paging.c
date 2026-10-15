@@ -18,6 +18,7 @@
 #include "string.h"
 #include "spinlock.h"
 #include "smp.h"
+#include "kz_shm.h"   // R3: SHM range excluded from fork-clone/destroy-free
 #include "smap.h"     // g_nx_enabled (ARCH-5)
 #include <stdint.h>
 
@@ -136,7 +137,7 @@ static uint64_t* alloc_page_virt(void) {
 #define PDPT_IDX(va) (((va) >> 30) & 0x1FF)
 #define PD_IDX(va)   (((va) >> 21) & 0x1FF)
 #define PT_IDX(va)   (((va) >> 12) & 0x1FF)
-#define PAGE_MASK     0xFFFFFFFFFFFFF000ULL
+// PAGE_MASK lives in paging.h (with pte_frame/pte_flags).
 
 // ============================================================
 // vmm_map_page_into — Map vaddr → paddr in a SPECIFIC PML4
@@ -429,7 +430,10 @@ phys_addr_t vmm_unmap_page_from(uint64_t vaddr, phys_addr_t target_pml4_phys) {
         return PHYS_NULL;
     }
 
-    phys_addr_t page_phys = (phys_addr_t)(pt[PT_IDX(vaddr)] & PAGE_MASK);
+    // R3: strip NX from the returned frame (pte_frame: NX is a flag,
+    // not address — returning it would hand the caller a non-canonical
+    // "physical" address (fork memcpy #GP, free warn+leak)).
+    phys_addr_t page_phys = (phys_addr_t)pte_frame(pt[PT_IDX(vaddr)]);
     pt[PT_IDX(vaddr)] = 0;
 
     spinlock_unlock_irqrestore(&paging_lock, irq);
@@ -620,8 +624,15 @@ phys_addr_t vmm_clone_user_as(phys_addr_t parent_pml4_phys) {
                     uint64_t e1 = ppt[p1];
                     if (!(e1 & 1)) continue;
                     uint64_t vaddr = (p4 << 39) | (p3 << 30) | (p2 << 21) | (p1 << 12);
-                    phys_addr_t src = (phys_addr_t)(e1 & PAGE_MASK);
-                    uint64_t flags = e1 & ~PAGE_MASK;   // all flag bits incl. NX
+                    // R3: shared-surface range is per-slot kernel-owned, NOT
+                    // fork-copied. The child re-maps explicitly (handle +
+                    // rights); a private copy would look shared but go stale.
+                    if (kz_shm_va_excluded(vaddr)) continue;
+                    // R3: pte_frame/pte_flags split (NX is a flag, not
+                    // address). Raw PAGE_MASK math here killed every fork
+                    // with NX user pages (memcpy #GP) and dropped child W^X.
+                    phys_addr_t src = (phys_addr_t)pte_frame(e1);
+                    uint64_t flags = pte_flags(e1);
 
                     phys_addr_t dst = pmm_alloc_page();
                     if (dst == PHYS_NULL) goto oom;
@@ -702,9 +713,19 @@ void vmm_destroy_address_space(phys_addr_t pml4_phys, int free_pml4) {
                 // Free every 4KB data page in this PT
                 // Guard: only free pages that PMM actually allocated.
                 // Limine boot mappings (identity maps, framebuffer) are NOT ours.
+                // R3: SHM-range pages are store-owned (refcounted in kz_shm.c),
+                // not AS-owned — unmap the PTE but never free the frame here.
                 for (int p1 = 0; p1 < 512; p1++) {
+                    uint64_t vaddr = ((uint64_t)p4 << 39) | ((uint64_t)p3 << 30) |
+                                     ((uint64_t)p2 << 21) | ((uint64_t)p1 << 12);
                     if (!(pt[p1] & 1)) continue;
-                    phys_addr_t page_phys = pt[p1] & PAGE_MASK;
+                    if (kz_shm_va_excluded(vaddr)) {
+                        pt[p1] = 0;
+                        continue;
+                    }
+                    // R3: strip NX via pte_frame (flag, not address) or
+                    // pmm_free_page warns out-of-range and leaks the frame.
+                    phys_addr_t page_phys = (phys_addr_t)pte_frame(pt[p1]);
                     if (pmm_owns_page(page_phys)) pmm_free_page(page_phys);
                     pt[p1] = 0;
                 }

@@ -72,6 +72,31 @@ int sys_mkdir(char* path) {
 int sys_gpu_stats(gpu_stats_t* out) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(65), "b"((uint64_t)out)); return (int)ret;
 }
+// R3 shared surfaces (syscalls 88, 91-94). Handles 64-bit generation-tagged.
+int64_t sys_shm_create(uint32_t w, uint32_t h, uint32_t format) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(88), "b"((uint64_t)w), "c"((uint64_t)h), "d"((uint64_t)format)); return (int64_t)ret;
+}
+uint32_t* sys_shm_map(uint64_t handle, uint32_t flags) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(91), "b"(handle), "c"((uint64_t)flags)); return (uint32_t*)ret;
+}
+int sys_shm_unmap(uint32_t* ptr) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(92), "b"((uint64_t)ptr)); return (int)ret;
+}
+int sys_shm_publish(uint64_t handle, int32_t x, int32_t y, int32_t w, int32_t h) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(93), "b"(handle), "c"((uint64_t)(int64_t)x), "d"((uint64_t)(int64_t)y), "S"((uint64_t)(int64_t)w), "D"((uint64_t)(int64_t)h)); return (int)ret;
+}
+int sys_shm_destroy(uint64_t handle) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(94), "b"(handle)); return (int)ret;
+}
+int sys_shm_stat(uint64_t handle, void* out_stat) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(95), "b"(handle), "c"((uint64_t)out_stat)); return (int)ret;
+}
+int sys_shm_acquire(uint64_t handle) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(96), "b"(handle)); return (int)ret;
+}
+int sys_shm_release(uint64_t handle) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(97), "b"(handle)); return (int)ret;
+}
 uint64_t sys_load_elf(char* filename) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(25), "b"((uint64_t)filename)); return ret;
 }

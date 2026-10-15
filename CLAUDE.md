@@ -159,6 +159,8 @@ jadi tidak perlu lagi bikin disk baru untuk coba memasuki desktop
 | PMM | `kernel/mm/pmm.c`, `include/pmm.h` | Bitmap allocator. `phys_addr_t` ≠ virtual pointer — add `hhdm_offset` before use. `pmm_owns_page()` skips Limine boot pages. |
 | VMM | `kernel/mm/paging.c`, `include/paging.h` | Per-task PML4. `vmm_user_pml4` extern routes ELF-load allocs into the right address space. `vmm_map_page_kernel` keeps heap pages visible across AS switches. |
 | Heap | `kernel/mm/heap.c`, `include/heap.h` | Linked-list allocator. `heap_block_t` header has magic + canary — corruption detected on free. `kmalloc` / `kfree` / `krealloc`. |
+| Shared surfaces (R3) | `kernel/mm/kz_shm.c`, `include/kz_shm.h`, syscalls 88/91-94 | Kernel-owned pages mapped at fixed `0x50000000 + id*8MiB`. Fork-clone and AS-destroy skip that range per-PTE. |
+- **PTE phys includes NX.** `e & PAGE_MASK` keeps bit 63 (NX is a flag, not address). Mask it out before `PHYS_TO_VIRT`/free (`& ~PAGING_NX`) and preserve it in propagated flags — otherwise fork `memcpy` takes `#GP` on a wrapped non-canonical address (this killed every fork until R3) and frees leak. `vmm_protect_page_into` still cannot clear NX.
 
 ### Scheduler (`kernel/task.c`, `include/task.h`)
 
@@ -197,6 +199,8 @@ ELF loader (`kernel/proc/elf.c`) maps binaries into per-task address spaces. Sys
 ### Display
 
 Dirty-region compositor (`kernel/display.c`). All writes to `base_canvas` must mark the region dirty — the presenter only flushes dirty rects.
+
+- **Intel Gen12 backend SKIP (frozen): `graphics/backend/intel/intel_gen12_*`.** No hardware to test directly — do not extend, refactor, or add features there. Keep it building only. Active paths are software (`graphics/backend/software.c`) + VirtIO-GPU (`graphics/backend/virtio_gpu.c`).
 
 ### Panic / BSOD & crash safety
 

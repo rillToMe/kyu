@@ -307,6 +307,17 @@ foreach(_app badptr exit_test kill_test fd_test pipe_test fork_test procinfo fpu
     list(APPEND KYUZEN_APP_TARGETS kyuzen-${_app})
 endforeach()
 
+# shm_demo: R3 cross-process shared-surface + shadow test (fork-based).
+# Links the REAL libs/render sources (same code the host tests cover).
+kyuzen_add_plain_app(kyuzen-shm_demo
+    SOURCES "${_tests_dir}/shm_demo.c"
+            "${_tests_dir}/shadow_cons.c"
+            "${KYUZEN_ROOT}/libs/render/src/kz_render.c"
+            "${KYUZEN_ROOT}/libs/render/src/kz_shadow.c"
+    LIBS    kyuzen-userlib
+)
+list(APPEND KYUZEN_APP_TARGETS kyuzen-shm_demo)
+
 # ===========================================================================
 # E. SDK apps — C++ with the libc++ subset, CRT, and .init_array support.
 #
